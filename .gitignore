@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+*.o
+*.so
+*.a
+
+# Generated files
+bpf/include/vmlinux.h
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.log
+
+# User-specific configs
+*.local

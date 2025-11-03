@@ -1,0 +1,49 @@
+# rSwitch Profile: L2 Switch
+# 
+# Traditional L2 learning switch with VLAN support:
+# - VLAN ingress filtering (ACCESS/TRUNK/HYBRID modes)
+# - MAC address learning and forwarding
+# - Intelligent unicast forwarding, selective flooding
+#
+# Pipeline: dispatcher → vlan → l2learn → lastcall → egress
+# Use case: Standard enterprise switch, VLAN segmentation
+
+name: l2
+description: "L2 learning switch with VLAN support"
+version: "1.0"
+
+# Ingress pipeline (sorted by stage number)
+ingress:
+  - vlan       # Stage 20: VLAN ingress filtering
+  - l2learn    # Stage 80: MAC learning and lookup
+  - lastcall   # Stage 90: Forward based on learned MAC or flood
+
+# Egress pipeline
+egress:
+  - egress     # Devmap egress hook with VLAN tagging
+
+# Global settings
+settings:
+  # MAC learning enabled
+  mac_learning: true
+  mac_aging_time: 300  # seconds
+  
+  # VLAN enforcement enabled
+  vlan_enforcement: true
+  default_vlan: 1
+  
+  # Forwarding behavior
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  
+  # Statistics collection
+  stats_enabled: true
+  
+  # Event notifications
+  ringbuf_enabled: true
+  notify_mac_learned: true
+  notify_mac_moved: true
+  
+  # Debug mode
+  debug: false

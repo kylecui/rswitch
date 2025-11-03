@@ -1,0 +1,73 @@
+# rSwitch Profile: Security Firewall
+# 
+# Full security stack with deep packet inspection:
+# - VLAN segmentation and isolation
+# - Stateful ACL with connection tracking (future)
+# - Rate limiting and DDoS protection (future)
+# - Traffic mirroring for IDS/IPS (future)
+# - Selective MAC learning with security
+#
+# Pipeline: dispatcher → vlan → acl → mirror → l2learn → lastcall → egress
+# Use case: Network security appliance, zero-trust segmentation
+#
+# Note: ACL and Mirror modules are placeholders for future implementation
+
+name: firewall
+description: "Security firewall with ACL and traffic mirroring"
+version: "1.0"
+
+# Ingress pipeline (sorted by stage number)
+ingress:
+  - vlan       # Stage 20: VLAN segmentation
+  # - acl      # Stage 40: Stateful firewall rules (future)
+  # - mirror   # Stage 70: Traffic mirroring to IDS (future)
+  - l2learn    # Stage 80: Controlled MAC learning
+  - lastcall   # Stage 90: Secure forwarding
+
+# Egress pipeline
+egress:
+  - egress     # Devmap egress hook with VLAN tagging
+
+# Global settings
+settings:
+  # Controlled MAC learning
+  mac_learning: true
+  mac_aging_time: 180  # Shorter timeout for security
+  max_mac_per_port: 10  # Prevent MAC flooding attacks
+  
+  # Strict VLAN enforcement
+  vlan_enforcement: true
+  default_vlan: 1
+  drop_untagged: false  # Allow access ports
+  
+  # Firewall (future)
+  acl_enabled: false  # Not implemented yet
+  acl_default_action: "deny"  # Default deny for security
+  stateful_inspection: false
+  
+  # Rate limiting (future)
+  rate_limiting: false
+  ddos_protection: false
+  
+  # Traffic mirroring (future)
+  mirror_enabled: false
+  mirror_ports: []
+  
+  # Strict forwarding - minimal flooding
+  unknown_unicast_flood: false  # Drop unknown unicast for security
+  broadcast_flood: true          # Allow broadcast (ARP, DHCP)
+  multicast_flood: false         # Drop unknown multicast
+  
+  # Statistics collection
+  stats_enabled: true
+  
+  # Event notifications
+  ringbuf_enabled: true
+  notify_mac_learned: true
+  notify_mac_moved: true
+  notify_acl_drop: true
+  notify_rate_limit: true
+  notify_security_event: true
+  
+  # Debug mode
+  debug: false

@@ -1,0 +1,27 @@
+# rSwitch Profile: Custom Test - VLAN Only
+# 
+# Test profile that loads only VLAN module for testing
+
+name: vlan-test
+description: "Test profile - VLAN enforcement only"
+version: "1.0"
+
+# Ingress pipeline - only VLAN processing
+ingress:
+  - vlan       # Stage 20: VLAN ingress filtering
+  - lastcall   # Stage 90: Forward (required for packet forwarding)
+
+# Egress pipeline
+egress:
+  - egress     # Devmap egress hook
+
+# Global settings
+settings:
+  mac_learning: false
+  vlan_enforcement: true
+  default_vlan: 100
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  stats_enabled: true
+  debug: false

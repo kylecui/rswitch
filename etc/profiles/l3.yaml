@@ -1,0 +1,63 @@
+# rSwitch Profile: L3 Router
+# 
+# Layer 3 routing with access control:
+# - VLAN processing for inter-VLAN routing
+# - ACL-based packet filtering (future)
+# - IP routing between VLANs (future)
+# - MAC learning for L2 fallback
+#
+# Pipeline: dispatcher → vlan → acl → route → l2learn → lastcall → egress
+# Use case: Gateway router, inter-VLAN routing, policy enforcement
+#
+# Note: ACL and Route modules are placeholders for future implementation
+
+name: l3
+description: "L3 router with inter-VLAN routing and ACL"
+version: "1.0"
+
+# Ingress pipeline (sorted by stage number)
+ingress:
+  - vlan       # Stage 20: VLAN ingress filtering
+  # - acl      # Stage 40: Access control lists (future)
+  # - route    # Stage 50: IP routing (future)
+  - l2learn    # Stage 80: MAC learning fallback
+  - lastcall   # Stage 90: Forward based on route or learned MAC
+
+# Egress pipeline
+egress:
+  - egress     # Devmap egress hook with VLAN tagging
+
+# Global settings
+settings:
+  # MAC learning enabled (L2 fallback)
+  mac_learning: true
+  mac_aging_time: 300
+  
+  # VLAN enforcement enabled
+  vlan_enforcement: true
+  default_vlan: 1
+  
+  # Routing (future)
+  ip_routing: false  # Not implemented yet
+  route_table_size: 1024
+  
+  # ACL (future)
+  acl_enabled: false  # Not implemented yet
+  acl_default_action: "permit"
+  
+  # Forwarding behavior
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  
+  # Statistics collection
+  stats_enabled: true
+  
+  # Event notifications
+  ringbuf_enabled: true
+  notify_mac_learned: true
+  notify_mac_moved: true
+  notify_acl_drop: true
+  
+  # Debug mode
+  debug: false
