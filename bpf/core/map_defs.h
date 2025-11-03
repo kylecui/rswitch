@@ -9,9 +9,14 @@
 #ifndef __RSWITCH_MAP_DEFS_H
 #define __RSWITCH_MAP_DEFS_H
 
-#include <linux/types.h>
-#include <linux/bpf.h>
-#include <bpf/bpf_helpers.h>
+#ifdef __BPF__
+    /* BPF side: types from vmlinux.h, bpf_helpers from rswitch_bpf.h */
+    #include <bpf/bpf_helpers.h>
+#else
+    #include <linux/types.h>
+    #include <linux/bpf.h>
+#endif
+
 #include "uapi.h"
 
 /* VLAN mode enumeration */

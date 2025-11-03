@@ -9,7 +9,11 @@
 #ifndef __RSWITCH_MODULE_ABI_H
 #define __RSWITCH_MODULE_ABI_H
 
-#include <linux/types.h>
+#ifdef __BPF__
+    /* BPF side: types from vmlinux.h */
+#else
+    #include <linux/types.h>
+#endif
 
 /* Current ABI version - increment on breaking changes */
 #define RS_ABI_VERSION 1

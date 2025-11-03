@@ -8,9 +8,15 @@
 #ifndef __RSWITCH_UAPI_H
 #define __RSWITCH_UAPI_H
 
-#include <linux/types.h>
-#include <linux/bpf.h>
-#include <bpf/bpf_helpers.h>
+/* BPF programs use vmlinux.h (CO-RE), user-space uses kernel headers */
+#ifdef __BPF__
+    /* BPF side: types already defined in vmlinux.h (included via rswitch_bpf.h) */
+    #include <bpf/bpf_helpers.h>
+#else
+    /* User-space side: use kernel UAPI headers */
+    #include <linux/types.h>
+    #include <linux/bpf.h>
+#endif
 
 /* Constants */
 #define RS_ONLYKEY          0       /* Single-entry per-CPU map key */

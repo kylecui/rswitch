@@ -3,7 +3,7 @@
 
 CLANG ?= clang
 LLVM_STRIP ?= llvm-strip
-BPFTOOL ?= /usr/sbin/bpftool
+BPFTOOL ?= $(shell which bpftool || echo /usr/local/sbin/bpftool)
 ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' \
 			 | sed 's/arm.*/arm/' \
 			 | sed 's/aarch64/arm64/' \
@@ -68,14 +68,14 @@ $(INCLUDE_DIR)/vmlinux.h:
 vmlinux: $(INCLUDE_DIR)/vmlinux.h
 
 # Build BPF programs (core and modules)
-$(OBJ_DIR)/%.bpf.o: $(CORE_DIR)/%.bpf.c $(wildcard $(INCLUDE_DIR)/*.h) $(wildcard $(CORE_DIR)/*.h)
+$(OBJ_DIR)/%.bpf.o: $(CORE_DIR)/%.bpf.c $(INCLUDE_DIR)/vmlinux.h $(wildcard $(INCLUDE_DIR)/*.h) $(wildcard $(CORE_DIR)/*.h)
 	@echo "  CC [BPF]  $@"
 	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
 		-c $< -o $@
 	@$(LLVM_STRIP) -g $@
 
-$(OBJ_DIR)/%.bpf.o: $(MODULES_DIR)/%.bpf.c $(wildcard $(INCLUDE_DIR)/*.h) $(wildcard $(CORE_DIR)/*.h)
+$(OBJ_DIR)/%.bpf.o: $(MODULES_DIR)/%.bpf.c $(INCLUDE_DIR)/vmlinux.h $(wildcard $(INCLUDE_DIR)/*.h) $(wildcard $(CORE_DIR)/*.h)
 	@echo "  CC [BPF]  $@"
 	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \

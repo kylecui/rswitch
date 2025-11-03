@@ -1,8 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef __AFXDP_COMMON_H__
-#define __AFXDP_COMMON_H__
+#ifndef __AFXDP_COMMON_H
+#define __AFXDP_COMMON_H
 
-#include <linux/types.h>
+#ifdef __BPF__
+    /* BPF side: types from vmlinux.h */
+#else
+    #include <linux/types.h>
+#endif
 
 /*
  * AF_XDP Common Definitions

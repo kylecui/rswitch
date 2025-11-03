@@ -4,6 +4,8 @@
  * Single include point for all rSwitch BPF programs.
  * Modules should include this header to get all necessary definitions.
  * 
+ * With CO-RE support: Uses vmlinux.h for kernel type definitions.
+ * 
  * Usage in modules:
  *   #include "rswitch_common.h"
  */
@@ -11,17 +13,8 @@
 #ifndef __RSWITCH_COMMON_H
 #define __RSWITCH_COMMON_H
 
-/* Kernel types and BPF helpers */
-#include <linux/bpf.h>
-#include <linux/if_ether.h>
-#include <linux/ip.h>
-#include <linux/ipv6.h>
-#include <linux/tcp.h>
-#include <linux/udp.h>
-#include <linux/icmp.h>
-#include <linux/in.h>
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_endian.h>
+/* CO-RE kernel types and BPF helpers */
+#include "rswitch_bpf.h"
 
 /* rSwitch core headers */
 #include "../core/module_abi.h"
@@ -30,15 +23,13 @@
 #include "rswitch_parsing.h"  /* Includes parsing_helpers.h internally */
 
 /* Common BPF helper wrappers for readability */
-
-/* Boundary check for packet access */
-#define CHECK_BOUNDS(ptr, end, size) \
-    ((void *)(ptr) + (size) <= (void *)(end))
+/* Note: CHECK_BOUNDS is defined in rswitch_bpf.h */
 
 /* Safe memcpy with bounds checking */
 #define SAFE_MEMCPY(dst, src, size, data_end) ({ \
     int __ret = -1; \
-    if (CHECK_BOUNDS(src, data_end, size)) { \
+    void *_end = (void *)(data_end); \
+    if (CHECK_BOUNDS(NULL, src, size)) { \
         __builtin_memcpy(dst, src, size); \
         __ret = 0; \
     } \

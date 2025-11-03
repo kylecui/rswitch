@@ -15,7 +15,13 @@
 #ifndef __PARSING_HELPERS_H
 #define __PARSING_HELPERS_H
 
+/* Don't include stddef.h for BPF - vmlinux.h provides types */
+#ifndef __BPF__
 #include <stddef.h>
+#endif
+
+/* BPF programs use vmlinux.h types, user-space uses kernel headers */
+#ifndef __BPF__
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
 #include <linux/ip.h>
@@ -25,23 +31,42 @@
 #include <linux/udp.h>
 #include <linux/tcp.h>
 #include <linux/in.h>
+#include <linux/if_arp.h>
+#else
+/* Constants not always in vmlinux.h */
+#ifndef ETH_ALEN
+#define ETH_ALEN 6
+#endif
+#ifndef IPPROTO_HOPOPTS
+#define IPPROTO_HOPOPTS 0
+#endif
+#ifndef IPPROTO_ROUTING
+#define IPPROTO_ROUTING 43
+#endif
+#ifndef IPPROTO_FRAGMENT
+#define IPPROTO_FRAGMENT 44
+#endif
+#ifndef IPPROTO_DSTOPTS
+#define IPPROTO_DSTOPTS 60
+#endif
+#ifndef IPPROTO_MH
+#define IPPROTO_MH 135
+#endif
+#endif
 #include <bpf/bpf_endian.h>
-#include <linux/if_arp.h>  // for ARPHRD_ETHER
 
 /* Header cursor to keep track of current parsing position */
 struct hdr_cursor {
 	void *pos;
 };
 
-/*
- *	struct vlan_hdr - vlan header
- *	@h_vlan_TCI: priority and VLAN ID
- *	@h_vlan_encapsulated_proto: packet type ID or len
- */
+/* VLAN header - only define for user-space (BPF gets it from vmlinux.h) */
+#ifndef __BPF__
 struct vlan_hdr {
 	__be16	h_vlan_TCI;
 	__be16	h_vlan_encapsulated_proto;
 };
+#endif
 
 /*
  * Struct icmphdr_common represents the common part of the icmphdr and icmp6hdr
@@ -53,7 +78,6 @@ struct icmphdr_common {
 	__sum16	cksum;
 };
 
-#include <linux/if_arp.h>  // 需要包含 ARP 头文件
 
 struct arp_info {
     __be16 htype;   // 硬件类型（通常为 1，即 Ethernet）
@@ -207,7 +231,9 @@ static __always_inline int skip_ip6hdrext(struct hdr_cursor *nh,
 		case IPPROTO_HOPOPTS:
 		case IPPROTO_DSTOPTS:
 		case IPPROTO_ROUTING:
+		#ifdef IPPROTO_MH
 		case IPPROTO_MH:
+		#endif
 			nh->pos = (char *)hdr + (hdr->hdrlen + 1) * 8;
 			next_hdr_type = hdr->nexthdr;
 			break;
@@ -215,7 +241,9 @@ static __always_inline int skip_ip6hdrext(struct hdr_cursor *nh,
 			nh->pos = (char *)hdr + (hdr->hdrlen + 2) * 4;
 			next_hdr_type = hdr->nexthdr;
 			break;
+		#ifdef IPPROTO_FRAGMENT
 		case IPPROTO_FRAGMENT:
+		#endif
 			nh->pos = (char *)hdr + 8;
 			next_hdr_type = hdr->nexthdr;
 			break;

@@ -3,18 +3,14 @@
  * 
  * Bridges the legacy parsing_helpers.h functions with the new rs_layers structure.
  * This allows reuse of proven parsing code while adapting to the new API.
+ * 
+ * CO-RE: Network types are provided by vmlinux.h via rswitch_bpf.h
  */
 
 #ifndef __RSWITCH_PARSING_H
 #define __RSWITCH_PARSING_H
 
-#include <linux/if_ether.h>
-#include <linux/ip.h>
-#include <linux/ipv6.h>
-#include <linux/tcp.h>
-#include <linux/udp.h>
-#include <linux/icmp.h>
-#include <linux/in.h>
+/* Types and helpers from vmlinux.h (via rswitch_bpf.h included by rswitch_common.h) */
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 #include "parsing_helpers.h"
@@ -92,11 +88,19 @@ static __always_inline int parse_packet_layers(struct xdp_md *ctx, struct rs_lay
         if (ip_type < 0)
             return -1;
         
-        /* For IPv6, store first 4 bytes of address in saddr/daddr
-         * Full address should be stored separately if needed
+        /* For IPv6, store first 4 bytes of address
+         * vmlinux.h defines in6_addr differently, use union access
          */
+        #ifdef __BPF__
+        /* CO-RE: Access IPv6 address bytes directly */
+        __u32 *saddr_p = (__u32 *)&ip6h->saddr;
+        __u32 *daddr_p = (__u32 *)&ip6h->daddr;
+        layers->saddr = saddr_p[0];
+        layers->daddr = daddr_p[0];
+        #else
         layers->saddr = ip6h->saddr.s6_addr32[0];
         layers->daddr = ip6h->daddr.s6_addr32[0];
+        #endif
         layers->ip_proto = ip6h->nexthdr;
         
     } else if (eth_type == bpf_htons(ETH_P_ARP)) {

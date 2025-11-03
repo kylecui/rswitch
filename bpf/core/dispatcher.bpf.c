@@ -13,6 +13,8 @@
  *   - Module-agnostic: Dispatcher doesn't hardcode which modules exist
  *   - Zero-copy: Context passed via per-CPU map for efficiency
  *   - Failsafe: Falls back to passthrough if pipeline is empty
+ * 
+ * CO-RE: Uses vmlinux.h for kernel portability across versions.
  */
 
 #include "../include/rswitch_common.h"
