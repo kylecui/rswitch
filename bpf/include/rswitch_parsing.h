@@ -10,6 +10,12 @@
 #ifndef __RSWITCH_PARSING_H
 #define __RSWITCH_PARSING_H
 
+/* TEMPORARY: Disable IPv6 to reduce BPF program size
+ * IPv6 extension header parsing causes instruction count to exceed 1M limit
+ * TODO (v1.2): Optimize IPv6 parsing or split into separate module
+ */
+#define RS_DISABLE_IPV6
+
 /* Types and helpers from vmlinux.h (via rswitch_bpf.h included by rswitch_common.h) */
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -82,6 +88,7 @@ static __always_inline int parse_packet_layers(struct xdp_md *ctx, struct rs_lay
         layers->daddr = iph->daddr;
         layers->ip_proto = iph->protocol;
         
+#ifndef RS_DISABLE_IPV6
     } else if (eth_type == bpf_htons(ETH_P_IPV6)) {
         /* IPv6 */
         ip_type = parse_ip6hdr(&nh, data_end, &ip6h);
@@ -102,6 +109,7 @@ static __always_inline int parse_packet_layers(struct xdp_md *ctx, struct rs_lay
         layers->daddr = ip6h->daddr.s6_addr32[0];
         #endif
         layers->ip_proto = ip6h->nexthdr;
+#endif /* RS_DISABLE_IPV6 */
         
     } else if (eth_type == bpf_htons(ETH_P_ARP)) {
         /* ARP packet - no L4 */

@@ -28,17 +28,28 @@ RS_DECLARE_MODULE(
 );
 
 // Helper: Check if VLAN ID exists in allowed list
+// 
+// *** GOLDEN RULE OF eBPF: ALWAYS CHECK BOUNDS BEFORE ACCESSING MEMORY ***
+//
+// CRITICAL: Verifier needs to see explicit bounds for each array access!
+// Pattern from PoC (src/inc/defs.h:is_in_list) - use == instead of >= for early exit
+// This tells verifier we won't access beyond the provided count
+//
+// The order MUST be: CHECK → BREAK → ACCESS (never ACCESS → CHECK)
 static __always_inline int is_vlan_allowed(__u16 vlan_id, __u16 *allowed_list, __u16 count)
 {
     if (count == 0)
         return 0;
     
-    // Use bounded loop for verifier
-    #pragma unroll
-    for (int i = 0; i < RS_MAX_ALLOWED_VLANS; i++) {
-        if (i >= count)
+    // PoC pattern: fixed loop bound with early exit using ==
+    // This lets verifier track exact iteration count
+    int i;
+    for (i = 0; i < RS_MAX_ALLOWED_VLANS; i++) {
+        // ⚠️ GOLDEN RULE: Check bounds FIRST, access SECOND
+        // Use == instead of >= - PoC pattern that verifier understands better
+        if (i == count)  // ← Bounds check (executes BEFORE array access)
             break;
-        if (allowed_list[i] == vlan_id)
+        if (allowed_list[i] == vlan_id)  // ← Array access (AFTER bounds check)
             return 1;
     }
     return 0;
@@ -154,6 +165,63 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
     int is_tagged = (ctx->layers.vlan_depth > 0 && ctx->layers.vlan_ids[0] > 0);
     __u16 effective_vlan = get_effective_vlan_id(ctx);
     
+    // Extract PCP (Priority Code Point) and DEI (Drop Eligible Indicator) from VLAN tag
+    // IEEE 802.1Q TCI format: [PCP:3 bits][DEI:1 bit][VID:12 bits]
+    if (is_tagged) {
+        void *data = (void *)(long)xdp_ctx->data;
+        void *data_end = (void *)(long)xdp_ctx->data_end;
+        struct ethhdr *eth = data;
+        
+        if ((void *)(eth + 1) > data_end)
+            return XDP_DROP;
+        
+        // VLAN header follows Ethernet header
+        struct vlan_hdr {
+            __be16 h_vlan_TCI;
+            __be16 h_vlan_encapsulated_proto;
+        } *vhdr = (void *)(eth + 1);
+        
+        if ((void *)(vhdr + 1) > data_end)
+            return XDP_DROP;
+        
+        // Extract TCI (Tag Control Information)
+        __u16 tci = bpf_ntohs(vhdr->h_vlan_TCI);
+        
+        // Extract PCP (bits 13-15) and DEI (bit 12)
+        __u8 pcp = (tci >> 13) & 0x07;  // 3 bits: priority 0-7
+        __u8 dei = (tci >> 12) & 0x01;  // 1 bit: drop eligible indicator
+        
+        // Map PCP to internal priority (0-7, where 7=highest)
+        // IEEE 802.1Q default priority mapping:
+        //   PCP 0 (Best Effort) -> Priority 1
+        //   PCP 1 (Background)  -> Priority 0
+        //   PCP 2 (Spare)       -> Priority 2
+        //   PCP 3 (Excellent Effort) -> Priority 3
+        //   PCP 4 (Controlled Load) -> Priority 4
+        //   PCP 5 (Video)       -> Priority 5
+        //   PCP 6 (Voice)       -> Priority 6
+        //   PCP 7 (Network Control) -> Priority 7
+        //
+        // For simplicity, we use direct mapping: PCP = Priority
+        ctx->prio = pcp;
+        
+        // Store DEI in ECN field (repurpose for now, as ECN is L3)
+        // DEI=1 suggests packet can be dropped under congestion
+        // Map to ECN-CE (Congestion Experienced) hint for VOQd
+        if (dei) {
+            ctx->ecn = 0x03;  // ECN-CE (11b) - packet eligible for drop
+        } else {
+            ctx->ecn = 0x00;  // Not-ECT (00b) - normal priority
+        }
+        
+        rs_debug("VLAN tag PCP=%u, DEI=%u -> prio=%u, ecn=%u",
+                 pcp, dei, ctx->prio, ctx->ecn);
+    } else {
+        // Untagged packets get default priority (typically 0 = best effort)
+        ctx->prio = 0;
+        ctx->ecn = 0;
+    }
+    
     // Validate VLAN has active peers (not isolated)
     if (validate_vlan_peers(ctx, effective_vlan, is_tagged) < 0) {
         // Error details already set by validate_vlan_peers
@@ -203,9 +271,15 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
     case RS_VLAN_MODE_HYBRID:
         if (is_tagged) {
             // Tagged: Must be in tagged allowed list
+            // ⚠️ GOLDEN RULE: Clamp count to actual array size BEFORE loop
+            // tagged_vlans[] is only 64 elements, but loop bound is 128
+            // Verifier needs proof that we won't access beyond array bounds
+            __u16 tagged_count = port->tagged_vlan_count;
+            if (tagged_count > 64)  // Bounds check: ensure count ≤ array size
+                tagged_count = 64;
             if (!is_vlan_allowed(ctx->layers.vlan_ids[0], 
                                  port->tagged_vlans, 
-                                 port->tagged_vlan_count)) {
+                                 tagged_count)) {
                 rs_debug("HYBRID port %d received disallowed tagged VLAN %d, dropping",
                          ctx->ifindex, ctx->layers.vlan_ids[0]);
                 ctx->error = RS_ERROR_INVALID_VLAN;
@@ -214,9 +288,15 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
             }
         } else {
             // Untagged: PVID must be in untagged allowed list
+            // ⚠️ GOLDEN RULE: Clamp count to actual array size BEFORE loop
+            // untagged_vlans[] is only 64 elements, but loop bound is 128
+            // Verifier needs proof that we won't access beyond array bounds
+            __u16 untagged_count = port->untagged_vlan_count;
+            if (untagged_count > 64)  // Bounds check: ensure count ≤ array size
+                untagged_count = 64;
             if (!is_vlan_allowed(port->pvid, 
                                  port->untagged_vlans, 
-                                 port->untagged_vlan_count)) {
+                                 untagged_count)) {
                 rs_debug("HYBRID port %d PVID %d not in untagged allowed list, dropping",
                          ctx->ifindex, port->pvid);
                 ctx->error = RS_ERROR_INVALID_VLAN;

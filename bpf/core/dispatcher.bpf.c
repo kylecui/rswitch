@@ -4,12 +4,13 @@
  * This is the main XDP entry point that replaces kSwitchMainHook.bpf.c.
  * Responsibilities:
  *   1. Initialize per-packet context (rs_ctx)
- *   2. Parse packet headers into rs_layers
+ *   2. MINIMAL parsing (Ethernet only) - modules do lazy parsing as needed
  *   3. Lookup port configuration
  *   4. Execute tail-call chain based on profile-generated prog_array
  * 
  * Design:
  *   - Profile-driven: Loader populates rs_progs map based on YAML profiles
+ *   - Lazy parsing: Only parse what's needed (like PoC architecture)
  *   - Module-agnostic: Dispatcher doesn't hardcode which modules exist
  *   - Zero-copy: Context passed via per-CPU map for efficiency
  *   - Failsafe: Falls back to passthrough if pipeline is empty
@@ -42,6 +43,8 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
                                         struct rs_port_config *cfg)
 {
     __u32 ifindex = ctx->ingress_ifindex;
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(long)ctx->data;
     
     /* Reset context to zero state */
     __builtin_memset(rctx, 0, sizeof(*rctx));
@@ -54,19 +57,24 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
     
     /* Copy VLAN configuration if available */
     if (cfg) {
-        /* VLAN config will be used by VLAN module, not stored in ctx */
         rctx->prio = cfg->default_prio;
     }
     
-    /* Parse packet headers into rs_layers */
-    if (parse_packet_layers(ctx, &rctx->layers) < 0) {
-        rs_debug("Failed to parse packet layers on ifindex %u", ifindex);
+    /* MINIMAL parsing: Just validate Ethernet header exists
+     * Individual modules will do lazy parsing as needed (like PoC architecture)
+     * This keeps dispatcher instruction count low
+     * 
+     * ⚠️ GOLDEN RULE: ALWAYS check bounds BEFORE accessing memory
+     */
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end) {  // Bounds check BEFORE any field access
+        rs_debug("Packet too short on ifindex %u", ifindex);
         rctx->error = RS_ERROR_PARSE_FAILED;
         rctx->drop_reason = RS_DROP_PARSE_ERROR;
         return -1;
     }
     
-    rctx->parsed = 1;
+    rctx->parsed = 1;  /* Mark as "validated" */
     return 0;
 }
 
@@ -76,14 +84,12 @@ static __always_inline int get_first_prog(struct rs_ctx *rctx)
     /* Prog array is sorted by stage number (10, 20, 30, ..., 90)
      * Index 0 = first module in pipeline
      * Loader populates this based on profile
+     * 
+     * NOTE: Cannot use bpf_map_lookup_elem() on BPF_MAP_TYPE_PROG_ARRAY
+     * in kernels 6.x+. Instead, we directly use bpf_tail_call(), which
+     * will gracefully fail (return 0) if index is not populated.
      */
     __u32 idx = 0;
-    int *prog_fd = bpf_map_lookup_elem(&rs_progs, &idx);
-    
-    if (!prog_fd || *prog_fd < 0) {
-        rs_debug("Pipeline empty or misconfigured for port %u", rctx->ifindex);
-        return -1;
-    }
     
     /* Store next program ID for tail-call */
     rctx->next_prog_id = idx;
@@ -154,7 +160,7 @@ int rswitch_dispatcher(struct xdp_md *ctx)
 }
 
 /* Alternative entry point for testing/debugging - processes packet without pipeline */
-SEC("xdp/bypass")
+SEC("xdp")
 int rswitch_bypass(struct xdp_md *ctx)
 {
     __u32 ifindex = ctx->ingress_ifindex;

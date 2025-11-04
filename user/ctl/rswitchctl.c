@@ -27,6 +27,20 @@ extern int cmd_show_stats(void);
 extern int cmd_flush_macs(void);
 extern int cmd_get_telemetry(void);
 
+/* ACL commands */
+extern int cmd_acl_add_rule(int argc, char **argv);
+extern int cmd_acl_del_rule(uint32_t rule_id);
+extern int cmd_acl_show_rules(void);
+extern int cmd_acl_show_stats(void);
+extern int cmd_acl_enable(int enable);
+
+/* Mirror commands */
+extern int cmd_mirror_enable(int enable, uint32_t span_port);
+extern int cmd_mirror_set_span_port(uint32_t span_port);
+extern int cmd_mirror_set_port(uint32_t ifindex, int ingress, int egress);
+extern int cmd_mirror_show_config(void);
+extern int cmd_mirror_show_stats(void);
+
 /* Show current state */
 static int cmd_show_state(const char *state_map_pin)
 {
@@ -282,6 +296,72 @@ int main(int argc, char **argv)
 	else if (strcmp(command, "get-telemetry") == 0) {
 		return cmd_get_telemetry();
 	}
+	/* ACL commands */
+	else if (strcmp(command, "acl-add-rule") == 0) {
+		return cmd_acl_add_rule(argc - optind, argv + optind);
+	}
+	else if (strcmp(command, "acl-del-rule") == 0) {
+		if (optind >= argc) {
+			fprintf(stderr, "Error: rule ID required\n");
+			return 1;
+		}
+		return cmd_acl_del_rule(atoi(argv[optind]));
+	}
+	else if (strcmp(command, "acl-show-rules") == 0) {
+		return cmd_acl_show_rules();
+	}
+	else if (strcmp(command, "acl-show-stats") == 0) {
+		return cmd_acl_show_stats();
+	}
+	else if (strcmp(command, "acl-enable") == 0) {
+		return cmd_acl_enable(1);
+	}
+	else if (strcmp(command, "acl-disable") == 0) {
+		return cmd_acl_enable(0);
+	}
+	/* Mirror commands */
+	else if (strcmp(command, "mirror-enable") == 0) {
+		uint32_t span_port = 0;
+		if (optind < argc)
+			span_port = atoi(argv[optind]);
+		return cmd_mirror_enable(1, span_port);
+	}
+	else if (strcmp(command, "mirror-disable") == 0) {
+		return cmd_mirror_enable(0, 0);
+	}
+	else if (strcmp(command, "mirror-set-span") == 0) {
+		if (optind >= argc) {
+			fprintf(stderr, "Error: SPAN port required\n");
+			return 1;
+		}
+		return cmd_mirror_set_span_port(atoi(argv[optind]));
+	}
+	else if (strcmp(command, "mirror-set-port") == 0) {
+		if (optind >= argc) {
+			fprintf(stderr, "Error: port ifindex required\n");
+			return 1;
+		}
+		uint32_t ifindex = atoi(argv[optind]);
+		int ingress = -1, egress = -1;
+		
+		for (int i = optind + 1; i < argc; i++) {
+			if (strcmp(argv[i], "--ingress") == 0)
+				ingress = 1;
+			else if (strcmp(argv[i], "--no-ingress") == 0)
+				ingress = 0;
+			else if (strcmp(argv[i], "--egress") == 0)
+				egress = 1;
+			else if (strcmp(argv[i], "--no-egress") == 0)
+				egress = 0;
+		}
+		return cmd_mirror_set_port(ifindex, ingress, egress);
+	}
+	else if (strcmp(command, "mirror-show-config") == 0) {
+		return cmd_mirror_show_config();
+	}
+	else if (strcmp(command, "mirror-show-stats") == 0) {
+		return cmd_mirror_show_stats();
+	}
 	else {
 		fprintf(stderr, "Unknown command: %s\n", command);
 		goto usage;
@@ -305,6 +385,22 @@ usage:
 	printf("  flush-macs                Flush dynamic MAC entries\n");
 	printf("  get-telemetry             Get comprehensive telemetry\n");
 	printf("\n");
+	printf("ACL Commands:\n");
+	printf("  acl-add-rule              Add ACL rule (use --id, --src, --dst, --action, etc.)\n");
+	printf("  acl-del-rule <id>         Delete ACL rule by ID\n");
+	printf("  acl-show-rules            Show all ACL rules\n");
+	printf("  acl-show-stats            Show ACL statistics\n");
+	printf("  acl-enable                Enable ACL processing\n");
+	printf("  acl-disable               Disable ACL processing\n");
+	printf("\n");
+	printf("Mirror Commands:\n");
+	printf("  mirror-enable [port]      Enable mirroring with optional SPAN port\n");
+	printf("  mirror-disable            Disable mirroring\n");
+	printf("  mirror-set-span <port>    Set SPAN destination port\n");
+	printf("  mirror-set-port <if> ...  Configure per-port mirroring (--ingress, --egress)\n");
+	printf("  mirror-show-config        Show mirror configuration\n");
+	printf("  mirror-show-stats         Show mirror statistics\n");
+	printf("\n");
 	printf("Options:\n");
 	printf("  -s, --state-map PATH      Path to pinned state_map (default: %s)\n", DEFAULT_STATE_MAP_PIN);
 	printf("  -m, --mode MODE           Operating mode: bypass/shadow/active\n");
@@ -323,6 +419,19 @@ usage:
 	printf("  %s show-pipeline\n", argv[0]);
 	printf("  %s show-macs --limit 50\n", argv[0]);
 	printf("  %s flush-macs\n", argv[0]);
+	printf("\n");
+	printf("ACL Examples:\n");
+	printf("  %s acl-add-rule --id 10 --src 192.168.1.0/24 --dst-port 80 --action pass --priority 100\n", argv[0]);
+	printf("  %s acl-add-rule --id 20 --src 10.0.0.0/8 --action drop --priority 200\n", argv[0]);
+	printf("  %s acl-del-rule 10\n", argv[0]);
+	printf("  %s acl-show-rules\n", argv[0]);
+	printf("  %s acl-enable\n", argv[0]);
+	printf("\n");
+	printf("Mirror Examples:\n");
+	printf("  %s mirror-enable 5  # Enable with SPAN port 5\n", argv[0]);
+	printf("  %s mirror-set-port 3 --ingress --egress\n", argv[0]);
+	printf("  %s mirror-show-config\n", argv[0]);
+	printf("  %s mirror-disable\n", argv[0]);
 	printf("\n");
 	printf("Flags:\n");
 	printf("  0x01  VOQD_FLAG_AUTO_FAILOVER       Auto-failover on heartbeat timeout\n");

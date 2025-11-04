@@ -109,11 +109,12 @@ $(VOQD): $(USER_DIR)/voqd/voqd.c $(USER_DIR)/voqd/voq.c $(USER_DIR)/voqd/ringbuf
 		$(LIBBPF_LIBS) -lelf -lz -lpthread
 
 # Build rswitchctl
-$(RSWITCHCTL): $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_extended.c
+$(RSWITCHCTL): $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_extended.c $(USER_DIR)/ctl/rswitchctl_acl.c $(USER_DIR)/ctl/rswitchctl_mirror.c
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/ctl \
 		-o $@ $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_extended.c \
+		$(USER_DIR)/ctl/rswitchctl_acl.c $(USER_DIR)/ctl/rswitchctl_mirror.c \
 		$(LIBBPF_LIBS) -lelf -lz
 
 # Build telemetry exporter

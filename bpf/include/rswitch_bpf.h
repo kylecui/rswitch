@@ -218,6 +218,36 @@ get_ipv6hdr(struct xdp_md *ctx, void *l3_offset)
     return ip6h;
 }
 
+/* TCP header wrapper with CO-RE safety */
+static __always_inline struct tcphdr *
+get_tcphdr(struct xdp_md *ctx, void *l4_offset)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    struct tcphdr *tcph = l4_offset;
+    
+    if ((void *)(tcph + 1) > data_end)
+        return NULL;
+    
+    /* Verify TCP header length (data offset field) */
+    if ((void *)tcph + (tcph->doff * 4) > data_end)
+        return NULL;
+    
+    return tcph;
+}
+
+/* UDP header wrapper with CO-RE safety */
+static __always_inline struct udphdr *
+get_udphdr(struct xdp_md *ctx, void *l4_offset)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    struct udphdr *udph = l4_offset;
+    
+    if ((void *)(udph + 1) > data_end)
+        return NULL;
+    
+    return udph;
+}
+
 /*
  * CO-RE Feature Detection
  * 
