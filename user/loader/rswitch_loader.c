@@ -349,6 +349,19 @@ static int load_core_programs(struct loader_ctx *ctx)
         return -1;
     }
     
+    /* Pin shared maps for module reuse */
+    struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_ctx_map");
+    if (map) {
+        char path[256];
+        snprintf(path, sizeof(path), "%s/rs_ctx_map", BPF_PIN_PATH);
+        err = bpf_map__pin(map, path);
+        if (err) {
+            fprintf(stderr, "Warning: Failed to pin rs_ctx_map: %s\n", strerror(-err));
+        } else if (ctx->verbose) {
+            printf("Pinned rs_ctx_map for module sharing\n");
+        }
+    }
+    
     /* Load egress */
     snprintf(path, sizeof(path), "%s/egress.bpf.o", BUILD_DIR);
     ctx->egress_obj = bpf_object__open(path);
