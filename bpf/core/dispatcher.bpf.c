@@ -74,6 +74,8 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
         return -1;
     }
     
+    rs_debug("Packet received on ifindex %u, eth_proto=0x%04x", 
+             ifindex, bpf_ntohs(eth->h_proto));
     rctx->parsed = 1;  /* Mark as "validated" */
     return 0;
 }
@@ -125,6 +127,7 @@ int rswitch_dispatcher(struct xdp_md *ctx)
     /* Initialize context and parse packet */
     if (init_context(ctx, rctx, cfg) < 0) {
         /* Parsing failed - malformed packet */
+        rs_debug("Packet parsing failed on port %u", ifindex);
         rctx->drop_reason = RS_DROP_PARSE_ERROR;
         rs_stats_update_drop(rctx);
         return XDP_DROP;
