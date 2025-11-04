@@ -70,14 +70,15 @@ vmlinux: $(INCLUDE_DIR)/vmlinux.h
 # Build BPF programs (core and modules)
 $(OBJ_DIR)/%.bpf.o: $(CORE_DIR)/%.bpf.c $(INCLUDE_DIR)/vmlinux.h $(wildcard $(INCLUDE_DIR)/*.h) $(wildcard $(CORE_DIR)/*.h)
 	@echo "  CC [BPF]  $@"
-	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
+	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -DDEBUG \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
 		-c $< -o $@
 	@$(LLVM_STRIP) -g $@
 
 $(OBJ_DIR)/%.bpf.o: $(MODULES_DIR)/%.bpf.c $(INCLUDE_DIR)/vmlinux.h $(wildcard $(INCLUDE_DIR)/*.h) $(wildcard $(CORE_DIR)/*.h)
 	@echo "  CC [BPF]  $@"
-	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
+	@echo "  CC [BPF]  $@"
+	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -DDEBUG \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
 		-c $< -o $@
 	@$(LLVM_STRIP) -g $@
