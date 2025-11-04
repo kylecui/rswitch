@@ -234,10 +234,10 @@ int l2learn_ingress(struct xdp_md *xdp_ctx)
     // Lookup destination MAC and set egress port
     lookup_destination_mac(ctx, eth->h_dest);
     
-    rs_debug("L2Learn: learned src=%02x:%02x:%02x:%02x:%02x:%02x, "
-             "lookup dst=%02x:%02x:%02x:%02x:%02x:%02x → egress=%d",
+    rs_debug("L2Learn: learned src=%02x:%02x:%02x:%02x:%02x:%02x",
              eth->h_source[0], eth->h_source[1], eth->h_source[2], 
-             eth->h_source[3], eth->h_source[4], eth->h_source[5],
+             eth->h_source[3], eth->h_source[4], eth->h_source[5]);
+    rs_debug("L2Learn: lookup dst=%02x:%02x:%02x:%02x:%02x:%02x → egress=%d",
              eth->h_dest[0], eth->h_dest[1], eth->h_dest[2],
              eth->h_dest[3], eth->h_dest[4], eth->h_dest[5],
              ctx->egress_ifindex);
