@@ -129,6 +129,7 @@ struct {
     __uint(max_entries, 1);
     __type(key, __u32);
     __type(value, struct rs_ctx);
+    __uint(pinning, LIBBPF_PIN_BY_NAME); // must match the main definition
 } rs_ctx_map SEC(".maps");
 
 /* Tail-call program array
