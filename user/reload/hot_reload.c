@@ -444,6 +444,55 @@ static int unload_module(struct reload_ctx *ctx, const char *module_name)
     return 0;
 }
 
+/* Check if a program is a loadable module (has RS_DECLARE_MODULE metadata) */
+static int is_loadable_module(int prog_fd, struct rs_module_desc *desc)
+{
+    struct bpf_prog_info info = {};
+    __u32 info_len = sizeof(info);
+    __u32 btf_id;
+    struct btf *btf = NULL;
+    const struct btf_type *type;
+    const char *sec_name;
+    __u32 type_id;
+    int ret = 0;
+    
+    /* Get program info to find BTF ID */
+    if (bpf_obj_get_info_by_fd(prog_fd, &info, &info_len) < 0) {
+        return 0;
+    }
+    
+    btf_id = info.btf_id;
+    if (btf_id == 0) {
+        return 0;  /* No BTF, not a module */
+    }
+    
+    /* Load BTF from kernel */
+    btf = btf__load_from_kernel_by_id(btf_id);
+    if (!btf) {
+        return 0;
+    }
+    
+    /* Search for .rodata.mod section in BTF */
+    for (type_id = 1; type_id < btf__type_cnt(btf); type_id++) {
+        type = btf__type_by_id(btf, type_id);
+        if (!btf_is_datasec(type))
+            continue;
+        
+        sec_name = btf__name_by_offset(btf, type->name_off);
+        if (strcmp(sec_name, ".rodata.mod") == 0) {
+            /* Found module metadata section */
+            /* Note: We can't easily read the data from BTF alone,
+             * but presence of .rodata.mod section is enough to
+             * identify this as a loadable module */
+            ret = 1;
+            break;
+        }
+    }
+    
+    btf__free(btf);
+    return ret;
+}
+
 /* List currently loaded modules */
 static int list_modules(struct reload_ctx *ctx)
 {
@@ -453,9 +502,10 @@ static int list_modules(struct reload_ctx *ctx)
     int prog_fd;
     int err;
     int found = 0;
+    struct rs_module_desc desc;
     
-    printf("\n=== Currently Loaded Modules ===\n");
-    printf("%-8s %-30s %-12s %-10s %s\n", "ID", "Program Name", "Tag", "FD", "Type");
+    printf("\n=== Currently Loaded Modules (Pipeline) ===\n");
+    printf("%-8s %-30s %-16s %-8s %s\n", "ID", "Module Name", "Tag", "Type", "Status");
     printf("--------------------------------------------------------------------------------\n");
     
     /* Iterate through all BPF programs in the system */
@@ -484,29 +534,14 @@ static int list_modules(struct reload_ctx *ctx)
             continue;
         }
         
-        /* Filter: only show XDP programs with rswitch-related names */
+        /* Filter: only XDP programs */
         if (info.type != BPF_PROG_TYPE_XDP) {
             close(prog_fd);
             continue;
         }
         
-        /* Check if this is an rSwitch module (name contains common patterns) */
-        const char *name = info.name;
-        int is_rswitch = 0;
-        
-        /* Common rSwitch module patterns */
-        if (strstr(name, "rswitch") != NULL ||
-            strstr(name, "l2learn") != NULL ||
-            strstr(name, "lastcall") != NULL ||
-            strstr(name, "vlan") != NULL ||
-            strstr(name, "acl") != NULL ||
-            strstr(name, "mirror") != NULL ||
-            strstr(name, "dispatcher") != NULL ||
-            strstr(name, "egress") != NULL) {
-            is_rswitch = 1;
-        }
-        
-        if (!is_rswitch) {
+        /* Check if this is a loadable module (has .rodata.mod metadata) */
+        if (!is_loadable_module(prog_fd, &desc)) {
             close(prog_fd);
             continue;
         }
@@ -517,28 +552,26 @@ static int list_modules(struct reload_ctx *ctx)
                  info.tag[0], info.tag[1], info.tag[2], info.tag[3],
                  info.tag[4], info.tag[5], info.tag[6], info.tag[7]);
         
-        const char *prog_type = "XDP";
-        
-        printf("%-8d %-30s %-12s %-10d %s\n",
+        printf("%-8d %-30s %-16s %-8s %s\n",
                prog_id,
                info.name[0] ? info.name : "<unnamed>",
                tag_str,
-               prog_fd,
-               prog_type);
+               "XDP",
+               "loaded");
         
         found++;
         close(prog_fd);
     }
     
     if (found == 0) {
-        printf("(No rSwitch modules loaded)\n");
-        printf("\nNote: Only showing XDP programs with rSwitch-related names.\n");
+        printf("(No modules loaded in pipeline)\n");
+        printf("\nHint: Load modules using rswitch_loader with a profile.\n");
     } else {
-        printf("\nTotal: %d module(s) loaded\n", found);
-        printf("\nNote: This shows all rSwitch XDP programs in the system.\n");
-        printf("To see pipeline order, use: sudo bpftool map dump name rs_progs\n");
+        printf("\nTotal: %d module(s) in pipeline\n", found);
     }
     
+    printf("\nNote: This shows only loadable modules (with RS_DECLARE_MODULE).\n");
+    printf("      Core programs (dispatcher, egress) are not listed.\n");
     printf("\n");
     return 0;
 }
