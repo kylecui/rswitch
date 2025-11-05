@@ -73,6 +73,15 @@ struct rs_port_config {
     __u32 reserved2[4];
 };
 
+/* VLAN membership structure - MUST match bpf/core/map_defs.h */
+struct rs_vlan_members {
+    __u16 vlan_id;
+    __u16 member_count;
+    __u64 tagged_members[4];      /* Bitmask: ifindex -> bit position */
+    __u64 untagged_members[4];    /* Bitmask: ifindex -> bit position */
+    __u32 reserved[4];
+};
+
 #define MAX_MODULES 64
 #define MAX_INTERFACES 64
 #define BPF_PIN_PATH "/sys/fs/bpf/rswitch"
@@ -582,6 +591,81 @@ static int configure_ports(struct loader_ctx *ctx)
     return 0;
 }
 
+/* Initialize VLAN map with default VLAN 1 containing all ports
+ * 
+ * CRITICAL: Without this, VLAN module will drop all packets!
+ * PoC initializes vlan_peer_array in loader - we must do the same.
+ */
+static int initialize_vlan_map(struct loader_ctx *ctx)
+{
+    int i, err;
+    char path[256];
+    int vlan_map_fd = -1;
+    
+    /* Find rs_vlan_map */
+    snprintf(path, sizeof(path), "%s/rs_vlan_map", BPF_PIN_PATH);
+    vlan_map_fd = bpf_obj_get(path);
+    if (vlan_map_fd < 0) {
+        /* Try finding in loaded modules */
+        for (i = 0; i < ctx->num_modules; i++) {
+            if (ctx->modules[i].obj) {
+                struct bpf_map *map = bpf_object__find_map_by_name(ctx->modules[i].obj, "rs_vlan_map");
+                if (map) {
+                    vlan_map_fd = bpf_map__fd(map);
+                    break;
+                }
+            }
+        }
+    }
+    
+    if (vlan_map_fd < 0) {
+        printf("Warning: rs_vlan_map not found, VLAN validation may fail\n");
+        return 0;
+    }
+    
+    printf("\nInitializing VLAN map:\n");
+    
+    /* Create default VLAN 1 with all ports as untagged members */
+    struct rs_vlan_members vlan1 = {
+        .vlan_id = 1,
+        .member_count = ctx->num_interfaces,
+    };
+    
+    /* Clear bitmasks */
+    for (i = 0; i < 4; i++) {
+        vlan1.tagged_members[i] = 0;
+        vlan1.untagged_members[i] = 0;
+    }
+    
+    /* Add all ports to VLAN 1 as untagged members */
+    for (i = 0; i < ctx->num_interfaces; i++) {
+        __u32 ifindex = ctx->interfaces[i];
+        
+        /* Set bit in untagged_members bitmask
+         * Each __u64 holds 64 ports, so:
+         * - ifindex 1-64 go in untagged_members[0]
+         * - ifindex 65-128 go in untagged_members[1], etc.
+         */
+        int word_idx = (ifindex - 1) / 64;  /* Which __u64 */
+        int bit_idx = (ifindex - 1) % 64;   /* Which bit */
+        
+        if (word_idx < 4) {
+            vlan1.untagged_members[word_idx] |= (1ULL << bit_idx);
+        }
+    }
+    
+    /* Insert VLAN 1 into map */
+    __u16 vlan_key = 1;
+    err = bpf_map_update_elem(vlan_map_fd, &vlan_key, &vlan1, BPF_ANY);
+    if (err) {
+        fprintf(stderr, "Failed to create default VLAN 1: %s\n", strerror(errno));
+        return -1;
+    }
+    
+    printf("  VLAN 1: %u ports (default untagged)\n", ctx->num_interfaces);
+    return 0;
+}
+
 /* Populate devmaps with queue isolation
  * 
  * rs_xdp_devmap: XDP fast-path (queues 1-3)
@@ -942,6 +1026,9 @@ int main(int argc, char **argv)
     
     /* Configure ports */
     configure_ports(&ctx);
+    
+    /* Initialize VLAN map with default configuration */
+    initialize_vlan_map(&ctx);
     
     /* Populate devmaps with queue isolation */
     populate_devmaps(&ctx);
