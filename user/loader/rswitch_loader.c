@@ -564,6 +564,15 @@ static int configure_ports(struct loader_ctx *ctx)
     __u8 vlan_mode = RS_VLAN_MODE_OFF;  /* Default: no VLAN processing */
     __u16 default_vlan = 1;
     
+    /* Debug: Show profile status */
+    if (ctx->verbose) {
+        printf("\nDEBUG: use_profile=%d, vlan_enforcement=%d, mac_learning=%d, default_vlan=%d\n",
+               ctx->use_profile,
+               ctx->profile.settings.vlan_enforcement,
+               ctx->profile.settings.mac_learning,
+               ctx->profile.settings.default_vlan);
+    }
+    
     if (ctx->use_profile && ctx->profile.settings.vlan_enforcement) {
         /* VLAN enforcement enabled - default to ACCESS mode
          * All ports in same VLAN (default_vlan) as untagged access ports
@@ -575,6 +584,10 @@ static int configure_ports(struct loader_ctx *ctx)
                default_vlan);
     } else {
         printf("\nVLAN enforcement disabled: all ports in OFF mode\n");
+        if (ctx->verbose && ctx->use_profile) {
+            printf("  (Profile loaded but vlan_enforcement=%d)\n", 
+                   ctx->profile.settings.vlan_enforcement);
+        }
     }
     
     printf("Configuring ports:\n");
