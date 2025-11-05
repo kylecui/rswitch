@@ -236,6 +236,8 @@ int rswitch_egress(struct xdp_md *ctx)
     __u16 vlan_id = rctx->ingress_vlan;
     if (vlan_id == 0) vlan_id = 1;  // Default VLAN
     
+    rs_debug("Egress check: port %u, VLAN %u", egress_ifindex, vlan_id);
+    
     if (!is_vlan_member(vlan_id, egress_ifindex)) {
         rs_debug("Egress port %u not in VLAN %u, dropping (VLAN isolation)", 
                  egress_ifindex, vlan_id);
@@ -249,6 +251,8 @@ int rswitch_egress(struct xdp_md *ctx)
         
         return XDP_DROP;
     }
+    
+    rs_debug("Egress port %u is member of VLAN %u, allowing", egress_ifindex, vlan_id);
     
     /* Lookup egress port configuration */
     struct rs_port_config *cfg = rs_get_port_config(egress_ifindex);
