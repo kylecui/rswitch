@@ -2,7 +2,7 @@
 # rSwitch Functional Test - Test ACL and Mirror functionality
 # Prerequisites: 
 #   - rSwitch loader must be running with modules loaded
-#   - BPF maps must be pinned to /sys/fs/bpf/rswitch/
+#   - BPF maps must be pinned to /sys/fs/bpf/
 # Usage: sudo ./test/functional_test.sh
 
 set -e
@@ -17,7 +17,7 @@ PASS=0
 FAIL=0
 SKIP=0
 
-BPF_PIN_PATH="/sys/fs/bpf/rswitch"
+BPF_PIN_PATH="/sys/fs/bpf"
 
 echo "========================================="
 echo "rSwitch Functional Test"

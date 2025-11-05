@@ -16,7 +16,7 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
-#define BPF_PIN_PATH "/sys/fs/bpf/rswitch"
+#define BPF_PIN_PATH "/sys/fs/bpf"
 
 /* List all loaded BPF programs */
 int cmd_list_modules(void)

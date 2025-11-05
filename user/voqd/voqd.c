@@ -19,9 +19,9 @@
 #include "state_ctrl.h"
 #include "../../bpf/core/afxdp_common.h"
 
-#define DEFAULT_RINGBUF_PIN    "/sys/fs/bpf/rswitch/voq_ringbuf"
-#define DEFAULT_STATE_MAP_PIN  "/sys/fs/bpf/rswitch/voqd_state_map"
-#define DEFAULT_QOS_MAP_PIN    "/sys/fs/bpf/rswitch/qos_config_map"
+#define DEFAULT_RINGBUF_PIN    "/sys/fs/bpf/voq_ringbuf"
+#define DEFAULT_STATE_MAP_PIN  "/sys/fs/bpf/voqd_state_map"
+#define DEFAULT_QOS_MAP_PIN    "/sys/fs/bpf/qos_config_map"
 
 /* Global daemon context */
 struct voqd_ctx {

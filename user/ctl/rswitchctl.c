@@ -15,8 +15,8 @@
 #include <bpf/libbpf.h>
 #include "../../bpf/core/afxdp_common.h"
 
-#define DEFAULT_STATE_MAP_PIN  "/sys/fs/bpf/rswitch/voqd_state_map"
-#define DEFAULT_QOS_MAP_PIN    "/sys/fs/bpf/rswitch/qos_config_map"
+#define DEFAULT_STATE_MAP_PIN  "/sys/fs/bpf/voqd_state_map"
+#define DEFAULT_QOS_MAP_PIN    "/sys/fs/bpf/qos_config_map"
 
 /* Forward declarations for extended commands */
 extern int cmd_list_modules(void);

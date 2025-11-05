@@ -19,7 +19,7 @@
 #include "telemetry.h"
 
 /* BPF map paths */
-#define BPF_PIN_PATH "/sys/fs/bpf/rswitch"
+#define BPF_PIN_PATH "/sys/fs/bpf"
 
 /* Get current time in ISO8601 format */
 static void get_iso8601_timestamp(char *buf, size_t size)

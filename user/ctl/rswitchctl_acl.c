@@ -14,10 +14,10 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
-#define DEFAULT_ACL_RULES_MAP      "/sys/fs/bpf/rswitch/acl_rules"
-#define DEFAULT_ACL_RULE_ORDER_MAP "/sys/fs/bpf/rswitch/acl_rule_order"
-#define DEFAULT_ACL_CONFIG_MAP     "/sys/fs/bpf/rswitch/acl_config_map"
-#define DEFAULT_ACL_STATS_MAP      "/sys/fs/bpf/rswitch/acl_stats"
+#define DEFAULT_ACL_RULES_MAP      "/sys/fs/bpf/acl_rules"
+#define DEFAULT_ACL_RULE_ORDER_MAP "/sys/fs/bpf/acl_rule_order"
+#define DEFAULT_ACL_CONFIG_MAP     "/sys/fs/bpf/acl_config_map"
+#define DEFAULT_ACL_STATS_MAP      "/sys/fs/bpf/acl_stats"
 
 /* ACL rule structure (must match BPF side) */
 struct acl_rule {

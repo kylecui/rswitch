@@ -84,7 +84,7 @@ struct rs_vlan_members {
 
 #define MAX_MODULES 64
 #define MAX_INTERFACES 64
-#define BPF_PIN_PATH "/sys/fs/bpf/rswitch"
+#define BPF_PIN_PATH "/sys/fs/bpf"
 #define BUILD_DIR "./build/bpf"
 
 /* Configuration defaults */

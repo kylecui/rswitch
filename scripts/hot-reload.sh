@@ -9,7 +9,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RSWITCH_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOT_RELOAD="$RSWITCH_DIR/build/hot_reload"
-PIN_PATH="/sys/fs/bpf/rswitch"
+PIN_PATH="/sys/fs/bpf"
 
 # Colors for output
 RED='\033[0;31m'

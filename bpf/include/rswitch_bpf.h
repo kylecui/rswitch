@@ -167,8 +167,11 @@
 
 /*
  * BPF Map Pin Path Macros
+ * 
+ * Using default LIBBPF path without subdirectory isolation.
+ * Maps with LIBBPF_PIN_BY_NAME are pinned directly to /sys/fs/bpf/<map_name>
  */
-#define BPF_PIN_PATH "/sys/fs/bpf/rswitch"
+#define BPF_PIN_PATH "/sys/fs/bpf"
 
 /*
  * Common Network Structure Helpers

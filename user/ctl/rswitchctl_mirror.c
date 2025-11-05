@@ -13,9 +13,9 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
-#define DEFAULT_MIRROR_CONFIG_MAP "/sys/fs/bpf/rswitch/mirror_config_map"
-#define DEFAULT_PORT_MIRROR_MAP   "/sys/fs/bpf/rswitch/port_mirror_map"
-#define DEFAULT_MIRROR_STATS_MAP  "/sys/fs/bpf/rswitch/mirror_stats"
+#define DEFAULT_MIRROR_CONFIG_MAP "/sys/fs/bpf/mirror_config_map"
+#define DEFAULT_PORT_MIRROR_MAP   "/sys/fs/bpf/port_mirror_map"
+#define DEFAULT_MIRROR_STATS_MAP  "/sys/fs/bpf/mirror_stats"
 
 /* Mirror structures (must match BPF side) */
 struct mirror_config {

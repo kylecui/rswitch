@@ -23,9 +23,14 @@ for iface in $IFACES; do
 done
 
 # Clean up pinned maps
-if [ -d /sys/fs/bpf/rswitch ]; then
-    echo "  Cleaning up pinned maps..."
-    rm -rf /sys/fs/bpf/rswitch
-fi
+echo "  Cleaning up rSwitch pinned BPF objects..."
+for map in rs_ctx_map rs_progs rs_port_config_map rs_vlan_map rs_stats_map \
+           rs_event_bus rs_mac_table acl_rules acl_rule_order acl_config_map \
+           acl_stats mirror_config_map port_mirror_map mirror_stats \
+           voq_ringbuf voqd_state_map qos_config_map; do
+    if [ -e "/sys/fs/bpf/$map" ]; then
+        rm -f "/sys/fs/bpf/$map"
+    fi
+done
 
 echo "✓ rSwitch unloaded"
