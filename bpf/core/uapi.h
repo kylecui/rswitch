@@ -136,12 +136,15 @@ struct {
  * 
  * Indexed by stage number. Loader populates this based on loaded modules.
  * Modules execute: bpf_tail_call(ctx, &rs_progs, next_stage_id)
+ * 
+ * CRITICAL: Must be pinned - shared between dispatcher and all modules!
  */
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
     __uint(max_entries, RS_MAX_PROGS);
     __type(key, __u32);
     __type(value, __u32);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_progs SEC(".maps");
 
 /* Ringbuf for events

@@ -358,18 +358,10 @@ static int load_core_programs(struct loader_ctx *ctx)
         return -1;
     }
     
-    /* Pin shared maps for module reuse */
-    struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_ctx_map");
-    if (map) {
-        char path[256];
-        snprintf(path, sizeof(path), "%s/rs_ctx_map", BPF_PIN_PATH);
-        err = bpf_map__pin(map, path);
-        if (err) {
-            fprintf(stderr, "Warning: Failed to pin rs_ctx_map: %s\n", strerror(-err));
-        } else if (ctx->verbose) {
-            printf("Pinned rs_ctx_map for module sharing\n");
-        }
-    }
+    /* NOTE: rs_ctx_map and rs_progs are auto-pinned by libbpf
+     * via LIBBPF_PIN_BY_NAME to /sys/fs/bpf/<map_name>
+     * No manual pinning needed!
+     */
     
     /* Load egress */
     snprintf(path, sizeof(path), "%s/egress.bpf.o", BUILD_DIR);
@@ -410,13 +402,13 @@ static int get_pinned_maps(struct loader_ctx *ctx)
 {
     char path[256];
     
-    /* These maps are pinned by libbpf during load */
-    snprintf(path, sizeof(path), "%s/rs_ctx_map", BPF_PIN_PATH);
-    ctx->rs_ctx_map_fd = bpf_obj_get(path);
+    /* LIBBPF_PIN_BY_NAME pins to /sys/fs/bpf/<map_name> (NOT /sys/fs/bpf/rswitch/)
+     * This is automatic pinning by libbpf, not manual.
+     */
+    ctx->rs_ctx_map_fd = bpf_obj_get("/sys/fs/bpf/rs_ctx_map");
+    ctx->rs_progs_fd = bpf_obj_get("/sys/fs/bpf/rs_progs");
     
-    snprintf(path, sizeof(path), "%s/rs_progs", BPF_PIN_PATH);
-    ctx->rs_progs_fd = bpf_obj_get(path);
-    
+    /* Port config map - may or may not be pinned */
     snprintf(path, sizeof(path), "%s/rs_port_config_map", BPF_PIN_PATH);
     ctx->rs_port_config_map_fd = bpf_obj_get(path);
     
@@ -430,7 +422,7 @@ static int get_pinned_maps(struct loader_ctx *ctx)
     ctx->rs_events_fd = bpf_obj_get(path);
     
     if (ctx->rs_progs_fd < 0) {
-        fprintf(stderr, "Failed to get rs_progs map (may need manual pinning)\n");
+        fprintf(stderr, "Warning: Failed to get rs_progs from /sys/fs/bpf/rs_progs\n");
         /* Try to get from dispatcher object */
         struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_progs");
         if (map) {
