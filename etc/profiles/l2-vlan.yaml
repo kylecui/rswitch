@@ -14,6 +14,7 @@ version: "1.0"
 
 # Ingress pipeline (sorted by stage number)
 ingress:
+  - vlan       # Stage 20: VLAN ingress filtering
   - l2learn    # Stage 80: MAC learning and lookup
   - lastcall   # Stage 90: Forward based on learned MAC or flood
 
@@ -28,7 +29,7 @@ settings:
   mac_aging_time: 300  # seconds
   
   # VLAN enforcement enabled
-  vlan_enforcement: false
+  vlan_enforcement: true
   default_vlan: 1
   
   # Forwarding behavior
