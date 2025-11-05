@@ -166,6 +166,8 @@ static int parse_settings(FILE *fp, struct rs_profile_settings *settings)
     char line[MAX_LINE_LEN];
     char key[256], value[256];
     
+    fprintf(stderr, "DEBUG: Entering parse_settings()\n");
+    
     while (fgets(line, sizeof(line), fp)) {
         remove_comment(line);
         char *trimmed = trim(line);
@@ -174,17 +176,21 @@ static int parse_settings(FILE *fp, struct rs_profile_settings *settings)
         
         /* Check if we're entering another section (not indented) */
         if (trimmed[0] != ' ' && trimmed[0] != '\t' && strchr(trimmed, ':')) {
+            fprintf(stderr, "DEBUG: Exiting parse_settings() - found non-indented key: %s\n", trimmed);
             fseek(fp, -(long)strlen(line) - 1, SEEK_CUR);
             break;
         }
         
         if (parse_key_value(trimmed, key, value, sizeof(key)) == 0) {
+            fprintf(stderr, "DEBUG: parse_settings() - key='%s', value='%s'\n", key, value);
             if (strcmp(key, "mac_learning") == 0) {
                 settings->mac_learning = parse_bool(value);
+                fprintf(stderr, "DEBUG: Set mac_learning=%d\n", settings->mac_learning);
             } else if (strcmp(key, "mac_aging_time") == 0) {
                 settings->mac_aging_time = atoi(value);
             } else if (strcmp(key, "vlan_enforcement") == 0) {
                 settings->vlan_enforcement = parse_bool(value);
+                fprintf(stderr, "DEBUG: Set vlan_enforcement=%d\n", settings->vlan_enforcement);
             } else if (strcmp(key, "default_vlan") == 0) {
                 settings->default_vlan = atoi(value);
             } else if (strcmp(key, "unknown_unicast_flood") == 0) {
