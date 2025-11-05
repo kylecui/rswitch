@@ -72,7 +72,11 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);    /* Pin to /sys/fs/bpf/ */
 } rs_port_config_map SEC(".maps");
 
-/* MAC address as map key */
+/* MAC address as map key
+ * 
+ * NOTE: Kept in map_defs.h for struct definition visibility.
+ * Actual map instance moved to l2learn.bpf.c (single owner pattern).
+ */
 struct rs_mac_key {
     __u8 mac[6];
     __u16 vlan;                 /* VLAN context for MAC */
@@ -87,14 +91,37 @@ struct rs_mac_entry {
     __u32 hit_count;            /* Hit counter for statistics */
 } __attribute__((packed));
 
-/* MAC forwarding table */
-struct {
+/* NOTE: rs_mac_table map instance removed!
+ * 
+ * Following Single Owner Pattern:
+ * - MAC table is defined ONLY in l2learn.bpf.c (its primary owner)
+ * - Still pinned (LIBBPF_PIN_BY_NAME) for user-space access
+ * - Loader accesses it via l2learn module object
+ * - Struct definitions kept here for visibility to other modules
+ * 
+ * Rationale:
+ * - l2learn is the only module that writes to MAC table
+ * - Other modules only read (can use external declaration)
+ * - Reduces coupling - other modules don't auto-create MAC table instance
+ */
+
+/* External declaration for rs_mac_table (defined in l2learn.bpf.c)
+ * 
+ * This allows helper functions below to reference the map without
+ * creating a new instance. The linker will resolve this to the
+ * actual pinned map instance created by l2learn.
+ * 
+ * If RS_MAC_TABLE_OWNER is defined (in l2learn.bpf.c), skip this
+ * extern declaration to avoid conflicts.
+ */
+#if defined(__BPF__) && !defined(RS_MAC_TABLE_OWNER)
+extern struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 65536); /* 64K MAC entries */
+    __uint(max_entries, 65536);
     __type(key, struct rs_mac_key);
     __type(value, struct rs_mac_entry);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_mac_table SEC(".maps");
+#endif
 
 /* VLAN membership and peer information
  * 
@@ -177,6 +204,20 @@ static __always_inline struct rs_port_config *rs_get_port_config(__u32 ifindex) 
     return bpf_map_lookup_elem(&rs_port_config_map, &ifindex);
 }
 
+/* MAC table helper functions
+ * 
+ * NOTE: These helpers require rs_mac_table to be available:
+ * - In l2learn.bpf.c: rs_mac_table is defined locally
+ * - In other modules: must use extern declaration before calling these helpers
+ * 
+ * Example usage in other modules:
+ *   extern struct { ... } rs_mac_table SEC(".maps");
+ *   struct rs_mac_entry *entry = rs_mac_lookup(mac, vlan);
+ */
+
+#ifndef RS_MAC_TABLE_OWNER
+/* Only provide helpers if not the owner (owner defines rs_mac_table directly) */
+
 /* Lookup MAC forwarding entry */
 static __always_inline struct rs_mac_entry *rs_mac_lookup(__u8 *mac, __u16 vlan) {
     struct rs_mac_key key = {};
@@ -198,6 +239,8 @@ static __always_inline int rs_mac_update(__u8 *mac, __u16 vlan, __u32 ifindex, _
     key.vlan = vlan;
     return bpf_map_update_elem(&rs_mac_table, &key, &entry, BPF_ANY);
 }
+
+#endif /* !RS_MAC_TABLE_OWNER */
 
 /* Check if port is member of VLAN (tagged or untagged) */
 static __always_inline int rs_is_vlan_member(__u16 vlan, __u32 ifindex, int *is_tagged) {

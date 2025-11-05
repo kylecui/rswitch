@@ -15,21 +15,57 @@
 #include <bpf/libbpf.h>
 #include "event_consumer.h"
 
-#define BPF_PIN_PATH "/sys/fs/bpf/rswitch"
+#define BPF_PIN_PATH "/sys/fs/bpf"
 
-/* Ringbuf callback for MAC learning events */
-static int mac_learn_ringbuf_callback(void *ctx, void *data, size_t size)
+/* Event type range bases (must match uapi.h) */
+#define RS_EVENT_L2_BASE        0x0100
+#define RS_EVENT_ACL_BASE       0x0200
+#define RS_EVENT_ROUTE_BASE     0x0300
+#define RS_EVENT_MIRROR_BASE    0x0400
+#define RS_EVENT_QOS_BASE       0x0500
+#define RS_EVENT_ERROR_BASE     0xFF00
+
+/* Unified ringbuf callback - dispatches based on event type */
+static int unified_ringbuf_callback(void *ctx, void *data, size_t size)
 {
     struct event_consumer *consumer = ctx;
+    uint32_t *event_type_ptr = (uint32_t *)data;
+    enum event_type mapped_type;
+    
+    if (size < sizeof(uint32_t)) {
+        __sync_fetch_and_add(&consumer->events_dropped, 1);
+        return 0;
+    }
     
     __sync_fetch_and_add(&consumer->events_received, 1);
+    
+    /* Map BPF event type to consumer event type */
+    uint32_t event_type = *event_type_ptr;
+    switch (event_type & 0xFF00) {
+    case RS_EVENT_L2_BASE:
+        if (event_type == (RS_EVENT_L2_BASE + 1))
+            mapped_type = EVENT_MAC_LEARNED;
+        else if (event_type == (RS_EVENT_L2_BASE + 3))
+            mapped_type = EVENT_MAC_AGED;
+        else
+            mapped_type = EVENT_MAC_LEARNED;  /* Default */
+        break;
+    case RS_EVENT_ACL_BASE:
+        mapped_type = EVENT_POLICY_HIT;
+        break;
+    case RS_EVENT_ERROR_BASE:
+        mapped_type = EVENT_ERROR;
+        break;
+    default:
+        mapped_type = EVENT_MAC_LEARNED;  /* Default fallback */
+    }
     
     /* Dispatch to all registered handlers */
     for (int i = 0; i < consumer->num_handlers; i++) {
         if (consumer->handlers[i].handler) {
             int ret = consumer->handlers[i].handler(
                 consumer->handlers[i].ctx,
-                EVENT_MAC_LEARNED,
+                mapped_type,
                 data,
                 size
             );
@@ -43,70 +79,36 @@ static int mac_learn_ringbuf_callback(void *ctx, void *data, size_t size)
     return 0;
 }
 
-/* Ringbuf callback for policy events */
-static int policy_ringbuf_callback(void *ctx, void *data, size_t size)
-{
-    struct event_consumer *consumer = ctx;
-    
-    __sync_fetch_and_add(&consumer->events_received, 1);
-    
-    /* Dispatch to handlers */
-    for (int i = 0; i < consumer->num_handlers; i++) {
-        if (consumer->handlers[i].handler) {
-            consumer->handlers[i].handler(
-                consumer->handlers[i].ctx,
-                EVENT_POLICY_HIT,
-                data,
-                size
-            );
-        }
-    }
-    
-    __sync_fetch_and_add(&consumer->events_processed, 1);
-    return 0;
-}
-
 /* Consumer thread */
 static void *consumer_thread(void *arg)
 {
     struct event_consumer *consumer = arg;
-    struct ring_buffer *mac_rb = NULL;
-    struct ring_buffer *policy_rb = NULL;
+    struct ring_buffer *event_rb = NULL;
     
-    /* Create ringbuf consumers */
-    if (consumer->mac_learn_ringbuf_fd >= 0) {
-        mac_rb = ring_buffer__new(consumer->mac_learn_ringbuf_fd,
-                                   mac_learn_ringbuf_callback,
-                                   consumer, NULL);
-        if (!mac_rb) {
-            fprintf(stderr, "Failed to create MAC learn ringbuf consumer\n");
+    /* Create unified ringbuf consumer */
+    if (consumer->event_bus_fd >= 0) {
+        event_rb = ring_buffer__new(consumer->event_bus_fd,
+                                     unified_ringbuf_callback,
+                                     consumer, NULL);
+        if (!event_rb) {
+            fprintf(stderr, "Failed to create event bus ringbuf consumer\n");
+            return NULL;
         }
+    } else {
+        fprintf(stderr, "Event bus FD not available\n");
+        return NULL;
     }
     
-    if (consumer->policy_ringbuf_fd >= 0) {
-        policy_rb = ring_buffer__new(consumer->policy_ringbuf_fd,
-                                      policy_ringbuf_callback,
-                                      consumer, NULL);
-        if (!policy_rb) {
-            fprintf(stderr, "Failed to create policy ringbuf consumer\n");
-        }
-    }
+    printf("Event consumer thread started (polling rs_event_bus)\n");
     
-    /* Poll ringbufs */
+    /* Poll unified event bus */
     while (consumer->running) {
-        if (mac_rb) {
-            ring_buffer__poll(mac_rb, 100);  /* 100ms timeout */
-        }
-        if (policy_rb) {
-            ring_buffer__poll(policy_rb, 100);
-        }
+        ring_buffer__poll(event_rb, 100);  /* 100ms timeout */
     }
     
     /* Cleanup */
-    if (mac_rb)
-        ring_buffer__free(mac_rb);
-    if (policy_rb)
-        ring_buffer__free(policy_rb);
+    if (event_rb)
+        ring_buffer__free(event_rb);
     
     return NULL;
 }
@@ -116,24 +118,18 @@ int event_consumer_init(struct event_consumer *consumer)
     char path[256];
     
     memset(consumer, 0, sizeof(*consumer));
-    consumer->mac_learn_ringbuf_fd = -1;
-    consumer->policy_ringbuf_fd = -1;
-    consumer->error_ringbuf_fd = -1;
+    consumer->event_bus_fd = -1;
     
-    /* Open MAC learning ringbuf */
-    snprintf(path, sizeof(path), "%s/mac_learn_ringbuf", BPF_PIN_PATH);
-    consumer->mac_learn_ringbuf_fd = bpf_obj_get(path);
-    if (consumer->mac_learn_ringbuf_fd < 0) {
-        fprintf(stderr, "Warning: MAC learn ringbuf not found (l2learn module not loaded?)\n");
+    /* Open unified event bus */
+    snprintf(path, sizeof(path), "%s/rs_event_bus", BPF_PIN_PATH);
+    consumer->event_bus_fd = bpf_obj_get(path);
+    if (consumer->event_bus_fd < 0) {
+        fprintf(stderr, "Error: Failed to open rs_event_bus: %s\n", strerror(errno));
+        fprintf(stderr, "Make sure rSwitch is loaded and rs_event_bus is pinned.\n");
+        return -errno;
     }
     
-    /* Open policy ringbuf */
-    snprintf(path, sizeof(path), "%s/policy_ringbuf", BPF_PIN_PATH);
-    consumer->policy_ringbuf_fd = bpf_obj_get(path);
-    if (consumer->policy_ringbuf_fd < 0) {
-        fprintf(stderr, "Warning: Policy ringbuf not found (policy module not loaded?)\n");
-    }
-    
+    printf("Event consumer initialized (event_bus_fd=%d)\n", consumer->event_bus_fd);
     return 0;
 }
 
@@ -172,12 +168,8 @@ void event_consumer_stop(struct event_consumer *consumer)
 
 void event_consumer_destroy(struct event_consumer *consumer)
 {
-    if (consumer->mac_learn_ringbuf_fd >= 0)
-        close(consumer->mac_learn_ringbuf_fd);
-    if (consumer->policy_ringbuf_fd >= 0)
-        close(consumer->policy_ringbuf_fd);
-    if (consumer->error_ringbuf_fd >= 0)
-        close(consumer->error_ringbuf_fd);
+    if (consumer->event_bus_fd >= 0)
+        close(consumer->event_bus_fd);
 }
 
 void event_consumer_get_stats(struct event_consumer *consumer,

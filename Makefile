@@ -77,7 +77,6 @@ $(OBJ_DIR)/%.bpf.o: $(CORE_DIR)/%.bpf.c $(INCLUDE_DIR)/vmlinux.h $(wildcard $(IN
 
 $(OBJ_DIR)/%.bpf.o: $(MODULES_DIR)/%.bpf.c $(INCLUDE_DIR)/vmlinux.h $(wildcard $(INCLUDE_DIR)/*.h) $(wildcard $(CORE_DIR)/*.h)
 	@echo "  CC [BPF]  $@"
-	@echo "  CC [BPF]  $@"
 	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -DDEBUG \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
 		-c $< -o $@

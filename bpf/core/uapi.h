@@ -147,44 +147,53 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_progs SEC(".maps");
 
-/* Ringbuf for events
+/* Unified Event Bus
  * 
- * Used by modules to send events to user-space:
- * - MAC learning notifications
- * - Policy violations
- * - Errors and anomalies
- * - Telemetry samples
+ * Shared ringbuf for all module events (MAC learning, ACL hits, errors, etc.)
+ * Using a single large ringbuf instead of multiple small ones:
+ * - Better memory efficiency (1MB shared vs N×256KB per module)
+ * - Simplified user-space consumption (single reader)
+ * - Event ordering preserved across modules
+ * 
+ * CRITICAL: Must be pinned - shared infrastructure!
  */
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 256 * 1024); /* 256KB ring */
-} rs_events SEC(".maps");
+    __uint(max_entries, 1024 * 1024);  /* 1MB ring */
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_event_bus SEC(".maps");
 
-/* Event types for ringbuf */
-enum rs_event_type {
-    RS_EVENT_MAC_LEARN      = 1,
-    RS_EVENT_ACL_DENY       = 2,
-    RS_EVENT_ROUTE_MISS     = 3,
-    RS_EVENT_CONGESTION     = 4,
-    RS_EVENT_ERROR          = 5,
-    RS_EVENT_STATS          = 6,
-};
+/* Event Type Enumeration
+ * 
+ * Each module defines its own event types in a reserved range:
+ * - 0x0000-0x00FF: Reserved (core events)
+ * - 0x0100-0x01FF: L2Learn events  
+ * - 0x0200-0x02FF: ACL events
+ * - 0x0300-0x03FF: Route events
+ * - 0x0400-0x04FF: Mirror events
+ * - 0x0500-0x05FF: QoS events
+ * - 0xFF00-0xFFFF: Reserved (error events)
+ */
+#define RS_EVENT_RESERVED       0x0000
+#define RS_EVENT_L2_BASE        0x0100
+#define RS_EVENT_ACL_BASE       0x0200
+#define RS_EVENT_ROUTE_BASE     0x0300
+#define RS_EVENT_MIRROR_BASE    0x0400
+#define RS_EVENT_QOS_BASE       0x0500
+#define RS_EVENT_ERROR_BASE     0xFF00
 
-/* Generic event header (prepended to all events) */
-struct rs_event {
-    __u32 type;                 /* enum rs_event_type */
-    __u32 ifindex;              /* Source interface */
-    __u64 timestamp;            /* Event timestamp */
-    __u32 data_len;             /* Length of event-specific data */
-    __u8  data[0];              /* Event-specific data follows */
-} __attribute__((packed));
+/* L2Learn Events (0x0100-0x01FF) */
+#define RS_EVENT_MAC_LEARNED    (RS_EVENT_L2_BASE + 1)  /* 0x0101 */
+#define RS_EVENT_MAC_MOVED      (RS_EVENT_L2_BASE + 2)  /* 0x0102 */
+#define RS_EVENT_MAC_AGED       (RS_EVENT_L2_BASE + 3)  /* 0x0103 */
 
-/* MAC learning event */
-struct rs_event_mac_learn {
-    __u8  mac[6];
-    __u16 vlan;
-    __u32 port;
-} __attribute__((packed));
+/* ACL Events (0x0200-0x02FF) */
+#define RS_EVENT_ACL_HIT        (RS_EVENT_ACL_BASE + 1) /* 0x0201 */
+#define RS_EVENT_ACL_DENY       (RS_EVENT_ACL_BASE + 2) /* 0x0202 */
+
+/* Error Events (0xFF00-0xFFFF) */
+#define RS_EVENT_PARSE_ERROR    (RS_EVENT_ERROR_BASE + 1)
+#define RS_EVENT_MAP_FULL       (RS_EVENT_ERROR_BASE + 2)
 
 /* Helper macros for module development */
 
@@ -205,18 +214,22 @@ struct rs_event_mac_learn {
     } \
 })
 
-/* Emit event to user-space */
-#define RS_EMIT_EVENT(event_type, event_data, data_size) ({ \
-    struct rs_event *__evt = bpf_ringbuf_reserve(&rs_events, \
-        sizeof(struct rs_event) + (data_size), 0); \
+/* Emit event to unified event bus
+ * Usage: 
+ *   struct my_event evt = {...};
+ *   RS_EMIT_EVENT(&evt, sizeof(evt));
+ * 
+ * Returns: 0 on success, -1 on failure (ringbuf full)
+ */
+#define RS_EMIT_EVENT(event_ptr, event_size) ({ \
+    void *__evt = bpf_ringbuf_reserve(&rs_event_bus, (event_size), 0); \
+    int __ret = -1; \
     if (__evt) { \
-        __evt->type = (event_type); \
-        __evt->ifindex = ctx->ingress_ifindex; \
-        __evt->timestamp = bpf_ktime_get_ns(); \
-        __evt->data_len = (data_size); \
-        __builtin_memcpy(__evt->data, (event_data), (data_size)); \
+        __builtin_memcpy(__evt, (event_ptr), (event_size)); \
         bpf_ringbuf_submit(__evt, 0); \
+        __ret = 0; \
     } \
+    __ret; \
 })
 
 #endif /* __RSWITCH_UAPI_H */

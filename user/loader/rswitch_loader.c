@@ -123,7 +123,8 @@ struct loader_ctx {
     int rs_port_config_map_fd;
     int rs_devmap_fd;
     int rs_stats_map_fd;
-    int rs_events_fd;
+    int rs_event_bus_fd;     /* Unified event bus (replaces per-module ringbufs) */
+    int rs_mac_table_fd;     /* MAC table from l2learn module */
     
     /* Configuration */
     __u32 interfaces[MAX_INTERFACES];
@@ -418,8 +419,9 @@ static int get_pinned_maps(struct loader_ctx *ctx)
     snprintf(path, sizeof(path), "%s/rs_stats_map", BPF_PIN_PATH);
     ctx->rs_stats_map_fd = bpf_obj_get(path);
     
-    snprintf(path, sizeof(path), "%s/rs_events", BPF_PIN_PATH);
-    ctx->rs_events_fd = bpf_obj_get(path);
+    /* Unified event bus is pinned by core infrastructure */
+    ctx->rs_event_bus_fd = -1;  /* Will be obtained from pinned path */
+    ctx->rs_mac_table_fd = -1;  /* Will be obtained from l2learn module */
     
     if (ctx->rs_progs_fd < 0) {
         fprintf(stderr, "Warning: Failed to get rs_progs from /sys/fs/bpf/rs_progs\n");
@@ -793,8 +795,77 @@ static void detach_xdp(struct loader_ctx *ctx)
         char ifname[IF_NAMESIZE];
         
         if_indextoname(ifindex, ifname);
-        bpf_xdp_detach(ifindex, ctx->xdp_flags, NULL);
-        printf("  Detached from %s (ifindex=%u)\n", ifname, ifindex);
+        if (bpf_xdp_detach(ifindex, ctx->xdp_flags, NULL) < 0) {
+            fprintf(stderr, "  Warning: Failed to detach from %s (ifindex=%u): %s\n",
+                    ifname, ifindex, strerror(errno));
+        } else {
+            printf("  Detached from %s (ifindex=%u)\n", ifname, ifindex);
+        }
+    }
+}
+
+/* Close all map file descriptors */
+static void close_map_fds(struct loader_ctx *ctx)
+{
+    printf("\nClosing map file descriptors:\n");
+    
+    if (ctx->rs_ctx_map_fd >= 0) {
+        close(ctx->rs_ctx_map_fd);
+        printf("  Closed rs_ctx_map_fd\n");
+    }
+    if (ctx->rs_progs_fd >= 0) {
+        close(ctx->rs_progs_fd);
+        printf("  Closed rs_progs_fd\n");
+    }
+    if (ctx->rs_port_config_map_fd >= 0) {
+        close(ctx->rs_port_config_map_fd);
+        printf("  Closed rs_port_config_map_fd\n");
+    }
+    if (ctx->rs_devmap_fd >= 0) {
+        close(ctx->rs_devmap_fd);
+        printf("  Closed rs_devmap_fd\n");
+    }
+    if (ctx->rs_stats_map_fd >= 0) {
+        close(ctx->rs_stats_map_fd);
+        printf("  Closed rs_stats_map_fd\n");
+    }
+    if (ctx->rs_event_bus_fd >= 0) {
+        close(ctx->rs_event_bus_fd);
+        printf("  Closed rs_event_bus_fd\n");
+    }
+    
+    if (ctx->rs_mac_table_fd >= 0) {
+        close(ctx->rs_mac_table_fd);
+        printf("  Closed rs_mac_table_fd\n");
+    }
+}
+
+/* Unpin all maps from BPF filesystem */
+static void unpin_maps(void)
+{
+    const char *pinned_maps[] = {
+        "/sys/fs/bpf/rs_ctx_map",
+        "/sys/fs/bpf/rs_progs",
+        "/sys/fs/bpf/rs_port_config_map",
+        "/sys/fs/bpf/rs_vlan_map",
+        "/sys/fs/bpf/rs_event_bus",
+        "/sys/fs/bpf/rs_mac_table",
+        "/sys/fs/bpf/rs_stats_map",
+        NULL
+    };
+    
+    printf("\nUnpinning maps from BPF filesystem:\n");
+    
+    for (int i = 0; pinned_maps[i] != NULL; i++) {
+        struct stat st;
+        if (stat(pinned_maps[i], &st) == 0) {
+            if (unlink(pinned_maps[i]) < 0) {
+                fprintf(stderr, "  Warning: Failed to unpin %s: %s\n",
+                        pinned_maps[i], strerror(errno));
+            } else {
+                printf("  Unpinned %s\n", pinned_maps[i]);
+            }
+        }
     }
 }
 
@@ -803,28 +874,44 @@ static void cleanup(struct loader_ctx *ctx)
 {
     int i;
     
-    /* Detach XDP */
+    printf("\n========== Cleanup Started ==========\n");
+    
+    /* Step 1: Detach XDP programs from all interfaces */
     detach_xdp(ctx);
     
-    /* Close module objects */
+    /* Step 2: Close map file descriptors */
+    close_map_fds(ctx);
+    
+    /* Step 3: Close module BPF objects */
+    printf("\nClosing module BPF objects:\n");
     for (i = 0; i < ctx->num_modules; i++) {
         if (ctx->modules[i].obj) {
             bpf_object__close(ctx->modules[i].obj);
+            printf("  Closed %s\n", ctx->modules[i].name);
         }
     }
     
-    /* Close core objects */
-    if (ctx->dispatcher_obj)
+    /* Step 4: Close core BPF objects */
+    printf("\nClosing core BPF objects:\n");
+    if (ctx->dispatcher_obj) {
         bpf_object__close(ctx->dispatcher_obj);
-    if (ctx->egress_obj)
+        printf("  Closed dispatcher\n");
+    }
+    if (ctx->egress_obj) {
         bpf_object__close(ctx->egress_obj);
-    
-    /* Free profile */
-    if (ctx->use_profile) {
-        profile_free(&ctx->profile);
+        printf("  Closed egress\n");
     }
     
-    printf("Cleanup complete\n");
+    /* Step 5: Unpin maps from BPF filesystem */
+    unpin_maps();
+    
+    /* Step 6: Free profile */
+    if (ctx->use_profile) {
+        profile_free(&ctx->profile);
+        printf("\nFreed profile memory\n");
+    }
+    
+    printf("\n========== Cleanup Complete ==========\n");
 }
 
 /* Parse interface list from string (comma-separated) */
@@ -889,6 +976,16 @@ int main(int argc, char **argv)
     struct loader_ctx ctx = {0};
     int opt, err;
     char *iface_list = NULL;
+    
+    /* Initialize map FDs to -1 */
+    ctx.rs_ctx_map_fd = -1;
+    ctx.rs_progs_fd = -1;
+    ctx.rs_port_config_map_fd = -1;
+    ctx.rs_devmap_fd = -1;
+    ctx.rs_stats_map_fd = -1;
+    
+    /* Default XDP flags */
+    ctx.xdp_flags = DEFAULT_XDP_FLAGS;
     
     static struct option long_options[] = {
         {"ifaces", required_argument, 0, 'i'},
@@ -1014,6 +1111,33 @@ int main(int argc, char **argv)
     if (load_modules(&ctx) < 0) {
         cleanup(&ctx);
         return 1;
+    }
+    
+    /* Get rs_event_bus from pinned path (shared infrastructure) */
+    ctx.rs_event_bus_fd = bpf_obj_get("/sys/fs/bpf/rs_event_bus");
+    if (ctx.rs_event_bus_fd >= 0) {
+        printf("Got unified event bus: fd=%d\n", ctx.rs_event_bus_fd);
+    } else {
+        fprintf(stderr, "Warning: Failed to open rs_event_bus (not critical)\n");
+    }
+    
+    /* Get rs_mac_table from l2learn module (pinned by l2learn) */
+    for (int i = 0; i < ctx.num_modules; i++) {
+        if (strcmp(ctx.modules[i].name, "l2learn") == 0) {
+            /* Try to get from pinned path first (preferred) */
+            ctx.rs_mac_table_fd = bpf_obj_get("/sys/fs/bpf/rs_mac_table");
+            if (ctx.rs_mac_table_fd >= 0) {
+                printf("Got rs_mac_table from pinned path: fd=%d\n", ctx.rs_mac_table_fd);
+            } else {
+                /* Fallback: get from module object */
+                struct bpf_map *map = bpf_object__find_map_by_name(ctx.modules[i].obj, "rs_mac_table");
+                if (map) {
+                    ctx.rs_mac_table_fd = bpf_map__fd(map);
+                    printf("Got rs_mac_table from l2learn module: fd=%d\n", ctx.rs_mac_table_fd);
+                }
+            }
+            break;
+        }
     }
     
     /* Build tail-call pipeline */

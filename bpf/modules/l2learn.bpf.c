@@ -12,6 +12,9 @@
  * VLAN processing and ACL checks, but before final forwarding.
  */
 
+/* Define rs_mac_table here - prevents extern declaration in map_defs.h */
+#define RS_MAC_TABLE_OWNER
+
 #include "../include/rswitch_common.h"
 
 char _license[] SEC("license") = "GPL";
@@ -25,10 +28,26 @@ RS_DECLARE_MODULE(
     "Layer 2 MAC learning and forwarding table lookup"
 );
 
-/* Event types for ringbuf notifications */
-#define RS_EVENT_MAC_LEARNED    1   /* New MAC learned */
-#define RS_EVENT_MAC_MOVED      2   /* MAC moved to different port */
-#define RS_EVENT_MAC_AGED       3   /* MAC entry aged out */
+/* MAC Forwarding Table - Primary Owner
+ * 
+ * SINGLE OWNER PATTERN:
+ * - Defined here (l2learn is the primary owner/writer)
+ * - Pinned (LIBBPF_PIN_BY_NAME) for user-space access and aging
+ * - Other modules use 'extern' declaration to access same pinned instance
+ * - Loader accesses via l2learn module object to get FD
+ * 
+ * Rationale:
+ * - l2learn is the only module that writes (learns MACs)
+ * - Other modules may read (forwarding lookups)
+ * - User-space needs access for aging, static entries, telemetry
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);  /* 64K MAC entries */
+    __type(key, struct rs_mac_key);
+    __type(value, struct rs_mac_entry);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);  /* Pin to /sys/fs/bpf/rs_mac_table */
+} rs_mac_table SEC(".maps");
 
 /* MAC learning event structure */
 struct mac_learn_event {
@@ -54,28 +73,24 @@ static __always_inline int is_multicast_mac(const __u8 *mac)
     return (mac[0] & 0x01) != 0;
 }
 
-// Helper: Emit MAC learning event to ringbuf
+// Helper: Emit MAC learning event to unified event bus
 static __always_inline void emit_mac_event(struct rs_ctx *ctx, 
                                            __u32 event_type,
                                            const __u8 *mac,
                                            __u16 vlan,
                                            __u32 ifindex)
 {
-    struct mac_learn_event *event;
+    struct mac_learn_event event = {
+        .event_type = event_type,
+        .ifindex = ifindex,
+        .vlan = vlan,
+        .timestamp = bpf_ktime_get_ns(),
+    };
+    __builtin_memcpy(event.mac, mac, 6);
     
-    event = bpf_ringbuf_reserve(&rs_events, sizeof(*event), 0);
-    if (!event) {
-        rs_debug("Failed to reserve ringbuf space for MAC event");
-        return;
+    if (RS_EMIT_EVENT(&event, sizeof(event)) < 0) {
+        rs_debug("Failed to emit MAC event to event bus");
     }
-    
-    event->event_type = event_type;
-    event->ifindex = ifindex;
-    event->vlan = vlan;
-    __builtin_memcpy(event->mac, mac, 6);
-    event->timestamp = bpf_ktime_get_ns();
-    
-    bpf_ringbuf_submit(event, 0);
 }
 
 // Helper: Learn source MAC address

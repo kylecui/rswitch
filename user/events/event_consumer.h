@@ -61,10 +61,8 @@ typedef int (*event_handler_fn)(void *ctx, enum event_type type, const void *dat
 
 /* Event consumer context */
 struct event_consumer {
-    /* Ringbuf file descriptors */
-    int mac_learn_ringbuf_fd;
-    int policy_ringbuf_fd;
-    int error_ringbuf_fd;
+    /* Unified event bus file descriptor */
+    int event_bus_fd;
     
     /* Event handlers */
     struct {
