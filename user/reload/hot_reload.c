@@ -81,6 +81,10 @@ struct reload_ctx {
     int dry_run;  /* Validate but don't apply */
 };
 
+/* Forward declarations */
+static int is_loadable_module(int prog_fd, struct rs_module_desc *desc);
+static int read_module_metadata(const char *path, struct rs_module_desc *desc);
+
 /* Auto-get rs_progs FD if not already set */
 static int ensure_rs_progs_fd(struct reload_ctx *ctx)
 {
@@ -278,33 +282,83 @@ static int update_prog_array(struct reload_ctx *ctx, int stage, int new_prog_fd)
     return 0;
 }
 
+/* Find module by stage number */
+static int find_module_by_stage(int stage, int *out_prog_id, char *out_name, size_t name_len)
+{
+    struct bpf_prog_info info = {};
+    __u32 info_len = sizeof(info);
+    __u32 prog_id = 0;
+    int prog_fd;
+    int err;
+    struct rs_module_desc desc;
+    
+    /* Iterate through all BPF programs */
+    while (1) {
+        err = bpf_prog_get_next_id(prog_id, &prog_id);
+        if (err) {
+            break;
+        }
+        
+        prog_fd = bpf_prog_get_fd_by_id(prog_id);
+        if (prog_fd < 0) {
+            continue;
+        }
+        
+        /* Get program info */
+        memset(&info, 0, sizeof(info));
+        info_len = sizeof(info);
+        err = bpf_obj_get_info_by_fd(prog_fd, &info, &info_len);
+        if (err < 0) {
+            close(prog_fd);
+            continue;
+        }
+        
+        /* Only check XDP programs with module metadata */
+        if (info.type != BPF_PROG_TYPE_XDP || !is_loadable_module(prog_fd, &desc)) {
+            close(prog_fd);
+            continue;
+        }
+        
+        /* Check if module's stage matches */
+        char path[256];
+        snprintf(path, sizeof(path), "%s/%s.bpf.o", BUILD_DIR, info.name);
+        
+        /* Try to read metadata from loaded program's BTF */
+        struct rs_module_desc mod_desc;
+        if (read_module_metadata(path, &mod_desc) == 0) {
+            if (mod_desc.stage == stage) {
+                *out_prog_id = prog_id;
+                if (out_name) {
+                    snprintf(out_name, name_len, "%s", info.name);
+                }
+                close(prog_fd);
+                return 0;
+            }
+        }
+        
+        close(prog_fd);
+    }
+    
+    return -1;  /* Not found */
+}
+
 /* Verify pipeline integrity by checking all expected stages */
 static int verify_pipeline(struct reload_ctx *ctx, int *expected_stages, int num_stages)
 {
-    int err, fd;
-    
-    /* Ensure rs_progs FD is available */
-    if (ensure_rs_progs_fd(ctx) < 0) {
-        return -1;
-    }
+    int prog_id;
+    char module_name[64];
     
     printf("Verifying pipeline integrity:\n");
     
     for (int i = 0; i < num_stages; i++) {
         int stage = expected_stages[i];
         
-        err = bpf_map_lookup_elem(ctx->rs_progs_fd, &stage, &fd);
-        if (err < 0) {
-            fprintf(stderr, "  [FAIL] Stage %d: not found in prog_array\n", stage);
+        if (find_module_by_stage(stage, &prog_id, module_name, sizeof(module_name)) < 0) {
+            fprintf(stderr, "  [FAIL] Stage %d: no module loaded\n", stage);
             return -1;
         }
         
-        if (fd <= 0) {
-            fprintf(stderr, "  [FAIL] Stage %d: invalid fd %d\n", stage, fd);
-            return -1;
-        }
-        
-        printf("  [OK] Stage %d: fd=%d\n", stage, fd);
+        printf("  [OK] Stage %d: %s (prog_id=%d)\n", stage, module_name, prog_id);
     }
     
     printf("Pipeline verification passed\n");
@@ -315,7 +369,8 @@ static int verify_pipeline(struct reload_ctx *ctx, int *expected_stages, int num
 static int hot_reload_module(struct reload_ctx *ctx, const char *module_name)
 {
     struct reload_module new_module = {0};
-    int old_stage = -1;
+    int old_prog_id = -1;
+    char old_module_name[64] = {0};
     int err;
     
     printf("\n=== Hot-reloading module: %s ===\n", module_name);
@@ -332,15 +387,12 @@ static int hot_reload_module(struct reload_ctx *ctx, const char *module_name)
         return -1;
     }
     
-    /* Step 2: Find old module with same stage (if any) */
+    /* Step 2: Check if there's an existing module at this stage */
     printf("Step 2: Checking for existing module at stage %d...\n", new_module.stage);
-    for (int i = 0; i < ctx->num_modules; i++) {
-        if (ctx->modules[i].stage == new_module.stage && ctx->modules[i].active) {
-            old_stage = i;
-            printf("  Found existing module: %s (stage=%d)\n", 
-                   ctx->modules[i].name, ctx->modules[i].stage);
-            break;
-        }
+    if (find_module_by_stage(new_module.stage, &old_prog_id, old_module_name, sizeof(old_module_name)) == 0) {
+        printf("  Found existing module: %s (prog_id=%d)\n", old_module_name, old_prog_id);
+    } else {
+        printf("  No existing module at this stage (new module)\n");
     }
     
     /* Step 3: Update prog_array (atomic from kernel perspective) */
@@ -352,39 +404,17 @@ static int hot_reload_module(struct reload_ctx *ctx, const char *module_name)
         return -1;
     }
     
-    /* Step 4: Replace old module in tracking array */
-    printf("Step 4: Updating module registry...\n");
-    if (old_stage >= 0) {
-        /* Close old object (kernel keeps program alive if still in use) */
-        if (ctx->modules[old_stage].obj) {
-            if (ctx->verbose) {
-                printf("  Closing old module: %s\n", ctx->modules[old_stage].name);
-            }
-            if (!ctx->dry_run) {
-                bpf_object__close(ctx->modules[old_stage].obj);
-            }
-        }
-        
-        /* Replace with new module */
-        memcpy(&ctx->modules[old_stage], &new_module, sizeof(new_module));
-        ctx->modules[old_stage].active = 1;
-    } else {
-        /* New module (no previous at this stage) */
-        if (ctx->num_modules >= MAX_MODULES) {
-            fprintf(stderr, "Module registry full\n");
-            bpf_object__close(new_module.obj);
-            return -1;
-        }
-        
-        memcpy(&ctx->modules[ctx->num_modules], &new_module, sizeof(new_module));
-        ctx->modules[ctx->num_modules].active = 1;
-        ctx->num_modules++;
-    }
-    
     printf("✓ Hot-reload completed successfully\n");
     printf("  Module: %s\n", new_module.name);
     printf("  Stage: %d\n", new_module.stage);
-    printf("  FD: %d\n", new_module.prog_fd);
+    printf("  Program FD: %d\n", new_module.prog_fd);
+    if (old_prog_id >= 0) {
+        printf("  Replaced: %s (prog_id=%d)\n", old_module_name, old_prog_id);
+    }
+    
+    /* Note: We don't close new_module.obj here because the program needs to stay loaded.
+     * The kernel will keep the program alive as long as it's referenced in prog_array.
+     * If you want to truly unload it later, use the 'unload' command. */
     
     return 0;
 }
@@ -392,7 +422,13 @@ static int hot_reload_module(struct reload_ctx *ctx, const char *module_name)
 /* Remove module from pipeline (clear prog_array entry) */
 static int unload_module(struct reload_ctx *ctx, const char *module_name)
 {
+    int prog_id;
+    char found_name[64];
     int err;
+    struct bpf_prog_info info = {};
+    __u32 info_len = sizeof(info);
+    int prog_fd;
+    int stage = -1;
     
     printf("\n=== Unloading module: %s ===\n", module_name);
     
@@ -401,25 +437,59 @@ static int unload_module(struct reload_ctx *ctx, const char *module_name)
         return -1;
     }
     
-    /* Find module */
-    int idx = -1;
-    for (int i = 0; i < ctx->num_modules; i++) {
-        if (strcmp(ctx->modules[i].name, module_name) == 0 && ctx->modules[i].active) {
-            idx = i;
+    /* Find the module by name */
+    __u32 search_id = 0;
+    int found = 0;
+    
+    while (1) {
+        err = bpf_prog_get_next_id(search_id, &search_id);
+        if (err) {
             break;
         }
+        
+        prog_fd = bpf_prog_get_fd_by_id(search_id);
+        if (prog_fd < 0) {
+            continue;
+        }
+        
+        memset(&info, 0, sizeof(info));
+        info_len = sizeof(info);
+        err = bpf_obj_get_info_by_fd(prog_fd, &info, &info_len);
+        if (err < 0) {
+            close(prog_fd);
+            continue;
+        }
+        
+        /* Check if name matches (partial match for flexibility) */
+        if (info.type == BPF_PROG_TYPE_XDP && strstr(info.name, module_name) != NULL) {
+            /* Found the module, now get its stage from metadata */
+            char path[256];
+            snprintf(path, sizeof(path), "%s/%s.bpf.o", BUILD_DIR, info.name);
+            
+            struct rs_module_desc desc;
+            if (read_module_metadata(path, &desc) == 0) {
+                stage = desc.stage;
+                prog_id = search_id;
+                snprintf(found_name, sizeof(found_name), "%s", info.name);
+                found = 1;
+                close(prog_fd);
+                break;
+            }
+        }
+        
+        close(prog_fd);
     }
     
-    if (idx < 0) {
+    if (!found) {
         fprintf(stderr, "Module not found: %s\n", module_name);
+        fprintf(stderr, "Use 'list' command to see loaded modules.\n");
         return -1;
     }
     
-    int stage = ctx->modules[idx].stage;
+    printf("Found module: %s at stage %d (prog_id=%d)\n", found_name, stage, prog_id);
     
-    /* Clear prog_array entry (set to -1 for "no program") */
+    /* Clear prog_array entry (delete key) */
     printf("Clearing pipeline stage %d...\n", stage);
-    int no_prog = -1;
     
     if (!ctx->dry_run) {
         err = bpf_map_delete_elem(ctx->rs_progs_fd, &stage);
@@ -432,15 +502,9 @@ static int unload_module(struct reload_ctx *ctx, const char *module_name)
         printf("[DRY-RUN] Would delete prog_array[%d]\n", stage);
     }
     
-    /* Close BPF object */
-    if (ctx->modules[idx].obj && !ctx->dry_run) {
-        bpf_object__close(ctx->modules[idx].obj);
-    }
-    
-    /* Mark as inactive */
-    ctx->modules[idx].active = 0;
-    
     printf("✓ Module unloaded successfully\n");
+    printf("  Note: The BPF program may still exist in the kernel.\n");
+    printf("        Use 'bpftool prog' to verify and manually delete if needed.\n");
     return 0;
 }
 

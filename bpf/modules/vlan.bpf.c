@@ -85,9 +85,11 @@ static __always_inline int is_port_in_vlan(struct rs_vlan_members *members, __u3
     if (!members)
         return 0;
     
-    // Compute bitmask position (ifindex % 64 = bit, ifindex / 64 = word)
-    __u32 word_idx = (ifindex / 64) & 3;  // Max 4 words
-    __u64 bit_mask = 1ULL << (ifindex % 64);
+    // Compute bitmask position to match loader's calculation
+    // Loader uses: word_idx = (ifindex - 1) / 64, bit_idx = (ifindex - 1) % 64
+    // So we must use the same formula here
+    __u32 word_idx = ((ifindex - 1) / 64) & 3;  // Max 4 words, prevent overflow
+    __u64 bit_mask = 1ULL << ((ifindex - 1) % 64);
     
     if (tagged) {
         return (members->tagged_members[word_idx] & bit_mask) != 0;
@@ -230,6 +232,13 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
     
     // Mode-specific ingress filtering
     switch (port->vlan_mode) {
+    case RS_VLAN_MODE_OFF:
+        // VLAN processing disabled - skip validation, proceed to next module
+        // This allows switch to operate in "dumb" mode without VLAN enforcement
+        rs_debug("VLAN processing disabled on port %d, skipping checks", ctx->ifindex);
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+        return XDP_DROP;  // Tail-call failed
+    
     case RS_VLAN_MODE_ACCESS:
         // ACCESS: Only accept untagged packets
         if (is_tagged) {

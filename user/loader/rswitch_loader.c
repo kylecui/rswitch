@@ -42,6 +42,12 @@
 #define RS_HOOK_XDP_INGRESS 0
 #define RS_HOOK_XDP_EGRESS 1
 
+/* VLAN mode enumeration (must match bpf/core/map_defs.h) */
+#define RS_VLAN_MODE_OFF    0
+#define RS_VLAN_MODE_ACCESS 1
+#define RS_VLAN_MODE_TRUNK  2
+#define RS_VLAN_MODE_HYBRID 3
+
 /* MUST match bpf/core/module_abi.h exactly! */
 struct rs_module_desc {
     __u32 abi_version;      /* Must be RS_ABI_VERSION */
@@ -554,7 +560,24 @@ static int configure_ports(struct loader_ctx *ctx)
         return 0;
     }
     
-    printf("\nConfiguring ports:\n");
+    /* Determine VLAN mode based on profile settings */
+    __u8 vlan_mode = RS_VLAN_MODE_OFF;  /* Default: no VLAN processing */
+    __u16 default_vlan = 1;
+    
+    if (ctx->profile.name[0] != '\0' && ctx->profile.settings.vlan_enforcement) {
+        /* VLAN enforcement enabled - default to ACCESS mode
+         * All ports in same VLAN (default_vlan) as untagged access ports
+         * This is the safest default for managed switches
+         */
+        vlan_mode = RS_VLAN_MODE_ACCESS;
+        default_vlan = ctx->profile.settings.default_vlan;
+        printf("\nVLAN enforcement enabled: all ports default to ACCESS mode (VLAN %d)\n", 
+               default_vlan);
+    } else {
+        printf("\nVLAN enforcement disabled: all ports in OFF mode\n");
+    }
+    
+    printf("Configuring ports:\n");
     
     for (i = 0; i < ctx->num_interfaces; i++) {
         __u32 ifindex = ctx->interfaces[i];
@@ -562,10 +585,11 @@ static int configure_ports(struct loader_ctx *ctx)
             .ifindex = ifindex,
             .enabled = 1,
             .mgmt_type = 1,  /* Managed mode */
-            .vlan_mode = 0,  /* VLAN off by default */
-            .learning = 1,   /* Enable MAC learning */
-            .pvid = 1,
-            .native_vlan = 1,
+            .vlan_mode = vlan_mode,
+            .learning = ctx->profile.name[0] != '\0' ? ctx->profile.settings.mac_learning : 1,
+            .pvid = default_vlan,
+            .native_vlan = default_vlan,
+            .access_vlan = default_vlan,
             .default_prio = 0,
             .trust_dscp = 0,
         };
@@ -579,7 +603,17 @@ static int configure_ports(struct loader_ctx *ctx)
         
         char ifname[IF_NAMESIZE];
         if_indextoname(ifindex, ifname);
-        printf("  Port %u (%s): enabled, managed, learning=on\n", ifindex, ifname);
+        
+        const char *mode_str = "OFF";
+        switch (vlan_mode) {
+            case RS_VLAN_MODE_ACCESS: mode_str = "ACCESS"; break;
+            case RS_VLAN_MODE_TRUNK: mode_str = "TRUNK"; break;
+            case RS_VLAN_MODE_HYBRID: mode_str = "HYBRID"; break;
+        }
+        
+        printf("  Port %u (%s): enabled, managed, vlan_mode=%s, vlan=%d, learning=%s\n", 
+               ifindex, ifname, mode_str, default_vlan,
+               cfg.learning ? "on" : "off");
     }
     
     return 0;
