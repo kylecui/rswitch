@@ -449,30 +449,29 @@ static int list_modules(struct reload_ctx *ctx)
 {
     struct bpf_prog_info info = {};
     __u32 info_len = sizeof(info);
+    __u32 prog_id = 0;
     int prog_fd;
     int err;
     int found = 0;
     
     printf("\n=== Currently Loaded Modules ===\n");
-    
-    /* Ensure rs_progs FD is available */
-    if (ensure_rs_progs_fd(ctx) < 0) {
-        return -1;
-    }
-    
-    printf("%-8s %-30s %-12s %-10s %s\n", "Stage", "Program Name", "Tag", "FD", "Type");
+    printf("%-8s %-30s %-12s %-10s %s\n", "ID", "Program Name", "Tag", "FD", "Type");
     printf("--------------------------------------------------------------------------------\n");
     
-    /* Iterate through all possible stage indices (0-255) */
-    for (int stage = 0; stage < 256; stage++) {
-        err = bpf_map_lookup_elem(ctx->rs_progs_fd, &stage, &prog_fd);
-        if (err < 0) {
-            /* No program at this stage, continue */
-            continue;
+    /* Iterate through all BPF programs in the system */
+    while (1) {
+        err = bpf_prog_get_next_id(prog_id, &prog_id);
+        if (err) {
+            if (errno == ENOENT) {
+                /* No more programs */
+                break;
+            }
+            fprintf(stderr, "Error iterating programs: %s\n", strerror(errno));
+            break;
         }
         
-        if (prog_fd <= 0) {
-            /* Invalid FD, skip */
+        prog_fd = bpf_prog_get_fd_by_id(prog_id);
+        if (prog_fd < 0) {
             continue;
         }
         
@@ -481,9 +480,34 @@ static int list_modules(struct reload_ctx *ctx)
         info_len = sizeof(info);
         err = bpf_obj_get_info_by_fd(prog_fd, &info, &info_len);
         if (err < 0) {
-            printf("%-8d %-30s %-12s %-10d %s\n",
-                   stage, "<unknown>", "<error>", prog_fd, "XDP");
-            found++;
+            close(prog_fd);
+            continue;
+        }
+        
+        /* Filter: only show XDP programs with rswitch-related names */
+        if (info.type != BPF_PROG_TYPE_XDP) {
+            close(prog_fd);
+            continue;
+        }
+        
+        /* Check if this is an rSwitch module (name contains common patterns) */
+        const char *name = info.name;
+        int is_rswitch = 0;
+        
+        /* Common rSwitch module patterns */
+        if (strstr(name, "rswitch") != NULL ||
+            strstr(name, "l2learn") != NULL ||
+            strstr(name, "lastcall") != NULL ||
+            strstr(name, "vlan") != NULL ||
+            strstr(name, "acl") != NULL ||
+            strstr(name, "mirror") != NULL ||
+            strstr(name, "dispatcher") != NULL ||
+            strstr(name, "egress") != NULL) {
+            is_rswitch = 1;
+        }
+        
+        if (!is_rswitch) {
+            close(prog_fd);
             continue;
         }
         
@@ -493,27 +517,26 @@ static int list_modules(struct reload_ctx *ctx)
                  info.tag[0], info.tag[1], info.tag[2], info.tag[3],
                  info.tag[4], info.tag[5], info.tag[6], info.tag[7]);
         
-        const char *prog_type = "Unknown";
-        if (info.type == BPF_PROG_TYPE_XDP) {
-            prog_type = "XDP";
-        } else if (info.type == BPF_PROG_TYPE_SCHED_CLS) {
-            prog_type = "TC";
-        }
+        const char *prog_type = "XDP";
         
         printf("%-8d %-30s %-12s %-10d %s\n",
-               stage, 
+               prog_id,
                info.name[0] ? info.name : "<unnamed>",
                tag_str,
                prog_fd,
                prog_type);
         
         found++;
+        close(prog_fd);
     }
     
     if (found == 0) {
-        printf("(No modules loaded in pipeline)\n");
+        printf("(No rSwitch modules loaded)\n");
+        printf("\nNote: Only showing XDP programs with rSwitch-related names.\n");
     } else {
         printf("\nTotal: %d module(s) loaded\n", found);
+        printf("\nNote: This shows all rSwitch XDP programs in the system.\n");
+        printf("To see pipeline order, use: sudo bpftool map dump name rs_progs\n");
     }
     
     printf("\n");
