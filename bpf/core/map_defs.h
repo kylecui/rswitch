@@ -121,34 +121,11 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_vlan_map SEC(".maps");
 
-/* Devmap for packet redirection with egress program attachment
- * 
- * Standard DEVMAP (not HASH) for efficient redirect operations.
- * Supports egress program attachment via struct bpf_devmap_val.
- * 
- * NOTE: Following PoC design - NO PINNING to avoid conflicts
- * Each module creates its own instance if needed.
+/* NOTE: rs_xdp_devmap removed from here!
+ * Following PoC pattern: devmap is defined ONLY in lastcall.bpf.c
+ * Loader accesses it via lastcall module's object.
+ * No pinning needed - single owner, no cross-module sharing.
  */
-struct {
-    __uint(type, BPF_MAP_TYPE_DEVMAP);
-    __uint(max_entries, RS_MAX_INTERFACES);
-    __type(key, __u32);         /* ifindex */
-    __type(value, struct bpf_devmap_val);
-    /* NO pinning - following PoC pattern */
-} rs_devmap SEC(".maps");
-
-/* XDP queue redirect map (fast-path only) - DEPRECATED
- * 
- * Use rs_devmap instead. Kept for compatibility.
- * NO PINNING to avoid conflicts (following PoC pattern).
- */
-struct {
-    __uint(type, BPF_MAP_TYPE_DEVMAP_HASH);
-    __uint(max_entries, RS_MAX_INTERFACES);
-    __type(key, __u32);         /* ifindex */
-    __type(value, struct bpf_devmap_val);
-    /* NO pinning */
-} rs_xdp_devmap SEC(".maps");
 
 /* Statistics counters
  * 

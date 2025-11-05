@@ -19,6 +19,21 @@
 
 char _license[] SEC("license") = "GPL";
 
+/* XDP devmap for packet forwarding
+ * 
+ * Following PoC egress_map pattern:
+ * - Defined ONLY in lastcall (single user)
+ * - Loader populates it via lastcall object
+ * - NO pinning needed (not shared across modules)
+ * - Uses bpf_devmap_val for potential egress hook attachment
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_DEVMAP_HASH);
+    __uint(max_entries, RS_MAX_INTERFACES);
+    __type(key, __u32);         /* ifindex */
+    __type(value, struct bpf_devmap_val);
+} rs_xdp_devmap SEC(".maps");
+
 // Module metadata for auto-discovery
 RS_DECLARE_MODULE(
     "lastcall",                 // Module name

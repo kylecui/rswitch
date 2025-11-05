@@ -668,8 +668,8 @@ static int initialize_vlan_map(struct loader_ctx *ctx)
 
 /* Populate devmaps with queue isolation
  * 
- * rs_xdp_devmap: XDP fast-path (queues 1-3)
- * afxdp_devmap: AF_XDP high-priority (queue 0)
+ * Following PoC pattern: find rs_xdp_devmap from lastcall module object
+ * (not pinned, not in dispatcher - matches PoC's egress_map approach)
  */
 static int populate_devmaps(struct loader_ctx *ctx)
 {
@@ -677,14 +677,20 @@ static int populate_devmaps(struct loader_ctx *ctx)
     int xdp_devmap_fd = -1, afxdp_devmap_fd = -1;
     char path[256];
     
-    /* Open XDP devmap */
-    snprintf(path, sizeof(path), "%s/rs_xdp_devmap", BPF_PIN_PATH);
-    xdp_devmap_fd = bpf_obj_get(path);
-    if (xdp_devmap_fd < 0) {
-        /* Try finding in dispatcher object */
-        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_xdp_devmap");
-        if (map)
-            xdp_devmap_fd = bpf_map__fd(map);
+    /* Find rs_xdp_devmap from lastcall module (owner)
+     * Following PoC: loader finds egress_map from lastcall object
+     */
+    for (i = 0; i < ctx->num_modules; i++) {
+        if (strcmp(ctx->modules[i].name, "lastcall") == 0 && ctx->modules[i].obj) {
+            struct bpf_map *map = bpf_object__find_map_by_name(ctx->modules[i].obj, "rs_xdp_devmap");
+            if (map) {
+                xdp_devmap_fd = bpf_map__fd(map);
+                if (ctx->verbose) {
+                    printf("Found rs_xdp_devmap in lastcall module: fd=%d\n", xdp_devmap_fd);
+                }
+                break;
+            }
+        }
     }
     
     /* Open AF_XDP devmap */
