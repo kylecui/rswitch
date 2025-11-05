@@ -564,7 +564,7 @@ static int configure_ports(struct loader_ctx *ctx)
     __u8 vlan_mode = RS_VLAN_MODE_OFF;  /* Default: no VLAN processing */
     __u16 default_vlan = 1;
     
-    if (ctx->profile.name[0] != '\0' && ctx->profile.settings.vlan_enforcement) {
+    if (ctx->use_profile && ctx->profile.settings.vlan_enforcement) {
         /* VLAN enforcement enabled - default to ACCESS mode
          * All ports in same VLAN (default_vlan) as untagged access ports
          * This is the safest default for managed switches
@@ -586,7 +586,7 @@ static int configure_ports(struct loader_ctx *ctx)
             .enabled = 1,
             .mgmt_type = 1,  /* Managed mode */
             .vlan_mode = vlan_mode,
-            .learning = ctx->profile.name[0] != '\0' ? ctx->profile.settings.mac_learning : 1,
+            .learning = ctx->use_profile ? ctx->profile.settings.mac_learning : 1,
             .pvid = default_vlan,
             .native_vlan = default_vlan,
             .access_vlan = default_vlan,
