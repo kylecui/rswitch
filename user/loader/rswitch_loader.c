@@ -716,28 +716,11 @@ static int populate_devmaps(struct loader_ctx *ctx)
 {
     int i, err;
     int xdp_devmap_fd = -1, afxdp_devmap_fd = -1;
-    int egress_prog_fd = -1;
+    int egress_prog_fd = ctx->egress_fd;  /* Egress already loaded in load_core_programs() */
     char path[256];
     
-    /* Find egress program from egress.bpf.c
-     * Need to attach this to devmap for egress processing
-     */
-    for (i = 0; i < ctx->num_modules; i++) {
-        if (strcmp(ctx->modules[i].name, "egress") == 0 && ctx->modules[i].obj) {
-            struct bpf_program *prog = bpf_object__find_program_by_name(
-                ctx->modules[i].obj, "rswitch_egress");
-            if (prog) {
-                egress_prog_fd = bpf_program__fd(prog);
-                if (ctx->verbose) {
-                    printf("Found egress program: fd=%d\n", egress_prog_fd);
-                }
-                break;
-            }
-        }
-    }
-    
     if (egress_prog_fd < 0) {
-        fprintf(stderr, "Warning: Egress program not found - VLAN isolation will NOT work!\n");
+        fprintf(stderr, "Warning: Egress program not loaded - VLAN isolation will NOT work!\n");
     }
     
     /* Find rs_xdp_devmap from lastcall module (owner)
