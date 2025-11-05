@@ -164,26 +164,46 @@ static __always_inline int process_vlan_egress(struct xdp_md *ctx,
         
     case 2: /* TRUNK mode */
         if (vlan_depth == 0) {
-            /* Untagged packet going to trunk port - add the packet's VLAN tag
-             * Use rctx->ingress_vlan (the VLAN assigned on ingress), NOT native_vlan
-             * native_vlan is only for untagged ingress traffic ON this trunk port
+            /* Untagged packet going to trunk port
+             * - If packet's VLAN == native_vlan: send UNTAGGED
+             * - If packet's VLAN != native_vlan: add VLAN tag
              */
-            __u16 vlan_to_add = rctx->ingress_vlan;
-            if (vlan_to_add == 0) vlan_to_add = 1;  // Fallback to default VLAN
+            __u16 pkt_vlan = rctx->ingress_vlan;
+            if (pkt_vlan == 0) pkt_vlan = 1;  // Fallback to default VLAN
             
-            rs_debug("TRUNK port %u: adding VLAN %u tag to untagged packet", 
-                     cfg->ifindex, vlan_to_add);
-            if (rs_vlan_push(ctx, vlan_to_add, rctx->prio) < 0) {
-                rs_debug("Failed to push VLAN %u tag on trunk port %u", 
-                         vlan_to_add, cfg->ifindex);
-                return -1;
+            if (pkt_vlan == cfg->native_vlan) {
+                /* Native VLAN - send untagged */
+                rs_debug("TRUNK port %u: VLAN %u is native VLAN, sending untagged", 
+                         cfg->ifindex, pkt_vlan);
+            } else {
+                /* Non-native VLAN - must add tag */
+                rs_debug("TRUNK port %u: VLAN %u != native VLAN %u, adding tag", 
+                         cfg->ifindex, pkt_vlan, cfg->native_vlan);
+                if (rs_vlan_push(ctx, pkt_vlan, rctx->prio) < 0) {
+                    rs_debug("Failed to push VLAN %u tag on trunk port %u", 
+                             pkt_vlan, cfg->ifindex);
+                    return -1;
+                }
             }
         } else {
-            /* Tagged packet - keep tag, update priority if QoS enabled */
-            rs_debug("TRUNK port %u: packet already tagged with VLAN %u, keeping tag", 
-                     cfg->ifindex, rctx->ingress_vlan);
-            if (rctx->prio > 0 && rs_vlan_set_priority(ctx, rctx->prio) < 0) {
-                rs_debug("Failed to set VLAN priority on trunk port %u", cfg->ifindex);
+            /* Tagged packet - check if it's native VLAN */
+            __u16 pkt_vlan = rctx->ingress_vlan;
+            if (pkt_vlan == 0) pkt_vlan = 1;
+            
+            if (pkt_vlan == cfg->native_vlan) {
+                /* Native VLAN - remove tag */
+                rs_debug("TRUNK port %u: tagged packet VLAN %u is native, removing tag", 
+                         cfg->ifindex, pkt_vlan);
+                if (rs_vlan_pop(ctx) < 0) {
+                    rs_debug("Failed to pop VLAN tag on trunk port %u", cfg->ifindex);
+                }
+            } else {
+                /* Non-native VLAN - keep tag, update priority if needed */
+                rs_debug("TRUNK port %u: tagged packet VLAN %u != native %u, keeping tag", 
+                         cfg->ifindex, pkt_vlan, cfg->native_vlan);
+                if (rctx->prio > 0 && rs_vlan_set_priority(ctx, rctx->prio) < 0) {
+                    rs_debug("Failed to set VLAN priority on trunk port %u", cfg->ifindex);
+                }
             }
         }
         break;
