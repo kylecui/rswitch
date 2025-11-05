@@ -320,6 +320,6 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
     RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
     
     // Tail-call failed, drop
-    rs_debug("Tail-call to next module failed");
+    rs_debug("Vlan: Tail-call to next module failed");
     return XDP_DROP;
 }

@@ -261,6 +261,6 @@ int l2learn_ingress(struct xdp_md *xdp_ctx)
     RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
     
     // Tail-call failed
-    rs_debug("Tail-call to next module failed");
+    rs_debug("L2learn: Tail-call to next module failed");
     return XDP_DROP;
 }

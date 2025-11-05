@@ -205,11 +205,17 @@ struct {
 
 /* Tail-call to next stage
  * Usage: RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx_ptr)
- * Calls the next program based on rs_ctx->next_prog_id
+ * 
+ * Automatically increments next_prog_id and calls the next module.
+ * This assumes loader inserts modules sequentially: rs_progs[0], rs_progs[1], ...
+ * 
+ * CRITICAL: Modules should NOT manually set next_prog_id!
+ * The dispatcher initializes it to 0, then this macro auto-increments.
  */
 #define RS_TAIL_CALL_NEXT(xdp_ctx_ptr, rs_ctx_ptr) ({ \
-    if ((rs_ctx_ptr)->next_prog_id != 0 && (rs_ctx_ptr)->call_depth < 32) { \
+    if ((rs_ctx_ptr)->call_depth < 32) { \
         (rs_ctx_ptr)->call_depth++; \
+        (rs_ctx_ptr)->next_prog_id++; \
         bpf_tail_call((xdp_ctx_ptr), &rs_progs, (rs_ctx_ptr)->next_prog_id); \
     } \
 })
