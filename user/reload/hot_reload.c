@@ -36,7 +36,8 @@
 #include <bpf/bpf.h>
 #include <bpf/btf.h>
 
-#include "profile_parser.h"
+/* BPF pinning path */
+#define BPF_PIN_PATH "/sys/fs/bpf"
 
 /* From rswitch_loader.c */
 #define RS_ABI_VERSION 1
@@ -79,6 +80,30 @@ struct reload_ctx {
     int verbose;
     int dry_run;  /* Validate but don't apply */
 };
+
+/* Auto-get rs_progs FD if not already set */
+static int ensure_rs_progs_fd(struct reload_ctx *ctx)
+{
+    if (ctx->rs_progs_fd > 0) {
+        /* Already set, use provided FD */
+        return 0;
+    }
+    
+    /* Auto-detect from pinned map */
+    ctx->rs_progs_fd = bpf_obj_get(BPF_PIN_PATH "/rs_progs");
+    if (ctx->rs_progs_fd < 0) {
+        fprintf(stderr, "Failed to get rs_progs map: %s\n", strerror(errno));
+        fprintf(stderr, "Make sure rSwitch is running and maps are pinned.\n");
+        fprintf(stderr, "Or specify the map FD manually with -p/--prog-fd\n");
+        return -1;
+    }
+    
+    if (ctx->verbose) {
+        printf("Auto-detected rs_progs map: fd=%d\n", ctx->rs_progs_fd);
+    }
+    
+    return 0;
+}
 
 /* Read module metadata from BPF object */
 static int read_module_metadata(const char *path, struct rs_module_desc *desc)
@@ -258,6 +283,11 @@ static int verify_pipeline(struct reload_ctx *ctx, int *expected_stages, int num
 {
     int err, fd;
     
+    /* Ensure rs_progs FD is available */
+    if (ensure_rs_progs_fd(ctx) < 0) {
+        return -1;
+    }
+    
     printf("Verifying pipeline integrity:\n");
     
     for (int i = 0; i < num_stages; i++) {
@@ -289,6 +319,11 @@ static int hot_reload_module(struct reload_ctx *ctx, const char *module_name)
     int err;
     
     printf("\n=== Hot-reloading module: %s ===\n", module_name);
+    
+    /* Ensure rs_progs FD is available */
+    if (ensure_rs_progs_fd(ctx) < 0) {
+        return -1;
+    }
     
     /* Step 1: Load new module */
     printf("Step 1: Loading new module...\n");
@@ -361,6 +396,11 @@ static int unload_module(struct reload_ctx *ctx, const char *module_name)
     
     printf("\n=== Unloading module: %s ===\n", module_name);
     
+    /* Ensure rs_progs FD is available */
+    if (ensure_rs_progs_fd(ctx) < 0) {
+        return -1;
+    }
+    
     /* Find module */
     int idx = -1;
     for (int i = 0; i < ctx->num_modules; i++) {
@@ -405,23 +445,79 @@ static int unload_module(struct reload_ctx *ctx, const char *module_name)
 }
 
 /* List currently loaded modules */
-static void list_modules(struct reload_ctx *ctx)
+static int list_modules(struct reload_ctx *ctx)
 {
+    struct bpf_prog_info info = {};
+    __u32 info_len = sizeof(info);
+    int prog_fd;
+    int err;
+    int found = 0;
+    
     printf("\n=== Currently Loaded Modules ===\n");
-    printf("%-20s %-8s %-8s %-8s %s\n", "Name", "Stage", "FD", "Active", "Description");
+    
+    /* Ensure rs_progs FD is available */
+    if (ensure_rs_progs_fd(ctx) < 0) {
+        return -1;
+    }
+    
+    printf("%-8s %-30s %-12s %-10s %s\n", "Stage", "Program Name", "Tag", "FD", "Type");
     printf("--------------------------------------------------------------------------------\n");
     
-    for (int i = 0; i < ctx->num_modules; i++) {
-        struct reload_module *m = &ctx->modules[i];
-        printf("%-20s %-8d %-8d %-8s %s\n",
-               m->name,
-               m->stage,
-               m->prog_fd,
-               m->active ? "yes" : "no",
-               m->desc.description);
+    /* Iterate through all possible stage indices (0-255) */
+    for (int stage = 0; stage < 256; stage++) {
+        err = bpf_map_lookup_elem(ctx->rs_progs_fd, &stage, &prog_fd);
+        if (err < 0) {
+            /* No program at this stage, continue */
+            continue;
+        }
+        
+        if (prog_fd <= 0) {
+            /* Invalid FD, skip */
+            continue;
+        }
+        
+        /* Get program info */
+        memset(&info, 0, sizeof(info));
+        info_len = sizeof(info);
+        err = bpf_obj_get_info_by_fd(prog_fd, &info, &info_len);
+        if (err < 0) {
+            printf("%-8d %-30s %-12s %-10d %s\n",
+                   stage, "<unknown>", "<error>", prog_fd, "XDP");
+            found++;
+            continue;
+        }
+        
+        /* Format tag as hex string */
+        char tag_str[17];
+        snprintf(tag_str, sizeof(tag_str), "%02x%02x%02x%02x%02x%02x%02x%02x",
+                 info.tag[0], info.tag[1], info.tag[2], info.tag[3],
+                 info.tag[4], info.tag[5], info.tag[6], info.tag[7]);
+        
+        const char *prog_type = "Unknown";
+        if (info.type == BPF_PROG_TYPE_XDP) {
+            prog_type = "XDP";
+        } else if (info.type == BPF_PROG_TYPE_SCHED_CLS) {
+            prog_type = "TC";
+        }
+        
+        printf("%-8d %-30s %-12s %-10d %s\n",
+               stage, 
+               info.name[0] ? info.name : "<unnamed>",
+               tag_str,
+               prog_fd,
+               prog_type);
+        
+        found++;
+    }
+    
+    if (found == 0) {
+        printf("(No modules loaded in pipeline)\n");
+    } else {
+        printf("\nTotal: %d module(s) loaded\n", found);
     }
     
     printf("\n");
+    return 0;
 }
 
 /* Usage */
@@ -433,25 +529,29 @@ static void usage(const char *prog)
         "Commands:\n"
         "  reload <module>     Hot-reload a module (e.g., 'vlan', 'l2learn')\n"
         "  unload <module>     Remove module from pipeline\n"
-        "  list                List currently loaded modules\n"
+        "  list                List currently loaded modules (auto-detects rs_progs)\n"
         "  verify <stages...>  Verify pipeline integrity for given stages\n"
         "\n"
         "Options:\n"
-        "  -p, --prog-fd <fd>  File descriptor of rs_progs map (required)\n"
+        "  -p, --prog-fd <fd>  File descriptor of rs_progs map (auto-detected if omitted)\n"
         "  -n, --dry-run       Validate but don't apply changes\n"
         "  -v, --verbose       Verbose output\n"
         "  -h, --help          Show this help\n"
         "\n"
         "Examples:\n"
-        "  # Find rs_progs map FD:\n"
+        "  # List currently loaded modules (auto-detects rs_progs):\n"
+        "  sudo %s list\n"
+        "  \n"
+        "  # Hot-reload vlan module (auto-detects rs_progs):\n"
+        "  sudo %s reload vlan -v\n"
+        "  \n"
+        "  # Verify pipeline (auto-detects rs_progs):\n"
+        "  sudo %s verify 20 80 90\n"
+        "  \n"
+        "  # Manual FD override (if needed):\n"
         "  sudo bpftool map list | grep rs_progs\n"
-        "  \n"
-        "  # Hot-reload vlan module:\n"
-        "  sudo %s reload vlan -p 42 -v\n"
-        "  \n"
-        "  # Verify pipeline (stages 20, 80, 90):\n"
-        "  sudo %s verify 20 80 90 -p 42\n",
-        prog, prog, prog);
+        "  sudo %s reload vlan -p 42 -v\n",
+        prog, prog, prog, prog, prog);
 }
 
 int main(int argc, char **argv)
@@ -496,12 +596,6 @@ int main(int argc, char **argv)
             return 1;
         }
         
-        if (ctx.rs_progs_fd <= 0) {
-            fprintf(stderr, "Error: -p/--prog-fd required\n");
-            usage(argv[0]);
-            return 1;
-        }
-        
         return hot_reload_module(&ctx, module_name) < 0 ? 1 : 0;
         
     } else if (strcmp(command, "unload") == 0) {
@@ -511,25 +605,12 @@ int main(int argc, char **argv)
             return 1;
         }
         
-        if (ctx.rs_progs_fd <= 0) {
-            fprintf(stderr, "Error: -p/--prog-fd required\n");
-            usage(argv[0]);
-            return 1;
-        }
-        
         return unload_module(&ctx, module_name) < 0 ? 1 : 0;
         
     } else if (strcmp(command, "list") == 0) {
-        list_modules(&ctx);
-        return 0;
+        return list_modules(&ctx) < 0 ? 1 : 0;
         
     } else if (strcmp(command, "verify") == 0) {
-        if (ctx.rs_progs_fd <= 0) {
-            fprintf(stderr, "Error: -p/--prog-fd required\n");
-            usage(argv[0]);
-            return 1;
-        }
-        
         /* Remaining args are stages */
         int stages[64];
         int num_stages = 0;
