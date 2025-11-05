@@ -716,7 +716,29 @@ static int populate_devmaps(struct loader_ctx *ctx)
 {
     int i, err;
     int xdp_devmap_fd = -1, afxdp_devmap_fd = -1;
+    int egress_prog_fd = -1;
     char path[256];
+    
+    /* Find egress program from egress.bpf.c
+     * Need to attach this to devmap for egress processing
+     */
+    for (i = 0; i < ctx->num_modules; i++) {
+        if (strcmp(ctx->modules[i].name, "egress") == 0 && ctx->modules[i].obj) {
+            struct bpf_program *prog = bpf_object__find_program_by_name(
+                ctx->modules[i].obj, "rswitch_egress");
+            if (prog) {
+                egress_prog_fd = bpf_program__fd(prog);
+                if (ctx->verbose) {
+                    printf("Found egress program: fd=%d\n", egress_prog_fd);
+                }
+                break;
+            }
+        }
+    }
+    
+    if (egress_prog_fd < 0) {
+        fprintf(stderr, "Warning: Egress program not found - VLAN isolation will NOT work!\n");
+    }
     
     /* Find rs_xdp_devmap from lastcall module (owner)
      * Following PoC: loader finds egress_map from lastcall object
@@ -766,7 +788,7 @@ static int populate_devmaps(struct loader_ctx *ctx)
         if (xdp_devmap_fd >= 0) {
             struct bpf_devmap_val xdp_val = {
                 .ifindex = ifindex,
-                .bpf_prog.fd = -1,  /* No egress program for now */
+                .bpf_prog.fd = egress_prog_fd,  /* Attach egress hook for VLAN isolation */
             };
             /* Note: Queue selection via xdp_txq_id not supported in all kernels.
              * For queue isolation, use ethtool -X to configure RSS or run
@@ -777,7 +799,11 @@ static int populate_devmaps(struct loader_ctx *ctx)
                 fprintf(stderr, "Warning: Failed to add %s to XDP devmap: %s\n",
                         ifname, strerror(errno));
             } else {
-                printf("  XDP devmap: %s (ifindex=%u)\n", ifname, ifindex);
+                if (egress_prog_fd >= 0) {
+                    printf("  XDP devmap: %s (ifindex=%u) with egress hook\n", ifname, ifindex);
+                } else {
+                    printf("  XDP devmap: %s (ifindex=%u) without egress hook\n", ifname, ifindex);
+                }
             }
         }
         
