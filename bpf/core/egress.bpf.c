@@ -26,6 +26,33 @@
 
 char _license[] SEC("license") = "GPL";
 
+/* Check if egress port is member of packet's VLAN
+ * 
+ * This enforces VLAN isolation during flooding:
+ * - Ingress uses BPF_F_BROADCAST to send to all ports
+ * - Egress hook filters out ports not in the VLAN
+ * 
+ * Returns:
+ *   1 if port is member (allow forwarding)
+ *   0 if port is not member (drop packet)
+ */
+static __always_inline int is_vlan_member(__u16 vlan_id, __u32 ifindex)
+{
+    struct rs_vlan_members *members = bpf_map_lookup_elem(&rs_vlan_map, &vlan_id);
+    if (!members) {
+        /* VLAN not configured - allow by default (permissive mode) */
+        return 1;
+    }
+    
+    /* Calculate bitmask position (must match loader and vlan.bpf.c) */
+    __u32 word_idx = ((ifindex - 1) / 64) & 3;  // Max 4 words
+    __u64 bit_mask = 1ULL << ((ifindex - 1) % 64);
+    
+    /* Check if port is member (either tagged or untagged) */
+    return (members->tagged_members[word_idx] & bit_mask) ||
+           (members->untagged_members[word_idx] & bit_mask);
+}
+
 /* Add VLAN tag using parsing_helpers function
  * 
  * Returns:
@@ -197,6 +224,30 @@ int rswitch_egress(struct xdp_md *ctx)
          */
         rs_debug("WARN: No context on egress, passing through on port %u", egress_ifindex);
         return XDP_PASS;
+    }
+    
+    /* VLAN isolation check - critical for security!
+     * 
+     * During flooding (egress_ifindex=0 in ctx), ingress uses BPF_F_BROADCAST
+     * which sends to ALL ports. We must filter out ports not in the packet's VLAN.
+     * 
+     * This is the ONLY place enforcing VLAN isolation during flooding.
+     */
+    __u16 vlan_id = rctx->ingress_vlan;
+    if (vlan_id == 0) vlan_id = 1;  // Default VLAN
+    
+    if (!is_vlan_member(vlan_id, egress_ifindex)) {
+        rs_debug("Egress port %u not in VLAN %u, dropping (VLAN isolation)", 
+                 egress_ifindex, vlan_id);
+        
+        /* Update drop statistics */
+        __u32 stats_key = egress_ifindex;
+        struct rs_stats *stats = bpf_map_lookup_elem(&rs_stats_map, &stats_key);
+        if (stats) {
+            __sync_fetch_and_add(&stats->tx_drops, 1);
+        }
+        
+        return XDP_DROP;
     }
     
     /* Lookup egress port configuration */

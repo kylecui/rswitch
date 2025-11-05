@@ -61,6 +61,12 @@ static __always_inline int should_forward(struct rs_ctx *ctx)
     return 1;
 }
 
+/* NOTE: VLAN isolation is enforced in egress hook (egress.bpf.c), not here.
+ * We use BPF_F_BROADCAST which sends to all ports, then egress hook filters
+ * based on rs_vlan_map membership. This avoids the "only last redirect works"
+ * problem when iterating VLAN members in a loop.
+ */
+
 // Main forwarding function
 // Note: TX statistics are handled by the egress devmap hook (egress.bpf.c)
 SEC("xdp")
@@ -107,12 +113,29 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
         return bpf_redirect_map(&rs_xdp_devmap, egress_ifindex, 0);
     }
     
-    // Case 2: Flood - broadcast to all ports except ingress
-    rs_debug("Flooding: broadcast from port %d to all other ports", ctx->ifindex);
+    // Case 2: Flood - broadcast to all ports, egress hook will filter VLAN members
+    //
+    // Strategy: Use BPF_F_BROADCAST to send to all ports, then rely on
+    // egress devmap hook (egress.bpf.c) to DROP packets for ports not in VLAN.
+    //
+    // Why not filter here?
+    // - Cannot do multiple bpf_redirect() in loop (only last one takes effect)
+    // - bpf_clone_redirect() is expensive and has clone limit
+    // - Egress hook is the proper place for per-port filtering
+    //
+    // Egress hook responsibilities:
+    // - Check if egress port is member of packet's VLAN (via rs_vlan_map)
+    // - DROP if not a member (VLAN isolation enforcement)
+    // - Handle VLAN tag manipulation (add/remove based on tagged/untagged membership)
+    // - Update TX statistics
     
-    // Use XDP devmap with BROADCAST flag (queue isolation)
-    // BPF_F_EXCLUDE_INGRESS ensures we don't send back to ingress port
-    // Egress hook will handle per-port VLAN tag manipulation
+    __u16 vlan_id = ctx->ingress_vlan;  // Set by VLAN module
+    if (vlan_id == 0) vlan_id = 1;       // Default VLAN if not set
+    
+    rs_debug("Flooding: VLAN %d from port %d to all ports (egress hook will filter)", 
+             vlan_id, ctx->ifindex);
+    
+    // Broadcast to all ports (egress hook does VLAN filtering)
     return bpf_redirect_map(&rs_xdp_devmap, 0, BPF_F_BROADCAST | BPF_F_EXCLUDE_INGRESS);
     
     // Note: We cannot update individual TX stats for broadcast here
