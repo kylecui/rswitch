@@ -169,15 +169,19 @@ static int parse_settings(FILE *fp, struct rs_profile_settings *settings)
     fprintf(stderr, "DEBUG: Entering parse_settings()\n");
     
     while (fgets(line, sizeof(line), fp)) {
+        char line_copy[MAX_LINE_LEN];
+        strncpy(line_copy, line, sizeof(line_copy) - 1);
+        
         remove_comment(line);
         char *trimmed = trim(line);
         
         if (strlen(trimmed) == 0) continue;
         
         /* Check if we're entering another section (not indented) */
-        if (trimmed[0] != ' ' && trimmed[0] != '\t' && strchr(trimmed, ':')) {
+        /* Need to check the original line BEFORE trim() removed leading spaces */
+        if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
             fprintf(stderr, "DEBUG: Exiting parse_settings() - found non-indented key: %s\n", trimmed);
-            fseek(fp, -(long)strlen(line) - 1, SEEK_CUR);
+            fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
             break;
         }
         
