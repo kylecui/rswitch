@@ -121,8 +121,12 @@ static __always_inline int validate_vlan_peers(struct rs_ctx *ctx, __u16 vlan_id
         return -1;
     }
     
-    // Check if this port is a member
-    if (!is_port_in_vlan(members, ctx->ifindex, is_tagged)) {
+    // Check if this port is a member (either tagged or untagged)
+    // Don't use is_tagged (packet state) - check if port is in EITHER list
+    int is_member = is_port_in_vlan(members, ctx->ifindex, 1) ||  // Check tagged list
+                    is_port_in_vlan(members, ctx->ifindex, 0);    // Check untagged list
+    
+    if (!is_member) {
         rs_debug("Port %d is not a member of VLAN %d", ctx->ifindex, vlan_id);
         ctx->error = RS_ERROR_INVALID_VLAN;
         ctx->drop_reason = RS_DROP_VLAN_FILTER;
