@@ -171,14 +171,6 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
     int is_tagged = (ctx->layers.vlan_depth > 0 && ctx->layers.vlan_ids[0] > 0);
     __u16 effective_vlan = get_effective_vlan_id(ctx);
     
-    // DEBUG: Log all packets on trunk port to see if VLAN 10 arrives
-    if (port->vlan_mode == RS_VLAN_MODE_TRUNK) {
-        rs_debug("TRUNK port %d: is_tagged=%d, vlan_id=%d, effective_vlan=%d, allowed_count=%d",
-                 ctx->ifindex, is_tagged, 
-                 is_tagged ? ctx->layers.vlan_ids[0] : 0,
-                 effective_vlan, port->allowed_vlan_count);
-    }
-    
     // Extract PCP (Priority Code Point) and DEI (Drop Eligible Indicator) from VLAN tag
     // IEEE 802.1Q TCI format: [PCP:3 bits][DEI:1 bit][VID:12 bits]
     if (is_tagged) {
@@ -269,13 +261,12 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
             if (!is_vlan_allowed(ctx->layers.vlan_ids[0], 
                                  port->allowed_vlans, 
                                  port->allowed_vlan_count)) {
-                rs_debug("TRUNK port %d received disallowed VLAN %d (allowed_count=%d), dropping",
-                         ctx->ifindex, ctx->layers.vlan_ids[0], port->allowed_vlan_count);
+                rs_debug("TRUNK port %d received disallowed VLAN %d, dropping",
+                         ctx->ifindex, ctx->layers.vlan_ids[0]);
                 ctx->error = RS_ERROR_INVALID_VLAN;
                 ctx->drop_reason = RS_DROP_VLAN_FILTER;
                 return XDP_DROP;
             }
-            rs_debug("TRUNK port %d: VLAN %d allowed, proceeding", ctx->ifindex, ctx->layers.vlan_ids[0]);
         } else {
             // Untagged: Native VLAN must be in allowed list
             if (!is_vlan_allowed(port->native_vlan, 

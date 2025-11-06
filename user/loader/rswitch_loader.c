@@ -916,6 +916,29 @@ static int populate_devmaps(struct loader_ctx *ctx)
 }
 
 /* Attach dispatcher to interfaces */
+/* Prepare interface for XDP (promiscuous mode + disable VLAN offload) */
+static int prepare_interface(const char *ifname)
+{
+    char cmd[256];
+    int ret;
+    
+    /* Enable promiscuous mode for switch operation */
+    snprintf(cmd, sizeof(cmd), "ip link set dev %s promisc on 2>/dev/null", ifname);
+    ret = system(cmd);
+    if (ret != 0) {
+        fprintf(stderr, "Warning: Failed to enable promiscuous mode on %s\n", ifname);
+    }
+    
+    /* Disable hardware VLAN offload so XDP can see VLAN tags */
+    snprintf(cmd, sizeof(cmd), "ethtool -K %s rx-vlan-offload off 2>/dev/null", ifname);
+    ret = system(cmd);
+    if (ret != 0) {
+        fprintf(stderr, "Warning: Failed to disable VLAN offload on %s\n", ifname);
+    }
+    
+    return 0;
+}
+
 static int attach_xdp(struct loader_ctx *ctx)
 {
     int i, err;
@@ -927,6 +950,9 @@ static int attach_xdp(struct loader_ctx *ctx)
         char ifname[IF_NAMESIZE];
         
         if_indextoname(ifindex, ifname);
+        
+        /* Prepare interface (promisc + disable VLAN offload) */
+        prepare_interface(ifname);
         
         err = bpf_xdp_attach(ifindex, ctx->dispatcher_fd, ctx->xdp_flags, NULL);
         if (err) {

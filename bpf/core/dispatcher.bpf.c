@@ -75,15 +75,10 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
     
     int eth_proto = parse_ethhdr_vlan(&nh, data_end, &eth, &vlans);
     if (eth_proto < 0 || !eth) {
-        rs_debug("Failed to parse Ethernet header on ifindex %u", ifindex);
         rctx->error = RS_ERROR_PARSE_FAILED;
         rctx->drop_reason = RS_DROP_PARSE_ERROR;
         return -1;
     }
-    
-    /* DEBUG: Log raw VLAN IDs from parser */
-    rs_debug("Parser returned: vlans.id[0]=%d, vlans.id[1]=%d, eth->h_proto=0x%04x",
-             vlans.id[0], vlans.id[1], bpf_ntohs(eth->h_proto));
     
     /* Store VLAN information in layers */
     rctx->layers.vlan_depth = 0;

@@ -280,8 +280,6 @@ static int parse_port_item(FILE *fp, struct rs_profile_port *port)
     port->management = 1;  // Default: managed
     port->mac_learning = 1;
     
-    fprintf(stderr, "DEBUG: parse_port_item() started\n");
-    
     while (fgets(line, sizeof(line), fp)) {
         char line_copy[MAX_LINE_LEN];
         strncpy(line_copy, line, sizeof(line_copy) - 1);
@@ -289,19 +287,15 @@ static int parse_port_item(FILE *fp, struct rs_profile_port *port)
         remove_comment(line);
         char *trimmed = trim(line);
         
-        fprintf(stderr, "DEBUG: parse_port_item() read: '%s'\n", trimmed);
-        
         if (strlen(trimmed) == 0) continue;
         
         /* Check if we're exiting this port (another port item or section) */
         if (trimmed[0] == '-' || (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':'))) {
-            fprintf(stderr, "DEBUG: parse_port_item() exiting on: %s\n", trimmed);
             fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
             break;
         }
         
         if (parse_key_value(trimmed, key, value, sizeof(key)) == 0) {
-            fprintf(stderr, "DEBUG: parse_port_item() key='%s', value='%s'\n", key, value);
             if (strcmp(key, "interface") == 0) {
                 strncpy(port->interface, value, sizeof(port->interface) - 1);
             } else if (strcmp(key, "enabled") == 0) {
@@ -327,8 +321,6 @@ static int parse_port_item(FILE *fp, struct rs_profile_port *port)
                 char *end = strchr(val, ']');
                 if (end) *end = '\0';  /* Remove trailing ] */
                 port->allowed_vlan_count = parse_vlan_list(val, port->allowed_vlans, 128);
-                fprintf(stderr, "DEBUG: parse_port_item() parsed %d allowed VLANs from '%s'\n", 
-                        port->allowed_vlan_count, value);
             } else if (strcmp(key, "mac_learning") == 0) {
                 port->mac_learning = parse_bool(value);
             } else if (strcmp(key, "default_priority") == 0) {
@@ -336,8 +328,6 @@ static int parse_port_item(FILE *fp, struct rs_profile_port *port)
             }
         }
     }
-    
-    fprintf(stderr, "DEBUG: parse_port_item() finished, interface='%s'\n", port->interface);
     
     return 0;
 }
@@ -352,8 +342,6 @@ static int parse_ports(FILE *fp, struct rs_profile *profile)
     ports = calloc(MAX_PORTS, sizeof(struct rs_profile_port));
     if (!ports) return -ENOMEM;
     
-    fprintf(stderr, "DEBUG: parse_ports() started\n");
-    
     while (fgets(line, sizeof(line), fp)) {
         char line_copy[MAX_LINE_LEN];
         strncpy(line_copy, line, sizeof(line_copy) - 1);
@@ -361,20 +349,16 @@ static int parse_ports(FILE *fp, struct rs_profile *profile)
         remove_comment(line);
         char *trimmed = trim(line);
         
-        fprintf(stderr, "DEBUG: parse_ports() read line: '%s' (trimmed: '%s')\n", line_copy, trimmed);
-        
         if (strlen(trimmed) == 0) continue;
         
         /* Check if we're entering another section */
         if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
-            fprintf(stderr, "DEBUG: parse_ports() exiting - found non-indented key: %s\n", trimmed);
             fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
             break;
         }
         
         /* Parse port list item */
         if (trimmed[0] == '-' && port_count < MAX_PORTS) {
-            fprintf(stderr, "DEBUG: parse_ports() found port item, parsing...\n");
             
             /* Initialize port structure with defaults */
             memset(&ports[port_count], 0, sizeof(struct rs_profile_port));
@@ -388,27 +372,19 @@ static int parse_ports(FILE *fp, struct rs_profile *profile)
             
             /* If there's a key-value on the same line as '-', parse it */
             if (strlen(content_after_dash) > 0 && parse_key_value(content_after_dash, first_key, first_value, sizeof(first_key)) == 0) {
-                fprintf(stderr, "DEBUG: parse_ports() first key='%s', value='%s'\n", first_key, first_value);
-                
                 /* Pre-populate the interface field */
                 if (strcmp(first_key, "interface") == 0) {
                     strncpy(ports[port_count].interface, first_value, sizeof(ports[port_count].interface) - 1);
-                    fprintf(stderr, "DEBUG: parse_ports() set interface='%s'\n", ports[port_count].interface);
                 }
             }
             
             if (parse_port_item(fp, &ports[port_count]) == 0) {
                 if (strlen(ports[port_count].interface) > 0) {
-                    fprintf(stderr, "DEBUG: parse_ports() added port: %s\n", ports[port_count].interface);
                     port_count++;
-                } else {
-                    fprintf(stderr, "DEBUG: parse_ports() port item has no interface\n");
                 }
             }
         }
     }
-    
-    fprintf(stderr, "DEBUG: parse_ports() finished with %d ports\n", port_count);
     
     profile->ports = ports;
     profile->port_count = port_count;
