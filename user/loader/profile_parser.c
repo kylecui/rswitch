@@ -258,7 +258,18 @@ static int parse_port_item(FILE *fp, struct rs_profile_port *port)
     char line[MAX_LINE_LEN];
     char key[256], value[256];
     
+    /* Save interface if already set, then initialize */
+    char saved_interface[32];
+    strncpy(saved_interface, port->interface, sizeof(saved_interface) - 1);
+    saved_interface[31] = '\0';
+    
     memset(port, 0, sizeof(*port));
+    
+    /* Restore interface */
+    if (strlen(saved_interface) > 0) {
+        strncpy(port->interface, saved_interface, sizeof(port->interface) - 1);
+    }
+    
     port->enabled = 1;
     port->management = 1;  // Default: managed
     port->mac_learning = 1;
@@ -430,7 +441,15 @@ static int parse_vlan_item(FILE *fp, struct rs_profile_vlan *vlan)
     char line[MAX_LINE_LEN];
     char key[256], value[256];
     
+    /* Save pre-populated vlan_id (if set by parse_vlans inline parsing) */
+    uint16_t saved_vlan_id = vlan->vlan_id;
+    
     memset(vlan, 0, sizeof(*vlan));
+    
+    /* Restore saved vlan_id */
+    if (saved_vlan_id > 0) {
+        vlan->vlan_id = saved_vlan_id;
+    }
     
     while (fgets(line, sizeof(line), fp)) {
         char line_copy[MAX_LINE_LEN];
