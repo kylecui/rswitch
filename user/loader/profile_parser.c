@@ -263,6 +263,8 @@ static int parse_port_item(FILE *fp, struct rs_profile_port *port)
     port->management = 1;  // Default: managed
     port->mac_learning = 1;
     
+    fprintf(stderr, "DEBUG: parse_port_item() started\n");
+    
     while (fgets(line, sizeof(line), fp)) {
         char line_copy[MAX_LINE_LEN];
         strncpy(line_copy, line, sizeof(line_copy) - 1);
@@ -270,15 +272,19 @@ static int parse_port_item(FILE *fp, struct rs_profile_port *port)
         remove_comment(line);
         char *trimmed = trim(line);
         
+        fprintf(stderr, "DEBUG: parse_port_item() read: '%s'\n", trimmed);
+        
         if (strlen(trimmed) == 0) continue;
         
         /* Check if we're exiting this port (another port item or section) */
         if (trimmed[0] == '-' || (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':'))) {
+            fprintf(stderr, "DEBUG: parse_port_item() exiting on: %s\n", trimmed);
             fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
             break;
         }
         
         if (parse_key_value(trimmed, key, value, sizeof(key)) == 0) {
+            fprintf(stderr, "DEBUG: parse_port_item() key='%s', value='%s'\n", key, value);
             if (strcmp(key, "interface") == 0) {
                 strncpy(port->interface, value, sizeof(port->interface) - 1);
             } else if (strcmp(key, "enabled") == 0) {
@@ -311,6 +317,8 @@ static int parse_port_item(FILE *fp, struct rs_profile_port *port)
             }
         }
     }
+    
+    fprintf(stderr, "DEBUG: parse_port_item() finished, interface='%s'\n", port->interface);
     
     return 0;
 }
@@ -348,6 +356,21 @@ static int parse_ports(FILE *fp, struct rs_profile *profile)
         /* Parse port list item */
         if (trimmed[0] == '-' && port_count < MAX_PORTS) {
             fprintf(stderr, "DEBUG: parse_ports() found port item, parsing...\n");
+            
+            /* Check if this line has content after '-' (e.g., "- interface: ens34") */
+            char *content_after_dash = trim(trimmed + 1);
+            char first_key[256], first_value[256];
+            
+            /* If there's a key-value on the same line as '-', parse it */
+            if (strlen(content_after_dash) > 0 && parse_key_value(content_after_dash, first_key, first_value, sizeof(first_key)) == 0) {
+                fprintf(stderr, "DEBUG: parse_ports() first key='%s', value='%s'\n", first_key, first_value);
+                
+                /* Pre-populate the interface field */
+                if (strcmp(first_key, "interface") == 0) {
+                    strncpy(ports[port_count].interface, first_value, sizeof(ports[port_count].interface) - 1);
+                }
+            }
+            
             if (parse_port_item(fp, &ports[port_count]) == 0) {
                 if (strlen(ports[port_count].interface) > 0) {
                     fprintf(stderr, "DEBUG: parse_ports() added port: %s\n", ports[port_count].interface);
@@ -465,6 +488,18 @@ static int parse_vlans(FILE *fp, struct rs_profile *profile)
         
         /* Parse VLAN list item */
         if (trimmed[0] == '-' && vlan_count < MAX_VLANS) {
+            /* Check if this line has content after '-' (e.g., "- vlan_id: 1") */
+            char *content_after_dash = trim(trimmed + 1);
+            char first_key[256], first_value[256];
+            
+            /* If there's a key-value on the same line as '-', parse it */
+            if (strlen(content_after_dash) > 0 && parse_key_value(content_after_dash, first_key, first_value, sizeof(first_key)) == 0) {
+                /* Pre-populate the vlan_id field */
+                if (strcmp(first_key, "vlan_id") == 0) {
+                    vlans[vlan_count].vlan_id = (uint16_t)atoi(first_value);
+                }
+            }
+            
             if (parse_vlan_item(fp, &vlans[vlan_count]) == 0) {
                 if (vlans[vlan_count].vlan_id > 0) {
                     vlan_count++;
