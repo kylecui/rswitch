@@ -125,9 +125,20 @@ int main(int argc, char **argv)
             for (int cpu = 0; cpu < num_cpus; cpu++) {
                 ctx = values[cpu];
                 
-                /* Skip if not parsed */
-                if (!ctx.parsed || ctx.ifindex == 0) {
+                /* Skip if not parsed or invalid ifindex
+                 * Valid ifindex: 1-255 (typical NICs use 1-50)
+                 * Garbage often has ifindex=0 or huge random values
+                 */
+                if (!ctx.parsed || ctx.ifindex == 0 || ctx.ifindex > 255) {
                     continue;
+                }
+                
+                /* Additional sanity check: eth_proto should be valid
+                 * Common values: 0x0800 (IPv4), 0x0806 (ARP), 0x86DD (IPv6)
+                 * Garbage often has 0x0000, 0x0001, 0x0002, etc.
+                 */
+                if (ctx.layers.eth_proto < 0x0600 && ctx.layers.eth_proto != 0) {
+                    continue;  // Skip non-Ethernet II frames (likely garbage)
                 }
                 
                 /* Note: We rely on egress_final clearing parsed=0 after
