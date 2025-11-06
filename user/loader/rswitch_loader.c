@@ -68,8 +68,12 @@ struct rs_port_config {
     __u16 pvid;
     __u16 native_vlan;
     __u16 access_vlan;
+    __u16 allowed_vlan_count;   /* MUST match BPF side: count before array */
     __u16 allowed_vlans[128];
-    __u16 vlan_count;
+    __u16 tagged_vlan_count;    /* For hybrid mode */
+    __u16 tagged_vlans[64];
+    __u16 untagged_vlan_count;
+    __u16 untagged_vlans[64];
     __u8  default_prio;
     __u8  trust_dscp;
     __u16 rate_limit_kbps;
@@ -586,7 +590,7 @@ static int configure_ports(struct loader_ctx *ctx)
                 .access_vlan = pport->access_vlan,
                 .default_prio = pport->default_priority,
                 .trust_dscp = 0,
-                .vlan_count = pport->allowed_vlan_count,
+                .allowed_vlan_count = pport->allowed_vlan_count,
             };
             
             /* Copy allowed VLANs */
