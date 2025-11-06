@@ -311,6 +311,19 @@ int rswitch_egress(struct xdp_md *ctx)
     rs_debug("Egress on port %u: vlan_mode=%u, pkt_len=%u", 
              egress_ifindex, cfg->vlan_mode, pkt_len);
     
+    /* TODO: Future egress pipeline support
+     * 
+     * When egress pipeline is implemented (egress_vlan → egress_qos → egress_final):
+     * - This function becomes the egress dispatcher (like ingress dispatcher)
+     * - Tail-call to first egress module instead of returning here
+     * - Final egress module (egress_final.bpf.c) will clear parsed=0
+     * 
+     * For now, we don't clear parsed here because:
+     * - Would break future tail-call chain (modules need parsed=1)
+     * - User-space tools rely on parsed flag for validity
+     * - Context will be overwritten by next packet anyway (per-CPU isolation)
+     */
+    
     return XDP_PASS;
 }
 

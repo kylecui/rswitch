@@ -110,6 +110,7 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
         // Devmap egress hook (egress.bpf.c) will:
         // - Handle VLAN tag manipulation
         // - Update TX statistics
+        // - Clear parsed flag after processing completes
         return bpf_redirect_map(&rs_xdp_devmap, egress_ifindex, 0);
     }
     
@@ -136,6 +137,7 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
              vlan_id, ctx->ifindex);
     
     // Broadcast to all ports (egress hook does VLAN filtering)
+    // Egress hook will clear parsed flag after processing completes
     return bpf_redirect_map(&rs_xdp_devmap, 0, BPF_F_BROADCAST | BPF_F_EXCLUDE_INGRESS);
     
     // Note: We cannot update individual TX stats for broadcast here
