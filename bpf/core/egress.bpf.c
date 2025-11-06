@@ -328,17 +328,15 @@ int rswitch_egress(struct xdp_md *ctx)
      * - Final XDP_PASS return
      */
     
-    /* Set up context for egress pipeline */
-    rctx->next_prog_id = 190;  /* Stage 190 = egress_final */
-    rctx->call_depth++;
-    
-    /* Tail-call to egress_final - does not return on success */
-    bpf_tail_call(ctx, &rs_progs, 190);
+    /* Tail-call to egress pipeline using RS_TAIL_CALL_NEXT macro
+     * Loader inserts modules sequentially, macro auto-increments next_prog_id
+     */
+    RS_TAIL_CALL_NEXT(ctx, rctx);
     
     /* Tail-call failed - should not happen if egress_final is loaded
      * Fall back to direct XDP_PASS (parsed won't be cleared, but packet transmits)
      */
-    rs_debug("WARN: Tail-call to egress_final failed, passing directly");
+    rs_debug("WARN: Tail-call to egress pipeline failed, passing directly");
     return XDP_PASS;
 }
 

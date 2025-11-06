@@ -288,9 +288,12 @@ static int discover_modules(struct loader_ctx *ctx)
         if (!strstr(entry->d_name, ".bpf.o"))
             continue;
         
-        /* Skip core programs (handled separately) */
-        if (strstr(entry->d_name, "dispatcher") || 
-            strstr(entry->d_name, "egress"))
+        /* Skip core programs (handled separately)
+         * Note: egress_final is a MODULE, not core, so don't skip it
+         * Only skip dispatcher.bpf.o and egress.bpf.o (core entry points)
+         */
+        if (strcmp(entry->d_name, "dispatcher.bpf.o") == 0 || 
+            strcmp(entry->d_name, "egress.bpf.o") == 0)
             continue;
         
         snprintf(path, sizeof(path), "%s/%s", BUILD_DIR, entry->d_name);
@@ -298,8 +301,12 @@ static int discover_modules(struct loader_ctx *ctx)
         /* Try to read module metadata */
         struct rs_module_desc desc;
         if (read_module_metadata(path, &desc) == 0) {
-            /* Check if module is in profile (if profile is used) */
-            if (ctx->use_profile && !is_module_in_profile(desc.name, &ctx->profile)) {
+            /* Check if module is in profile (if profile is used)
+             * Exception: egress_final is infrastructure, always load it
+             */
+            if (ctx->use_profile && 
+                strcmp(desc.name, "egress_final") != 0 &&
+                !is_module_in_profile(desc.name, &ctx->profile)) {
                 if (ctx->verbose) {
                     printf("Skipping module: %s (not in profile)\n", desc.name);
                 }
