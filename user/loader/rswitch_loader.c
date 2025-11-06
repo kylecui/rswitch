@@ -590,6 +590,17 @@ static int configure_ports(struct loader_ctx *ctx)
             };
             
             /* Copy allowed VLANs */
+            if (ctx->verbose) {
+                fprintf(stderr, "DEBUG: configure_ports() port=%s, allowed_vlan_count=%d\n",
+                        pport->interface, pport->allowed_vlan_count);
+                fprintf(stderr, "DEBUG: allowed_vlans=[");
+                for (int j = 0; j < pport->allowed_vlan_count && j < 10; j++) {
+                    fprintf(stderr, "%d%s", pport->allowed_vlans[j], 
+                            j < pport->allowed_vlan_count-1 ? ", " : "");
+                }
+                fprintf(stderr, "]\n");
+            }
+            
             for (int j = 0; j < pport->allowed_vlan_count && j < 128; j++) {
                 cfg.allowed_vlans[j] = pport->allowed_vlans[j];
             }
