@@ -98,6 +98,9 @@ int main(int argc, char **argv)
     struct rs_ctx *values = NULL;
     int pkt_count = 0;
     
+    /* Track last seen timestamp per CPU to detect new packets */
+    __u32 *last_timestamps = NULL;
+    
     /* Open rs_ctx_map */
     map_fd = bpf_obj_get("/sys/fs/bpf/rs_ctx_map");
     if (map_fd < 0) {
@@ -110,6 +113,15 @@ int main(int argc, char **argv)
     values = calloc(num_cpus, sizeof(struct rs_ctx));
     if (!values) {
         fprintf(stderr, "Failed to allocate memory\n");
+        close(map_fd);
+        return 1;
+    }
+    
+    /* Allocate timestamp tracking array */
+    last_timestamps = calloc(num_cpus, sizeof(__u32));
+    if (!last_timestamps) {
+        fprintf(stderr, "Failed to allocate timestamp array\n");
+        free(values);
         close(map_fd);
         return 1;
     }
@@ -136,6 +148,17 @@ int main(int argc, char **argv)
                 if (ctx.ifindex == 0 || ctx.ifindex > 1000) {
                     continue;
                 }
+                
+                /* Deduplication: Only show packet if timestamp changed
+                 * This filters out stale data that has parsed=1 but never updates
+                 * Garbage data typically has timestamp=0 and never changes
+                 */
+                if (ctx.timestamp == last_timestamps[cpu]) {
+                    continue;  // Same packet as before, skip
+                }
+                
+                /* Update last seen timestamp for this CPU */
+                last_timestamps[cpu] = ctx.timestamp;
                 
                 pkt_count++;
                 
@@ -180,6 +203,7 @@ int main(int argc, char **argv)
         usleep(50000);  // 50ms polling interval
     }
     
+    free(last_timestamps);
     free(values);
     close(map_fd);
     return 0;
