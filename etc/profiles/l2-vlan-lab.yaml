@@ -1,0 +1,113 @@
+# rSwitch Profile: L2 Switch with Lab VLAN Configuration
+# 
+# Traditional L2 learning switch with pre-configured VLAN topology:
+# - ens34 (port 3): TRUNK - native VLAN 1, allowed VLANs 1,10,20,30
+# - ens35 (port 4): ACCESS - VLAN 10
+# - ens36 (port 5): ACCESS - VLAN 1
+# - ens37 (port 6): ACCESS - VLAN 1
+#
+# VLAN Isolation:
+# - VLAN 1: ens34(tagged), ens36(untagged), ens37(untagged)
+# - VLAN 10: ens34(tagged), ens35(untagged)
+# - VLAN 20: ens34(tagged) only
+# - VLAN 30: ens34(tagged) only
+#
+# Pipeline: dispatcher → vlan → l2learn → lastcall → egress
+# Use case: Lab/test environment with OpenWrt router on trunk port
+
+name: l2-vlan-lab
+description: "L2 learning switch with lab VLAN configuration"
+version: "1.0"
+
+# Ingress pipeline (sorted by stage number)
+ingress:
+  - vlan       # Stage 20: VLAN ingress filtering
+  - l2learn    # Stage 80: MAC learning and lookup
+  - lastcall   # Stage 90: Forward based on learned MAC or flood
+
+# Egress pipeline
+egress:
+  - egress     # Devmap egress hook with VLAN tagging
+
+# Global settings
+settings:
+  # MAC learning enabled
+  mac_learning: true
+  mac_aging_time: 300  # seconds
+  
+  # VLAN enforcement enabled
+  vlan_enforcement: true
+  default_vlan: 1
+  
+  # Forwarding behavior
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  
+  # Statistics collection
+  stats_enabled: true
+  
+  # Event notifications
+  ringbuf_enabled: true
+  notify_mac_learned: true
+  notify_mac_moved: true
+  
+  # Debug mode
+  debug: false
+
+# Port configurations
+ports:
+  - interface: ens34
+    enabled: true
+    management: managed
+    vlan_mode: trunk
+    native_vlan: 1
+    allowed_vlans: [1, 10, 20, 30]
+    mac_learning: true
+    default_priority: 0
+    
+  - interface: ens35
+    enabled: true
+    management: managed
+    vlan_mode: access
+    access_vlan: 10
+    mac_learning: true
+    default_priority: 0
+    
+  - interface: ens36
+    enabled: true
+    management: managed
+    vlan_mode: access
+    access_vlan: 1
+    mac_learning: true
+    default_priority: 0
+    
+  - interface: ens37
+    enabled: true
+    management: managed
+    vlan_mode: access
+    access_vlan: 1
+    mac_learning: true
+    default_priority: 0
+
+# VLAN database configuration
+vlans:
+  - vlan_id: 1
+    name: "default"
+    tagged_ports: [ens34]
+    untagged_ports: [ens36, ens37]
+    
+  - vlan_id: 10
+    name: "management"
+    tagged_ports: [ens34]
+    untagged_ports: [ens35]
+    
+  - vlan_id: 20
+    name: "guest"
+    tagged_ports: [ens34]
+    untagged_ports: []
+    
+  - vlan_id: 30
+    name: "iot"
+    tagged_ports: [ens34]
+    untagged_ports: []
