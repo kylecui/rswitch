@@ -60,22 +60,37 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
         rctx->prio = cfg->default_prio;
     }
     
-    /* MINIMAL parsing: Just validate Ethernet header exists
-     * Individual modules will do lazy parsing as needed (like PoC architecture)
-     * This keeps dispatcher instruction count low
-     * 
+    /* Parse Ethernet header and extract VLAN tags
      * ⚠️ GOLDEN RULE: ALWAYS check bounds BEFORE accessing memory
      */
-    struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end) {  // Bounds check BEFORE any field access
-        rs_debug("Packet too short on ifindex %u", ifindex);
+    struct hdr_cursor nh = { .pos = data };
+    struct ethhdr *eth = NULL;
+    struct collect_vlans vlans = {0};
+    
+    int eth_proto = parse_ethhdr_vlan(&nh, data_end, &eth, &vlans);
+    if (eth_proto < 0 || !eth) {
+        rs_debug("Failed to parse Ethernet header on ifindex %u", ifindex);
         rctx->error = RS_ERROR_PARSE_FAILED;
         rctx->drop_reason = RS_DROP_PARSE_ERROR;
         return -1;
     }
     
-    rs_debug("Packet received on ifindex %u, eth_proto=0x%04x", 
-             ifindex, bpf_ntohs(eth->h_proto));
+    /* Store VLAN information in layers */
+    rctx->layers.vlan_depth = 0;
+    #pragma unroll
+    for (int i = 0; i < VLAN_MAX_DEPTH; i++) {
+        if (vlans.id[i] > 0) {
+            rctx->layers.vlan_ids[i] = vlans.id[i];
+            rctx->layers.vlan_depth++;
+        } else {
+            rctx->layers.vlan_ids[i] = 0;
+        }
+    }
+    
+    rs_debug("Packet received on ifindex %u, eth_proto=0x%04x, vlan_depth=%d, vlan_id=%d", 
+             ifindex, bpf_ntohs(eth_proto), rctx->layers.vlan_depth,
+             rctx->layers.vlan_depth > 0 ? rctx->layers.vlan_ids[0] : 0);
+    
     rctx->parsed = 1;  /* Mark as "validated" */
     return 0;
 }
