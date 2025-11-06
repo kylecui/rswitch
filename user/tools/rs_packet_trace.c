@@ -125,26 +125,17 @@ int main(int argc, char **argv)
             for (int cpu = 0; cpu < num_cpus; cpu++) {
                 ctx = values[cpu];
                 
-                /* Skip if not parsed or invalid ifindex
-                 * Valid ifindex: 1-255 (typical NICs use 1-50)
-                 * Garbage often has ifindex=0 or huge random values
-                 */
-                if (!ctx.parsed || ctx.ifindex == 0 || ctx.ifindex > 255) {
+                /* Skip if not parsed */
+                if (!ctx.parsed) {
                     continue;
                 }
                 
-                /* Additional sanity check: eth_proto should be valid
-                 * Common values: 0x0800 (IPv4), 0x0806 (ARP), 0x86DD (IPv6)
-                 * Garbage often has 0x0000, 0x0001, 0x0002, etc.
+                /* Skip obviously invalid ifindex (your system has ifindex 1-6)
+                 * But be permissive - only filter extreme garbage
                  */
-                if (ctx.layers.eth_proto < 0x0600 && ctx.layers.eth_proto != 0) {
-                    continue;  // Skip non-Ethernet II frames (likely garbage)
+                if (ctx.ifindex == 0 || ctx.ifindex > 1000) {
+                    continue;
                 }
-                
-                /* Note: We rely on egress_final clearing parsed=0 after
-                 * processing completes. This ensures we only see packets
-                 * currently in the pipeline (parsed=1).
-                 */
                 
                 pkt_count++;
                 
