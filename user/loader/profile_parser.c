@@ -327,6 +327,8 @@ static int parse_port_item(FILE *fp, struct rs_profile_port *port)
                 char *end = strchr(val, ']');
                 if (end) *end = '\0';  /* Remove trailing ] */
                 port->allowed_vlan_count = parse_vlan_list(val, port->allowed_vlans, 128);
+                fprintf(stderr, "DEBUG: parse_port_item() parsed %d allowed VLANs from '%s'\n", 
+                        port->allowed_vlan_count, value);
             } else if (strcmp(key, "mac_learning") == 0) {
                 port->mac_learning = parse_bool(value);
             } else if (strcmp(key, "default_priority") == 0) {
