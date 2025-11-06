@@ -560,44 +560,79 @@ static int configure_ports(struct loader_ctx *ctx)
         return 0;
     }
     
-    /* Determine VLAN mode based on profile settings */
-    __u8 vlan_mode = RS_VLAN_MODE_OFF;  /* Default: no VLAN processing */
+    printf("Configuring ports:\n");
+    
+    /* If profile has explicit port configurations, use them */
+    if (ctx->use_profile && ctx->profile.port_count > 0) {
+        printf("  Using profile port configurations (%d ports)\n", ctx->profile.port_count);
+        
+        for (i = 0; i < ctx->profile.port_count; i++) {
+            struct rs_profile_port *pport = &ctx->profile.ports[i];
+            __u32 ifindex = if_nametoindex(pport->interface);
+            
+            if (ifindex == 0) {
+                fprintf(stderr, "  Warning: interface %s not found, skipping\n", pport->interface);
+                continue;
+            }
+            
+            struct rs_port_config cfg = {
+                .ifindex = ifindex,
+                .enabled = pport->enabled,
+                .mgmt_type = pport->management,
+                .vlan_mode = pport->vlan_mode,
+                .learning = pport->mac_learning,
+                .pvid = pport->pvid ? pport->pvid : pport->access_vlan,
+                .native_vlan = pport->native_vlan,
+                .access_vlan = pport->access_vlan,
+                .default_prio = pport->default_priority,
+                .trust_dscp = 0,
+                .vlan_count = pport->allowed_vlan_count,
+            };
+            
+            /* Copy allowed VLANs */
+            for (int j = 0; j < pport->allowed_vlan_count && j < 128; j++) {
+                cfg.allowed_vlans[j] = pport->allowed_vlans[j];
+            }
+            
+            err = bpf_map_update_elem(ctx->rs_port_config_map_fd, &ifindex, &cfg, BPF_ANY);
+            if (err) {
+                fprintf(stderr, "  Failed to configure port %s: %s\n", 
+                        pport->interface, strerror(errno));
+                continue;
+            }
+            
+            const char *mode_str[] = {"OFF", "ACCESS", "TRUNK", "HYBRID"};
+            printf("  Port %u (%s): mode=%s", ifindex, pport->interface, 
+                   mode_str[pport->vlan_mode < 4 ? pport->vlan_mode : 0]);
+            if (pport->vlan_mode == RS_VLAN_MODE_ACCESS) {
+                printf(", access_vlan=%d", pport->access_vlan);
+            } else if (pport->vlan_mode == RS_VLAN_MODE_TRUNK) {
+                printf(", native=%d, allowed=%d VLANs", pport->native_vlan, pport->allowed_vlan_count);
+            }
+            printf(", learning=%s\n", pport->mac_learning ? "on" : "off");
+        }
+        
+        return 0;
+    }
+    
+    /* Otherwise use default configuration based on global settings */
+    __u8 vlan_mode = RS_VLAN_MODE_OFF;
     __u16 default_vlan = 1;
     
-    /* Debug: Show profile status */
-    if (ctx->verbose) {
-        printf("\nDEBUG: use_profile=%d, vlan_enforcement=%d, mac_learning=%d, default_vlan=%d\n",
-               ctx->use_profile,
-               ctx->profile.settings.vlan_enforcement,
-               ctx->profile.settings.mac_learning,
-               ctx->profile.settings.default_vlan);
-    }
-    
     if (ctx->use_profile && ctx->profile.settings.vlan_enforcement) {
-        /* VLAN enforcement enabled - default to ACCESS mode
-         * All ports in same VLAN (default_vlan) as untagged access ports
-         * This is the safest default for managed switches
-         */
         vlan_mode = RS_VLAN_MODE_ACCESS;
         default_vlan = ctx->profile.settings.default_vlan;
-        printf("\nVLAN enforcement enabled: all ports default to ACCESS mode (VLAN %d)\n", 
-               default_vlan);
+        printf("  Using default config: ACCESS mode (VLAN %d)\n", default_vlan);
     } else {
-        printf("\nVLAN enforcement disabled: all ports in OFF mode\n");
-        if (ctx->verbose && ctx->use_profile) {
-            printf("  (Profile loaded but vlan_enforcement=%d)\n", 
-                   ctx->profile.settings.vlan_enforcement);
-        }
+        printf("  Using default config: OFF mode\n");
     }
-    
-    printf("Configuring ports:\n");
     
     for (i = 0; i < ctx->num_interfaces; i++) {
         __u32 ifindex = ctx->interfaces[i];
         struct rs_port_config cfg = {
             .ifindex = ifindex,
             .enabled = 1,
-            .mgmt_type = 1,  /* Managed mode */
+            .mgmt_type = 1,
             .vlan_mode = vlan_mode,
             .learning = ctx->use_profile ? ctx->profile.settings.mac_learning : 1,
             .pvid = default_vlan,
@@ -609,7 +644,7 @@ static int configure_ports(struct loader_ctx *ctx)
         
         err = bpf_map_update_elem(ctx->rs_port_config_map_fd, &ifindex, &cfg, BPF_ANY);
         if (err) {
-            fprintf(stderr, "Failed to configure port %u: %s\n", 
+            fprintf(stderr, "  Failed to configure port %u: %s\n", 
                     ifindex, strerror(errno));
             continue;
         }
@@ -617,15 +652,9 @@ static int configure_ports(struct loader_ctx *ctx)
         char ifname[IF_NAMESIZE];
         if_indextoname(ifindex, ifname);
         
-        const char *mode_str = "OFF";
-        switch (vlan_mode) {
-            case RS_VLAN_MODE_ACCESS: mode_str = "ACCESS"; break;
-            case RS_VLAN_MODE_TRUNK: mode_str = "TRUNK"; break;
-            case RS_VLAN_MODE_HYBRID: mode_str = "HYBRID"; break;
-        }
-        
-        printf("  Port %u (%s): enabled, managed, vlan_mode=%s, vlan=%d, learning=%s\n", 
-               ifindex, ifname, mode_str, default_vlan,
+        const char *mode_str[] = {"OFF", "ACCESS", "TRUNK", "HYBRID"};
+        printf("  Port %u (%s): mode=%s, vlan=%d, learning=%s\n", 
+               ifindex, ifname, mode_str[vlan_mode], default_vlan,
                cfg.learning ? "on" : "off");
     }
     
@@ -639,7 +668,7 @@ static int configure_ports(struct loader_ctx *ctx)
  */
 static int initialize_vlan_map(struct loader_ctx *ctx)
 {
-    int i, err;
+    int i, j, err;
     char path[256];
     int vlan_map_fd = -1;
     
@@ -666,7 +695,65 @@ static int initialize_vlan_map(struct loader_ctx *ctx)
     
     printf("\nInitializing VLAN map:\n");
     
-    /* Create default VLAN 1 with all ports as untagged members */
+    /* If profile has explicit VLAN configurations, use them */
+    if (ctx->use_profile && ctx->profile.vlan_count > 0) {
+        printf("  Using profile VLAN configurations (%d VLANs)\n", ctx->profile.vlan_count);
+        
+        for (i = 0; i < ctx->profile.vlan_count; i++) {
+            struct rs_profile_vlan *pvlan = &ctx->profile.vlans[i];
+            struct rs_vlan_members vlan = {
+                .vlan_id = pvlan->vlan_id,
+                .member_count = pvlan->tagged_count + pvlan->untagged_count,
+            };
+            
+            /* Clear bitmasks */
+            for (j = 0; j < 4; j++) {
+                vlan.tagged_members[j] = 0;
+                vlan.untagged_members[j] = 0;
+            }
+            
+            /* Add tagged ports */
+            for (j = 0; j < pvlan->tagged_count; j++) {
+                __u32 ifindex = if_nametoindex(pvlan->tagged_ports[j]);
+                if (ifindex == 0) {
+                    fprintf(stderr, "  Warning: tagged port %s not found\n", pvlan->tagged_ports[j]);
+                    continue;
+                }
+                
+                __u32 word_idx = ((ifindex - 1) / 64) & 3;
+                __u64 bit_mask = 1ULL << ((ifindex - 1) % 64);
+                vlan.tagged_members[word_idx] |= bit_mask;
+            }
+            
+            /* Add untagged ports */
+            for (j = 0; j < pvlan->untagged_count; j++) {
+                __u32 ifindex = if_nametoindex(pvlan->untagged_ports[j]);
+                if (ifindex == 0) {
+                    fprintf(stderr, "  Warning: untagged port %s not found\n", pvlan->untagged_ports[j]);
+                    continue;
+                }
+                
+                __u32 word_idx = ((ifindex - 1) / 64) & 3;
+                __u64 bit_mask = 1ULL << ((ifindex - 1) % 64);
+                vlan.untagged_members[word_idx] |= bit_mask;
+            }
+            
+            __u16 vlan_id = pvlan->vlan_id;
+            err = bpf_map_update_elem(vlan_map_fd, &vlan_id, &vlan, BPF_ANY);
+            if (err) {
+                fprintf(stderr, "  Failed to create VLAN %d: %s\n", vlan_id, strerror(errno));
+                continue;
+            }
+            
+            printf("  VLAN %d (%s): %d tagged, %d untagged\n", 
+                   pvlan->vlan_id, pvlan->name, pvlan->tagged_count, pvlan->untagged_count);
+        }
+        
+        close(vlan_map_fd);
+        return 0;
+    }
+    
+    /* Otherwise create default VLAN 1 with all ports as untagged members */
     struct rs_vlan_members vlan1 = {
         .vlan_id = 1,
         .member_count = ctx->num_interfaces,
