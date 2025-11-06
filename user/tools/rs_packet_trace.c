@@ -124,15 +124,15 @@ int main(int argc, char **argv)
             for (int cpu = 0; cpu < num_cpus; cpu++) {
                 ctx = values[cpu];
                 
-                /* Skip if not parsed or same packet as before */
-                if (!ctx.parsed || (ctx.ifindex == last_ifindex && ctx.timestamp == last_timestamp)) {
+                /* Skip if not parsed */
+                if (!ctx.parsed || ctx.ifindex == 0) {
                     continue;
                 }
                 
-                last_ifindex = ctx.ifindex;
-                last_timestamp = ctx.timestamp;
+                pkt_count++;
                 
-                printf("\n--- Packet on ifindex %u (CPU %d) ---\n", ctx.ifindex, cpu);
+                printf("\n[%d] Packet on ifindex %u (CPU %d, ts=%u) ---\n", 
+                       pkt_count, ctx.ifindex, cpu, ctx.timestamp);
                 printf("Ethernet: proto=%s (0x%04x)\n", 
                        eth_proto_name(ctx.layers.eth_proto), ctx.layers.eth_proto);
                 
