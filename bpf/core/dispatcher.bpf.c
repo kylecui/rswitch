@@ -67,6 +67,12 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
     struct ethhdr *eth = NULL;
     struct collect_vlans vlans = {0};
     
+    /* DEBUG: Check raw Ethernet header before parsing */
+    struct ethhdr *raw_eth = data;
+    if ((void *)(raw_eth + 1) <= data_end) {
+        rs_debug("Raw eth->h_proto = 0x%04x (network byte order)", bpf_ntohs(raw_eth->h_proto));
+    }
+    
     int eth_proto = parse_ethhdr_vlan(&nh, data_end, &eth, &vlans);
     if (eth_proto < 0 || !eth) {
         rs_debug("Failed to parse Ethernet header on ifindex %u", ifindex);
