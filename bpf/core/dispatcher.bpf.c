@@ -60,19 +60,14 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
         rctx->prio = cfg->default_prio;
     }
     
-    /* Parse Ethernet header and extract VLAN tags
+    /* Parse packet layers (Ethernet → VLAN → IP → TCP/UDP)
      * ⚠️ GOLDEN RULE: ALWAYS check bounds BEFORE accessing memory
      */
     struct hdr_cursor nh = { .pos = data };
     struct ethhdr *eth = NULL;
     struct collect_vlans vlans = {0};
     
-    /* DEBUG: Check raw Ethernet header before parsing */
-    struct ethhdr *raw_eth = data;
-    if ((void *)(raw_eth + 1) <= data_end) {
-        rs_debug("Raw eth->h_proto = 0x%04x (network byte order)", bpf_ntohs(raw_eth->h_proto));
-    }
-    
+    /* Parse Ethernet + VLAN tags */
     int eth_proto = parse_ethhdr_vlan(&nh, data_end, &eth, &vlans);
     if (eth_proto < 0 || !eth) {
         rctx->error = RS_ERROR_PARSE_FAILED;
@@ -80,8 +75,11 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
         return -1;
     }
     
-    /* Store VLAN information in layers */
+    /* Store Ethernet protocol and VLAN information */
+    rctx->layers.eth_proto = bpf_ntohs(eth_proto);
+    rctx->layers.l2_offset = 0;
     rctx->layers.vlan_depth = 0;
+    
     #pragma unroll
     for (int i = 0; i < VLAN_MAX_DEPTH; i++) {
         if (vlans.id[i] > 0) {
@@ -92,11 +90,76 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
         }
     }
     
-    rs_debug("Packet received on ifindex %u, eth_proto=0x%04x, vlan_depth=%d, vlan_id=%d", 
-             ifindex, bpf_ntohs(eth_proto), rctx->layers.vlan_depth,
-             rctx->layers.vlan_depth > 0 ? rctx->layers.vlan_ids[0] : 0);
+    /* Parse L3 layer based on Ethernet protocol */
+    rctx->layers.l3_offset = nh.pos - data;
     
-    rctx->parsed = 1;  /* Mark as "validated" */
+    if (eth_proto == bpf_htons(ETH_P_IP)) {
+        /* IPv4 packet */
+        struct iphdr *iph = NULL;
+        int ip_proto = parse_iphdr(&nh, data_end, &iph);
+        
+        if (ip_proto < 0 || !iph) {
+            /* Malformed IP packet */
+            rctx->parsed = 1;
+            return 0;
+        }
+        
+        /* Extract IPv4 addresses and protocol */
+        rctx->layers.saddr = iph->saddr;
+        rctx->layers.daddr = iph->daddr;
+        rctx->layers.ip_proto = iph->protocol;
+        
+        /* Extract DSCP and ECN from TOS field */
+        rctx->dscp = (iph->tos >> 2) & 0x3F;  // DSCP is upper 6 bits
+        rctx->ecn = iph->tos & 0x03;          // ECN is lower 2 bits
+        
+        /* Parse L4 layer based on IP protocol */
+        rctx->layers.l4_offset = nh.pos - data;
+        
+        if (ip_proto == IPPROTO_TCP) {
+            struct tcphdr *tcph = NULL;
+            if (parse_tcphdr(&nh, data_end, &tcph) >= 0 && tcph) {
+                rctx->layers.sport = tcph->source;
+                rctx->layers.dport = tcph->dest;
+                rctx->layers.payload_offset = nh.pos - data;
+            }
+        } else if (ip_proto == IPPROTO_UDP) {
+            struct udphdr *udph = NULL;
+            if (parse_udphdr(&nh, data_end, &udph) >= 0 && udph) {
+                rctx->layers.sport = udph->source;
+                rctx->layers.dport = udph->dest;
+                rctx->layers.payload_offset = nh.pos - data;
+            }
+        } else {
+            /* ICMP, IGMP, or other L4 protocol */
+            rctx->layers.sport = 0;
+            rctx->layers.dport = 0;
+            rctx->layers.payload_offset = nh.pos - data;
+        }
+        
+        /* Calculate payload length */
+        if (rctx->layers.payload_offset > 0 && rctx->layers.payload_offset < 1500) {
+            rctx->layers.payload_len = data_end - (data + rctx->layers.payload_offset);
+        }
+        
+    } else if (eth_proto == bpf_htons(ETH_P_ARP)) {
+        /* ARP packet - no L3/L4 parsing needed */
+        rctx->layers.ip_proto = 0;
+        rctx->layers.saddr = 0;
+        rctx->layers.daddr = 0;
+        rctx->layers.sport = 0;
+        rctx->layers.dport = 0;
+        
+    } else {
+        /* Other protocols (IPv6, LLDP, etc.) - not parsed yet */
+        rctx->layers.ip_proto = 0;
+        rctx->layers.saddr = 0;
+        rctx->layers.daddr = 0;
+        rctx->layers.sport = 0;
+        rctx->layers.dport = 0;
+    }
+    
+    rctx->parsed = 1;  /* Mark as "validated and parsed" */
     return 0;
 }
 

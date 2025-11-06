@@ -41,6 +41,7 @@ RSPORTCTL = $(BUILD_DIR)/rsportctl
 RSVLANCTL = $(BUILD_DIR)/rsvlanctl
 TELEMETRY = $(BUILD_DIR)/rswitch-telemetry
 EVENT_CONSUMER = $(BUILD_DIR)/rswitch-events
+PACKET_TRACE = $(BUILD_DIR)/rs_packet_trace
 # AFXDP_TEST = $(BUILD_DIR)/afxdp_test  # Requires libbpf with xsk.h support
 CORE_OBJS = $(patsubst $(CORE_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(CORE_DIR)/*.bpf.c))
 MODULE_OBJS = $(patsubst $(MODULES_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(MODULES_DIR)/*.bpf.c))
@@ -48,7 +49,7 @@ ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS)
 
 .PHONY: all clean dirs vmlinux help
 
-all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(ALL_BPF_OBJS)
+all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(ALL_BPF_OBJS)
 	@echo "✓ Build complete"
 	@echo "  Loader: $(LOADER)"
 	@echo "  Reload: $(HOT_RELOAD)"
@@ -152,6 +153,14 @@ $(EVENT_CONSUMER): $(USER_DIR)/events/event_consumer.c $(wildcard $(USER_DIR)/ev
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/events \
 		-o $@ $(USER_DIR)/events/event_consumer.c \
 		$(LIBBPF_LIBS) -lelf -lz -lpthread
+
+# Build packet trace utility
+$(PACKET_TRACE): $(USER_DIR)/tools/rs_packet_trace.c
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		-o $@ $(USER_DIR)/tools/rs_packet_trace.c \
+		$(LIBBPF_LIBS) -lelf -lz
 
 # Build AF_XDP test program
 $(AFXDP_TEST): $(USER_DIR)/afxdp/afxdp_socket.c $(USER_DIR)/afxdp/afxdp_test.c $(wildcard $(USER_DIR)/afxdp/*.h)
