@@ -162,6 +162,22 @@ $(PACKET_TRACE): $(USER_DIR)/tools/rs_packet_trace.c
 		-o $@ $(USER_DIR)/tools/rs_packet_trace.c \
 		$(LIBBPF_LIBS) -lelf -lz
 
+# Build packet trace v2 (ringbuf-based)
+$(BUILD_DIR)/rs_packet_trace_v2: $(USER_DIR)/tools/rs_packet_trace_v2.c $(BPF_DIR)/tools/packet_trace.bpf.o
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		-o $@ $(USER_DIR)/tools/rs_packet_trace_v2.c \
+		$(LIBBPF_LIBS) -lelf -lz
+
+# Build packet_trace.bpf.o (needed for v2)
+$(BPF_DIR)/tools/packet_trace.bpf.o: bpf/tools/packet_trace.bpf.c
+	@mkdir -p $(BPF_DIR)/tools
+	@echo "  CC [BPF]  $@"
+	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		-c $< -o $@
+
 # Build AF_XDP test program
 $(AFXDP_TEST): $(USER_DIR)/afxdp/afxdp_socket.c $(USER_DIR)/afxdp/afxdp_test.c $(wildcard $(USER_DIR)/afxdp/*.h)
 	@echo "  CC [USER] $@"

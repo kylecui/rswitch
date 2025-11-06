@@ -175,6 +175,7 @@ struct {
  * - 0xFF00-0xFFFF: Reserved (error events)
  */
 #define RS_EVENT_RESERVED       0x0000
+#define RS_EVENT_PKT_TRACE      0x0001  /* Packet trace event (debug) */
 #define RS_EVENT_L2_BASE        0x0100
 #define RS_EVENT_ACL_BASE       0x0200
 #define RS_EVENT_ROUTE_BASE     0x0300
