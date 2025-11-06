@@ -216,48 +216,14 @@ int rswitch_dispatcher(struct xdp_md *ctx)
         return XDP_DROP;
     }
     
-    /* PACKET TRACE: Emit event to ringbuf for debugging
-     * This captures packets at parse time, before egress_final clears parsed=0
-     * Enable with: cat /sys/kernel/debug/tracing/trace_pipe
-     * Or consume with: ./build/rswitch-events
-     */
-    #ifdef ENABLE_PACKET_TRACE
-    struct {
-        __u16 event_type;
-        __u16 pad;
-        __u32 ifindex;
-        __u64 timestamp;
-        __u16 eth_proto;
-        __u16 vlan_ids[2];
-        __u8  vlan_depth;
-        __u8  ip_proto;
-        __u32 saddr;
-        __u32 daddr;
-        __u16 sport;
-        __u16 dport;
-        __u8  dscp;
-        __u8  ecn;
-        __u8  prio;
-        __u16 ingress_vlan;
-    } __attribute__((packed)) pkt_evt = {
-        .event_type = RS_EVENT_PKT_TRACE,
-        .ifindex = ifindex,
-        .timestamp = rctx->timestamp,
-        .eth_proto = rctx->layers.eth_proto,
-        .vlan_depth = rctx->layers.vlan_depth,
-        .vlan_ids = {rctx->layers.vlan_ids[0], rctx->layers.vlan_ids[1]},
-        .ip_proto = rctx->layers.ip_proto,
-        .saddr = rctx->layers.saddr,
-        .daddr = rctx->layers.daddr,
-        .sport = rctx->layers.sport,
-        .dport = rctx->layers.dport,
-        .dscp = rctx->dscp,
-        .ecn = rctx->ecn,
-        .prio = rctx->prio,
-        .ingress_vlan = rctx->ingress_vlan,
-    };
-    RS_EMIT_EVENT(&pkt_evt, sizeof(pkt_evt));
-    #endif
+    /* Debug: Print parsed packet info (IPv4 only) */
+    if (rctx->layers.eth_proto == 0x0800 && rctx->layers.saddr != 0) {
+        rs_debug("IPv4: %pI4 -> %pI4, proto=%u, sport=%u, dport=%u, DSCP=%u",
+                 &rctx->layers.saddr, &rctx->layers.daddr, 
+                 rctx->layers.ip_proto,
+                 bpf_ntohs(rctx->layers.sport), bpf_ntohs(rctx->layers.dport),
+                 rctx->dscp);
+    }
     
     /* Update ingress statistics */
     void *data_end = (void *)(long)ctx->data_end;
