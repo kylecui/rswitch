@@ -325,6 +325,8 @@ static int parse_ports(FILE *fp, struct rs_profile *profile)
     ports = calloc(MAX_PORTS, sizeof(struct rs_profile_port));
     if (!ports) return -ENOMEM;
     
+    fprintf(stderr, "DEBUG: parse_ports() started\n");
+    
     while (fgets(line, sizeof(line), fp)) {
         char line_copy[MAX_LINE_LEN];
         strncpy(line_copy, line, sizeof(line_copy) - 1);
@@ -332,23 +334,32 @@ static int parse_ports(FILE *fp, struct rs_profile *profile)
         remove_comment(line);
         char *trimmed = trim(line);
         
+        fprintf(stderr, "DEBUG: parse_ports() read line: '%s' (trimmed: '%s')\n", line_copy, trimmed);
+        
         if (strlen(trimmed) == 0) continue;
         
         /* Check if we're entering another section */
         if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
+            fprintf(stderr, "DEBUG: parse_ports() exiting - found non-indented key: %s\n", trimmed);
             fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
             break;
         }
         
         /* Parse port list item */
         if (trimmed[0] == '-' && port_count < MAX_PORTS) {
+            fprintf(stderr, "DEBUG: parse_ports() found port item, parsing...\n");
             if (parse_port_item(fp, &ports[port_count]) == 0) {
                 if (strlen(ports[port_count].interface) > 0) {
+                    fprintf(stderr, "DEBUG: parse_ports() added port: %s\n", ports[port_count].interface);
                     port_count++;
+                } else {
+                    fprintf(stderr, "DEBUG: parse_ports() port item has no interface\n");
                 }
             }
         }
     }
+    
+    fprintf(stderr, "DEBUG: parse_ports() finished with %d ports\n", port_count);
     
     profile->ports = ports;
     profile->port_count = port_count;
