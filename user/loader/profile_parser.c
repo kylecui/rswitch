@@ -516,11 +516,15 @@ int profile_load(const char *filename, struct rs_profile *profile)
             ret = parse_settings(fp, &profile->settings);
             if (ret < 0) goto error;
         } else if (strcmp(key, "ports") == 0) {
+            fprintf(stderr, "DEBUG: Parsing ports section\n");
             ret = parse_ports(fp, profile);
             if (ret < 0) goto error;
+            fprintf(stderr, "DEBUG: Parsed %d ports\n", profile->port_count);
         } else if (strcmp(key, "vlans") == 0) {
+            fprintf(stderr, "DEBUG: Parsing vlans section\n");
             ret = parse_vlans(fp, profile);
             if (ret < 0) goto error;
+            fprintf(stderr, "DEBUG: Parsed %d VLANs\n", profile->vlan_count);
         }
     }
     
