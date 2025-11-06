@@ -118,20 +118,7 @@ int main(int argc, char **argv)
     printf("Press Ctrl+C to exit\n");
     printf("=========================================\n\n");
     
-    /* Get initial time reference for freshness check */
-    __u64 start_time_ns = 0;
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
-        start_time_ns = (__u64)ts.tv_sec * 1000000000ULL + (__u64)ts.tv_nsec;
-    }
-    
     while (1) {
-        /* Update current time for freshness check */
-        __u64 now_ns = 0;
-        if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
-            now_ns = (__u64)ts.tv_sec * 1000000000ULL + (__u64)ts.tv_nsec;
-        }
-        
         /* Read per-CPU values */
         if (bpf_map_lookup_elem(map_fd, &key, values) == 0) {
             /* Check each CPU's context */
@@ -143,16 +130,10 @@ int main(int argc, char **argv)
                     continue;
                 }
                 
-                /* Freshness check: Skip stale data (older than 1 second)
-                 * BPF timestamp is from bpf_ktime_get_ns() which uses CLOCK_MONOTONIC
-                 * Garbage data typically has timestamp=0 or very old values
+                /* Note: We rely on egress_final clearing parsed=0 after
+                 * processing completes. This ensures we only see packets
+                 * currently in the pipeline (parsed=1).
                  */
-                if (now_ns > 0 && ctx.timestamp > 0) {
-                    __u64 age_ns = (now_ns > ctx.timestamp) ? (now_ns - ctx.timestamp) : 0;
-                    if (age_ns > 1000000000ULL) {  // 1 second
-                        continue;  // Skip stale data
-                    }
-                }
                 
                 pkt_count++;
                 

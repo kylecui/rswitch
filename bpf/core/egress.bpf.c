@@ -311,19 +311,34 @@ int rswitch_egress(struct xdp_md *ctx)
     rs_debug("Egress on port %u: vlan_mode=%u, pkt_len=%u", 
              egress_ifindex, cfg->vlan_mode, pkt_len);
     
-    /* TODO: Future egress pipeline support
+    /* Egress pipeline: Tail-call to final module
      * 
-     * When egress pipeline is implemented (egress_vlan → egress_qos → egress_final):
-     * - This function becomes the egress dispatcher (like ingress dispatcher)
-     * - Tail-call to first egress module instead of returning here
-     * - Final egress module (egress_final.bpf.c) will clear parsed=0
+     * Stage number convention:
+     *   Ingress: 10-90   (vlan=10, l2learn=80, lastcall=90)
+     *   Egress:  100-190 (future: egress_qos=110, egress_mirror=120, egress_final=190)
      * 
-     * For now, we don't clear parsed here because:
-     * - Would break future tail-call chain (modules need parsed=1)
-     * - User-space tools rely on parsed flag for validity
-     * - Context will be overwritten by next packet anyway (per-CPU isolation)
+     * Minimal egress pipeline (current):
+     *   rswitch_egress (this) → egress_final (stage 190)
+     * 
+     * Future egress pipeline:
+     *   rswitch_egress → egress_qos → egress_mirror → egress_final
+     * 
+     * egress_final is responsible for:
+     * - Clearing parsed=0 flag (marks processing complete)
+     * - Final XDP_PASS return
      */
     
+    /* Set up context for egress pipeline */
+    rctx->next_prog_id = 190;  /* Stage 190 = egress_final */
+    rctx->call_depth++;
+    
+    /* Tail-call to egress_final - does not return on success */
+    bpf_tail_call(ctx, &rs_progs, 190);
+    
+    /* Tail-call failed - should not happen if egress_final is loaded
+     * Fall back to direct XDP_PASS (parsed won't be cleared, but packet transmits)
+     */
+    rs_debug("WARN: Tail-call to egress_final failed, passing directly");
     return XDP_PASS;
 }
 
