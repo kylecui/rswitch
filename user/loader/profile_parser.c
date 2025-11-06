@@ -242,7 +242,13 @@ static int parse_vlan_list(const char *value, uint16_t *vlans, int max_vlans)
     
     if (!str) return 0;
     
-    token = strtok_r(str, ",", &saveptr);
+    /* Remove brackets if present: "[1, 10, 20]" -> "1, 10, 20" */
+    char *start = str;
+    char *end = str + strlen(str) - 1;
+    while (*start == '[' || *start == ' ') start++;
+    while (end > start && (*end == ']' || *end == ' ' || *end == '\n')) *end-- = '\0';
+    
+    token = strtok_r(start, ",", &saveptr);
     while (token && count < max_vlans) {
         vlans[count++] = (uint16_t)atoi(trim(token));
         token = strtok_r(NULL, ",", &saveptr);
