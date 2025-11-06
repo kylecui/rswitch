@@ -65,8 +65,12 @@ int egress_final(struct xdp_md *xdp_ctx)
      */
     ctx->parsed = 0;
     
-    rs_debug("Egress final: packet processing complete on port %u", 
-             xdp_ctx->egress_ifindex);
+    /* Note: Cannot access xdp_ctx->egress_ifindex here because:
+     * - This is a tail-call target (SEC("xdp"))
+     * - egress_ifindex is only valid in devmap programs (SEC("xdp/devmap"))
+     * - Use ctx->egress_ifindex from rs_ctx instead if needed for debugging
+     */
+    rs_debug("Egress final: packet processing complete");
     
     /* Transmit packet */
     return XDP_PASS;
