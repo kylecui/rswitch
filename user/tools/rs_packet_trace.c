@@ -93,6 +93,9 @@ int main(int argc, char **argv)
     __u32 key = 0;  // per-CPU map key
     struct rs_ctx ctx;
     char src_ip[INET_ADDRSTRLEN], dst_ip[INET_ADDRSTRLEN];
+    int num_cpus = libbpf_num_possible_cpus();
+    struct rs_ctx *values = NULL;
+    int pkt_count = 0;
     
     /* Open rs_ctx_map */
     map_fd = bpf_obj_get("/sys/fs/bpf/rs_ctx_map");
@@ -102,13 +105,34 @@ int main(int argc, char **argv)
         return 1;
     }
     
-    printf("rSwitch Packet Trace - Press Ctrl+C to exit\n");
+    /* Allocate per-CPU value array */
+    values = calloc(num_cpus, sizeof(struct rs_ctx));
+    if (!values) {
+        fprintf(stderr, "Failed to allocate memory\n");
+        close(map_fd);
+        return 1;
+    }
+    
+    printf("rSwitch Packet Trace - Monitoring %d CPUs\n", num_cpus);
+    printf("Press Ctrl+C to exit\n");
     printf("=========================================\n\n");
     
     while (1) {
-        if (bpf_map_lookup_elem(map_fd, &key, &ctx) == 0) {
-            if (ctx.parsed) {
-                printf("\n--- Packet on ifindex %u ---\n", ctx.ifindex);
+        /* Read per-CPU values */
+        if (bpf_map_lookup_elem(map_fd, &key, values) == 0) {
+            /* Check each CPU's context */
+            for (int cpu = 0; cpu < num_cpus; cpu++) {
+                ctx = values[cpu];
+                
+                /* Skip if not parsed or same packet as before */
+                if (!ctx.parsed || (ctx.ifindex == last_ifindex && ctx.timestamp == last_timestamp)) {
+                    continue;
+                }
+                
+                last_ifindex = ctx.ifindex;
+                last_timestamp = ctx.timestamp;
+                
+                printf("\n--- Packet on ifindex %u (CPU %d) ---\n", ctx.ifindex, cpu);
                 printf("Ethernet: proto=%s (0x%04x)\n", 
                        eth_proto_name(ctx.layers.eth_proto), ctx.layers.eth_proto);
                 
@@ -145,9 +169,10 @@ int main(int argc, char **argv)
             }
         }
         
-        usleep(100000);  // 100ms
+        usleep(50000);  // 50ms polling interval
     }
     
+    free(values);
     close(map_fd);
     return 0;
 }
