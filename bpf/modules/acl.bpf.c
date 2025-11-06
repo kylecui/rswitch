@@ -291,104 +291,42 @@ static __always_inline void update_global_stats(__u32 action, __u32 packet_len)
 //
 
 SEC("xdp")
-int acl_ingress(struct xdp_md *ctx)
+int acl_ingress(struct xdp_md *xdp_ctx)
 {
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)xdp_ctx->data_end;
+    void *data = (void *)(long)xdp_ctx->data;
     __u32 packet_len = data_end - data;
+    
+    // Get per-CPU context (already parsed by dispatcher)
+    struct rs_ctx *ctx = RS_GET_CTX();
+    if (!ctx || !ctx->parsed) {
+        rs_debug("ACL: No parsed context, skipping");
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+        return XDP_PASS;
+    }
     
     // Get global config
     __u32 cfg_key = 0;
-    struct acl_config *config;
-    
-    config = bpf_map_lookup_elem(&acl_config_map, &cfg_key);
+    struct acl_config *config = bpf_map_lookup_elem(&acl_config_map, &cfg_key);
     if (!config || !config->enabled) {
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
         return XDP_PASS;  // ACL disabled
     }
     
-    // Parse Ethernet header
-    struct ethhdr *eth = get_ethhdr(ctx);
-    if (!eth)
-        return XDP_PASS;  // Parsing failed, allow
-    
-    __u16 eth_proto = bpf_ntohs(eth->h_proto);
-    
     // Only process IPv4 for now (IPv6 support can be added later)
-    if (eth_proto != ETH_P_IP)
+    if (ctx->layers.eth_proto != 0x0800) {
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
         return XDP_PASS;
-    
-    // Calculate L3 offset (skip Ethernet + optional VLAN tags)
-    void *l3_offset = (void *)(eth + 1);
-    __u16 h_proto = eth_proto;
-    
-    // Skip VLAN tags
-    if (h_proto == ETH_P_8021Q || h_proto == ETH_P_8021AD) {
-        struct vlan_hdr {
-            __be16 h_vlan_TCI;
-            __be16 h_vlan_encapsulated_proto;
-        } *vhdr = l3_offset;
-        
-        if ((void *)(vhdr + 1) > (void *)(long)ctx->data_end)
-            return XDP_PASS;
-        
-        l3_offset = (void *)(vhdr + 1);
-        h_proto = bpf_ntohs(vhdr->h_vlan_encapsulated_proto);
-        
-        // Check for QinQ
-        if (h_proto == ETH_P_8021Q || h_proto == ETH_P_8021AD) {
-            vhdr = l3_offset;
-            if ((void *)(vhdr + 1) > (void *)(long)ctx->data_end)
-                return XDP_PASS;
-            l3_offset = (void *)(vhdr + 1);
-        }
     }
     
-    // Parse IP header
-    struct iphdr *iph = get_iphdr(ctx, l3_offset);
-    if (!iph)
-        return XDP_PASS;
-    
-    // Read IP header fields (CO-RE safe)
-    __u32 src_ip, dst_ip;
-    __u8 protocol;
-    
-    if (bpf_core_read(&src_ip, sizeof(src_ip), &iph->saddr) < 0)
-        return XDP_PASS;
-    if (bpf_core_read(&dst_ip, sizeof(dst_ip), &iph->daddr) < 0)
-        return XDP_PASS;
-    if (bpf_core_read(&protocol, sizeof(protocol), &iph->protocol) < 0)
-        return XDP_PASS;
-    
-    // Calculate L4 offset (ihl is a bitfield, read directly via verifier-safe access)
-    if ((void *)iph + sizeof(struct iphdr) > data_end)
-        return XDP_PASS;
-    __u8 ihl = iph->ihl & 0x0F;  // Direct read is verifier-safe for bitfields
-    void *l4_offset = l3_offset + (ihl * 4);
-    
-    // Parse L4 ports (if TCP/UDP)
-    __u16 src_port = 0, dst_port = 0;
-    
-    if (protocol == IPPROTO_TCP) {
-        struct tcphdr *tcph = get_tcphdr(ctx, l4_offset);
-        if (tcph) {
-            bpf_core_read(&src_port, sizeof(src_port), &tcph->source);
-            bpf_core_read(&dst_port, sizeof(dst_port), &tcph->dest);
-            src_port = bpf_ntohs(src_port);
-            dst_port = bpf_ntohs(dst_port);
-        }
-    } else if (protocol == IPPROTO_UDP) {
-        struct udphdr *udph = get_udphdr(ctx, l4_offset);
-        if (udph) {
-            bpf_core_read(&src_port, sizeof(src_port), &udph->source);
-            bpf_core_read(&dst_port, sizeof(dst_port), &udph->dest);
-            src_port = bpf_ntohs(src_port);
-            dst_port = bpf_ntohs(dst_port);
-        }
-    }
-    
-    // Get VLAN ID and ingress port from context
-    __u16 vlan_id = 0;  // TODO: Get from rs_ctx if available
-    __u8 ingress_port = (__u8)(ctx->ingress_ifindex & 0xFF);
+    // Extract parsed packet fields from context
+    __u32 src_ip = ctx->layers.saddr;
+    __u32 dst_ip = ctx->layers.daddr;
+    __u8 protocol = ctx->layers.ip_proto;
+    __u16 src_port = bpf_ntohs(ctx->layers.sport);
+    __u16 dst_port = bpf_ntohs(ctx->layers.dport);
+    __u16 vlan_id = ctx->ingress_vlan;
+    __u8 ingress_port = (__u8)(ctx->ifindex & 0xFF);
     
     // Iterate through rules in priority order
     int matched = 0;
@@ -440,8 +378,11 @@ int acl_ingress(struct xdp_md *ctx)
     
     if (action == ACL_ACTION_DROP) {
         rs_debug("ACL DROP: src=%pI4, dst=%pI4, proto=%u", &src_ip, &dst_ip, protocol);
+        ctx->drop_reason = RS_DROP_ACL_BLOCK;
         return XDP_DROP;
     }
     
+    // Continue to next module
+    RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
     return XDP_PASS;
 }

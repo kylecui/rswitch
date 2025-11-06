@@ -1,0 +1,130 @@
+# rSwitch Profile: L3 Router with ACL and Lab VLAN Configuration
+# 
+# Layer 3 router with packet filtering, based on l2-vlan-lab topology:
+# - ens34 (port 3): TRUNK - native VLAN 1, allowed VLANs 1,10,20,30
+# - ens35 (port 4): ACCESS - VLAN 10
+# - ens36 (port 5): ACCESS - VLAN 1
+# - ens37 (port 6): ACCESS - VLAN 1
+#
+# Pipeline: dispatcher → vlan → acl → l2learn → lastcall → egress
+# Use case: Lab/test environment with ACL-based packet filtering
+#
+# Phase 1: ACL module testing
+# - Leverages parsed context from dispatcher (Phase 0)
+# - Priority-based rule matching
+# - Actions: PASS, DROP, RATE_LIMIT
+# - Per-rule statistics
+
+name: l3-acl-lab
+description: "L3 router with ACL filtering and lab VLAN configuration"
+version: "1.0"
+
+# Ingress pipeline (sorted by stage number)
+ingress:
+  - vlan       # Stage 20: VLAN ingress filtering
+  - acl        # Stage 40: Access Control List filtering (NEW)
+  - l2learn    # Stage 80: MAC learning and lookup
+  - lastcall   # Stage 90: Forward based on learned MAC or flood
+
+# Egress pipeline
+egress:
+  - egress     # Devmap egress hook with VLAN tagging
+
+# Global settings
+settings:
+  # MAC learning enabled
+  mac_learning: true
+  mac_aging_time: 300  # seconds
+  
+  # VLAN enforcement enabled
+  vlan_enforcement: true
+  default_vlan: 1
+  
+  # Forwarding behavior
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  
+  # Statistics collection
+  stats_enabled: true
+  
+  # Event notifications
+  ringbuf_enabled: true
+  notify_mac_learned: true
+  notify_mac_moved: true
+  notify_acl_drop: true
+  
+  # Debug mode
+  debug: false
+
+# ACL configuration
+acl:
+  enabled: true
+  default_action: pass  # Default action when no rules match
+  
+  # Pre-configured rules (for testing Phase 1)
+  # Format: lower priority number = higher precedence
+  # Rules will be populated by rsaclctl utility
+  rules: []
+  
+  # Rate limiting configuration
+  rate_limit:
+    default_burst: 1000  # bytes
+    default_rate: 100000  # bytes/sec
+
+# Port configurations (same as l2-vlan-lab)
+ports:
+  - interface: ens34
+    enabled: true
+    management: managed
+    vlan_mode: trunk
+    native_vlan: 1
+    allowed_vlans: [1, 10, 20, 30]
+    mac_learning: true
+    default_priority: 0
+    
+  - interface: ens35
+    enabled: true
+    management: managed
+    vlan_mode: access
+    access_vlan: 10
+    mac_learning: true
+    default_priority: 0
+    
+  - interface: ens36
+    enabled: true
+    management: managed
+    vlan_mode: access
+    access_vlan: 1
+    mac_learning: true
+    default_priority: 0
+    
+  - interface: ens37
+    enabled: true
+    management: managed
+    vlan_mode: access
+    access_vlan: 1
+    mac_learning: true
+    default_priority: 0
+
+# VLAN database configuration (same as l2-vlan-lab)
+vlans:
+  - vlan_id: 1
+    name: "default"
+    tagged_ports: [ens34]
+    untagged_ports: [ens36, ens37]
+    
+  - vlan_id: 10
+    name: "management"
+    tagged_ports: [ens34]
+    untagged_ports: [ens35]
+    
+  - vlan_id: 20
+    name: "guest"
+    tagged_ports: [ens34]
+    untagged_ports: []
+    
+  - vlan_id: 30
+    name: "iot"
+    tagged_ports: [ens34]
+    untagged_ports: []
