@@ -357,6 +357,12 @@ static int parse_ports(FILE *fp, struct rs_profile *profile)
         if (trimmed[0] == '-' && port_count < MAX_PORTS) {
             fprintf(stderr, "DEBUG: parse_ports() found port item, parsing...\n");
             
+            /* Initialize port structure with defaults */
+            memset(&ports[port_count], 0, sizeof(struct rs_profile_port));
+            ports[port_count].enabled = 1;
+            ports[port_count].management = 1;
+            ports[port_count].mac_learning = 1;
+            
             /* Check if this line has content after '-' (e.g., "- interface: ens34") */
             char *content_after_dash = trim(trimmed + 1);
             char first_key[256], first_value[256];
@@ -368,6 +374,7 @@ static int parse_ports(FILE *fp, struct rs_profile *profile)
                 /* Pre-populate the interface field */
                 if (strcmp(first_key, "interface") == 0) {
                     strncpy(ports[port_count].interface, first_value, sizeof(ports[port_count].interface) - 1);
+                    fprintf(stderr, "DEBUG: parse_ports() set interface='%s'\n", ports[port_count].interface);
                 }
             }
             
