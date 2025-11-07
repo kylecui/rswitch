@@ -18,8 +18,8 @@ version: "1.0"
 # Ingress pipeline (sorted by stage number)
 ingress:
   - vlan       # Stage 20: VLAN ingress filtering
-  # - acl      # Stage 40: Access control lists (future)
-  # - route    # Stage 50: IP routing (future)
+  - acl        # Stage 30: Access control lists
+  - route      # Stage 50: IP routing
   - l2learn    # Stage 80: MAC learning fallback
   - lastcall   # Stage 90: Forward based on route or learned MAC
 
@@ -37,12 +37,12 @@ settings:
   vlan_enforcement: true
   default_vlan: 1
   
-  # Routing (future)
-  ip_routing: false  # Not implemented yet
+  # Routing
+  ip_routing: true  # Routing module enabled
   route_table_size: 1024
   
-  # ACL (future)
-  acl_enabled: false  # Not implemented yet
+  # ACL
+  acl_enabled: true  # ACL module enabled
   acl_default_action: "permit"
   
   # Forwarding behavior

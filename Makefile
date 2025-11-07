@@ -40,6 +40,7 @@ RSWITCHCTL = $(BUILD_DIR)/rswitchctl
 RSPORTCTL = $(BUILD_DIR)/rsportctl
 RSVLANCTL = $(BUILD_DIR)/rsvlanctl
 RSACLCTL = $(BUILD_DIR)/rsaclctl
+RSROUTECTL = $(BUILD_DIR)/rsroutectl
 TELEMETRY = $(BUILD_DIR)/rswitch-telemetry
 EVENT_CONSUMER = $(BUILD_DIR)/rswitch-events
 PACKET_TRACE = $(BUILD_DIR)/rs_packet_trace
@@ -50,7 +51,7 @@ ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS)
 
 .PHONY: all clean dirs vmlinux help
 
-all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(ALL_BPF_OBJS)
+all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(ALL_BPF_OBJS)
 	@echo "✓ Build complete"
 	@echo "  Loader: $(LOADER)"
 	@echo "  Reload: $(HOT_RELOAD)"
@@ -59,6 +60,7 @@ all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL
 	@echo "  PortCtl: $(RSPORTCTL)"
 	@echo "  VLANCtl: $(RSVLANCTL)"
 	@echo "  ACLCtl: $(RSACLCTL)"
+	@echo "  RouteCtl: $(RSROUTECTL)"
 	@echo "  Telemetry: $(TELEMETRY)"
 	@echo "  Event Consumer: $(EVENT_CONSUMER)"
 	@echo "  BPF objects: $(words $(ALL_BPF_OBJS)) modules"
@@ -146,6 +148,14 @@ $(RSACLCTL): $(USER_DIR)/tools/rsaclctl.c
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
 		-o $@ $(USER_DIR)/tools/rsaclctl.c \
+		$(LIBBPF_LIBS) -lelf -lz
+
+# Build rsroutectl
+$(RSROUTECTL): $(USER_DIR)/tools/rsroutectl.c
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		-o $@ $(USER_DIR)/tools/rsroutectl.c \
 		$(LIBBPF_LIBS) -lelf -lz
 
 # Build telemetry exporter
