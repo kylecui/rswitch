@@ -1034,30 +1034,48 @@ static void close_map_fds(struct loader_ctx *ctx)
 /* Unpin all maps from BPF filesystem */
 static void unpin_maps(void)
 {
-    const char *pinned_maps[] = {
-        "/sys/fs/bpf/rs_ctx_map",
-        "/sys/fs/bpf/rs_progs",
-        "/sys/fs/bpf/rs_port_config_map",
-        "/sys/fs/bpf/rs_vlan_map",
-        "/sys/fs/bpf/rs_event_bus",
-        "/sys/fs/bpf/rs_mac_table",
-        "/sys/fs/bpf/rs_stats_map",
-        NULL
-    };
+    DIR *dir;
+    struct dirent *entry;
+    char path[512];
+    int unpinned = 0, failed = 0;
     
-    printf("\nUnpinning maps from BPF filesystem:\n");
+    printf("\nUnpinning maps from BPF filesystem (/sys/fs/bpf/):\n");
     
-    for (int i = 0; pinned_maps[i] != NULL; i++) {
+    dir = opendir("/sys/fs/bpf");
+    if (!dir) {
+        fprintf(stderr, "  Warning: Failed to open /sys/fs/bpf: %s\n", strerror(errno));
+        return;
+    }
+    
+    while ((entry = readdir(dir)) != NULL) {
+        /* Skip . and .. */
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+        
+        /* Only unpin rSwitch-related maps (rs_* and acl_*) */
+        if (strncmp(entry->d_name, "rs_", 3) != 0 && 
+            strncmp(entry->d_name, "acl_", 4) != 0)
+            continue;
+        
+        snprintf(path, sizeof(path), "/sys/fs/bpf/%s", entry->d_name);
+        
+        /* Check if it's a file (pinned map/prog) */
         struct stat st;
-        if (stat(pinned_maps[i], &st) == 0) {
-            if (unlink(pinned_maps[i]) < 0) {
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+            if (unlink(path) < 0) {
                 fprintf(stderr, "  Warning: Failed to unpin %s: %s\n",
-                        pinned_maps[i], strerror(errno));
+                        entry->d_name, strerror(errno));
+                failed++;
             } else {
-                printf("  Unpinned %s\n", pinned_maps[i]);
+                printf("  Unpinned %s\n", entry->d_name);
+                unpinned++;
             }
         }
     }
+    
+    closedir(dir);
+    
+    printf("  Total: %d unpinned, %d failed\n", unpinned, failed);
 }
 
 /* Cleanup resources */
