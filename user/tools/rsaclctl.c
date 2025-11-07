@@ -235,12 +235,20 @@ static int cmd_add_5tuple(int argc, char **argv)
             break;
         default:
             fprintf(stderr, "Usage: rsaclctl add-5t --proto <proto> --src <ip> --sport <port> --dst <ip> --dport <port> --action <action> [--redirect-ifindex <idx>] [--log]\n");
+            fprintf(stderr, "Note: This is EXACT 5-tuple match. All fields including ports must match exactly.\n");
+            fprintf(stderr, "      Omitted ports default to 0. Use add-proto-{dst,src,port} for partial matching.\n");
             return -1;
         }
     }
     
     if (!proto_str || !src_str || !dst_str || !action_str) {
         fprintf(stderr, "Missing required arguments (need --proto, --src, --dst, --action)\n");
+        fprintf(stderr, "Note: 5-tuple requires EXACT match on all fields including ports.\n");
+        fprintf(stderr, "      If --sport or --dport is omitted, it defaults to 0 (matches port 0 only).\n");
+        fprintf(stderr, "      For wildcard matching, use:\n");
+        fprintf(stderr, "        - add-proto-dst: match any source -> specific destination\n");
+        fprintf(stderr, "        - add-proto-src: match specific source -> any destination\n");
+        fprintf(stderr, "        - add-proto-port: match any source/destination on specific port\n");
         return -1;
     }
     
