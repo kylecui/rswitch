@@ -26,6 +26,27 @@
 #define RS_MAX_ALLOWED_VLANS 128    /* Maximum allowed VLANs per port (trunk/hybrid) */
 #define RS_VLAN_MAX_DEPTH   2       /* Q-in-Q support (802.1ad) */
 
+/* Verifier-friendly offset masks for packet access
+ * 
+ * BPF verifier cannot prove safety of dynamic offsets loaded from maps without
+ * explicit range constraints. These masks limit offset ranges to realistic values,
+ * allowing the verifier to prove pointer arithmetic is safe.
+ * 
+ * Offset calculations:
+ * - L2 (Ethernet): Always at offset 0
+ * - L3 (IP): Ethernet(14) + VLAN tags(0-8) = max 22 bytes → mask 0x3F (63)
+ * - L4 (TCP/UDP): L2(22) + IPv4 max options(60) = max 82 bytes → mask 0x7F (127)  
+ * - Payload: L2(22) + L3(60) + TCP max options(60) = max 142 bytes → mask 0xFF (255)
+ * 
+ * Usage pattern:
+ *   struct iphdr *iph = data + (ctx->layers.l3_offset & RS_L3_OFFSET_MASK);
+ *   if ((void *)(iph + 1) > data_end) return XDP_DROP;
+ */
+#define RS_L2_OFFSET_MASK  0x00   /* L2 always at offset 0 (no mask needed) */
+#define RS_L3_OFFSET_MASK  0x3F   /* Max 63 bytes for L2 headers (Eth + QinQ) */
+#define RS_L4_OFFSET_MASK  0x7F   /* Max 127 bytes for L2+L3 headers */
+#define RS_PAYLOAD_MASK    0xFF   /* Max 255 bytes for L2+L3+L4 headers */
+
 /* Parsed packet layer offsets and metadata
  * 
  * Populated by parsing modules and consumed by downstream modules.

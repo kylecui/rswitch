@@ -237,16 +237,19 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_PASS;
     }
     
-    // if (data + ctx->layers.l3_offset > data_end) {
-    //     ctx->error = RS_ERROR_PARSE_FAILED;
-    //     ctx->drop_reason = RS_DROP_PARSE_ERROR;
-    //     return XDP_DROP;
-    // }
-
-    // Get IP header directly without intermediate variable
-    struct iphdr *iph = data + (ctx->layers.l3_offset & 0xFF);
+    /* Get IP header with verifier-friendly offset masking
+     * 
+     * CRITICAL VERIFIER WORKAROUND:
+     * - l3_offset is __u16 (0-65535), too large for verifier to prove safety
+     * - Masking with RS_L3_OFFSET_MASK limits range to realistic L3 offset values
+     * - Allows verifier to prove that pointer arithmetic stays within packet bounds
+     * 
+     * This pattern is required because BPF verifier cannot track dynamic offsets from maps
+     * without explicit range constraints. See eBPF verifier documentation on pointer arithmetic.
+     */
+    struct iphdr *iph = data + (ctx->layers.l3_offset & RS_L3_OFFSET_MASK);
     
-    // Bounds check: check the pointer before dereferencing
+    // Bounds check: verify full IP header is accessible
     if ((void *)&iph[1] > data_end) {
         ctx->error = RS_ERROR_PARSE_FAILED;
         ctx->drop_reason = RS_DROP_PARSE_ERROR;
