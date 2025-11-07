@@ -106,7 +106,7 @@ enum acl_stat_type {
     ACL_STAT_MAX = 9,
 };
 
-#define PIN_BASE_DIR "/sys/fs/bpf/rswitch"
+#define PIN_BASE_DIR "/sys/fs/bpf"
 
 static const char *stat_names[] = {
     [ACL_STAT_L1_5TUPLE_HIT] = "L1: 5-tuple hits",
