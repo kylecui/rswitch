@@ -1,22 +1,34 @@
 // SPDX-License-Identifier: GPL-2.0
 /* 
- * rSwitch ACL (Access Control List) Module
+ * rSwitch ACL (Access Control List) Module - Multi-Level Partial Match Design
  * 
- * Implements stateless packet filtering based on L3/L4 criteria:
- * - Source/Destination IP addresses (IPv4/IPv6)
- * - Source/Destination ports (TCP/UDP)
- * - Protocol type
- * - VLAN ID
+ * Architecture: 7-Level Priority-based Lookup
  * 
- * Actions:
- * - PASS: Allow packet to continue
- * - DROP: Drop packet
- * - RATE_LIMIT: Apply rate limiting (basic token bucket)
+ * Level 1: 5-tuple exact match {proto, src_ip, dst_ip, sport, dport}
+ *   → Use: Specific connection control (10.1.2.3:12345 → 192.168.1.1:22)
  * 
- * Features:
- * - Rule priority (lower value = higher priority)
- * - Per-rule statistics (matches, bytes)
- * - Default policy (allow/deny)
+ * Level 2: Proto + Dst IP + Dst Port {proto, dst_ip, dport}
+ *   → Use: Block services (* → malicious.site:443)
+ * 
+ * Level 3: Proto + Src IP + Dst Port {proto, src_ip, dport}
+ *   → Use: Restrict source (attacker:* → *:22)
+ * 
+ * Level 4: Proto + Dst Port {proto, dport}
+ *   → Use: Global port filter (* → *:443/UDP for QUIC)
+ * 
+ * Level 5: Src IP prefix (LPM)
+ *   → Use: Block attacker networks (10.0.0.0/8 → *)
+ * 
+ * Level 6: Dst IP prefix (LPM)
+ *   → Use: Protect subnets (* → 192.168.0.0/16)
+ * 
+ * Level 7: Default policy
+ *   → Use: Baseline allow/deny
+ * 
+ * Performance:
+ * - Best case: 1 lookup (~10ns)
+ * - Worst case: 7 lookups (~70ns)
+ * - All O(1) or O(log N), NO linear iteration
  */
 
 #include "../include/rswitch_common.h"
@@ -28,262 +40,258 @@ char _license[] SEC("license") = "GPL";
 RS_DECLARE_MODULE(
     "acl",                           // Module name
     RS_HOOK_XDP_INGRESS,            // Hook point
-    30,                              // Stage (after VLAN, before routing)
-    RS_FLAG_NEED_FLOW_INFO | RS_FLAG_MAY_DROP | RS_FLAG_CREATES_EVENTS,
-    "Access Control List (ACL) - L3/L4 packet filtering"
+    30,                              // Stage (after VLAN=10, before L2Learn=80)
+    RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_MAY_DROP | RS_FLAG_CREATES_EVENTS,
+    "ACL - Multi-level indexed packet filtering (5-tuple + LPM)"
 );
 
 //
-// Data Structures
+// ACL Actions
 //
 
-// ACL rule actions
 enum acl_action {
     ACL_ACTION_PASS = 0,
     ACL_ACTION_DROP = 1,
-    ACL_ACTION_RATE_LIMIT = 2,
+    ACL_ACTION_REDIRECT = 2,  // Redirect to another port or AF_XDP
 };
 
-// ACL rule definition
-struct acl_rule {
-    // Match criteria
-    __u32 src_ip;           // Source IP (IPv4, network byte order)
-    __u32 src_ip_mask;      // Source IP mask
-    __u32 dst_ip;           // Destination IP
-    __u32 dst_ip_mask;      // Destination IP mask
-    
-    __u16 src_port_min;     // Source port range minimum
-    __u16 src_port_max;     // Source port range maximum
-    __u16 dst_port_min;     // Destination port range minimum
-    __u16 dst_port_max;     // Destination port range maximum
-    
-    __u8 protocol;          // IP protocol (0 = any)
-    __u8 action;            // Action to take (enum acl_action)
-    __u16 priority;         // Rule priority (lower = higher priority)
-    
-    __u16 vlan_id;          // VLAN ID filter (0 = any)
-    __u8 ingress_port;      // Ingress port filter (0 = any)
-    __u8 _pad;
-    
-    // Rate limiting (for RATE_LIMIT action)
-    __u32 rate_limit_bps;   // Bits per second
-    __u32 burst_size;       // Burst size in bytes
-    
-    // Statistics
-    __u64 match_count;      // Number of matches
-    __u64 match_bytes;      // Bytes matched
-    __u64 last_match_ts;    // Last match timestamp (nanoseconds)
-} __attribute__((aligned(8)));
+/* ACL Action Result
+ * Returned by lookup functions
+ */
+struct acl_result {
+    __u8 action;           // enum acl_action
+    __u8 log_event;        // Whether to emit event to ringbuf
+    __u16 redirect_ifindex; // Target ifindex (0 = AF_XDP via queue)
+    __u32 stats_id;        // Statistics counter ID
+} __attribute__((packed));
 
-// Rule key (priority-based lookup)
-struct acl_rule_key {
-    __u32 rule_id;          // Unique rule ID
+//
+// Level 1: Exact 5-Tuple Match (HASH)
+//
+
+struct acl_5tuple_key {
+    __u8  proto;           // IPPROTO_TCP, IPPROTO_UDP, etc.
+    __u8  pad[3];
+    __u32 src_ip;          // Network byte order
+    __u32 dst_ip;
+    __u16 sport;           // Network byte order
+    __u16 dport;
+} __attribute__((packed));
+
+/* 5-tuple ACL table
+ * Exact match for specific flows
+ * Example: Block SSH from 10.1.2.3:* to 192.168.1.100:22
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct acl_5tuple_key);
+    __type(value, struct acl_result);
+    __uint(max_entries, 65536);  // Reasonable for exact flows
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} acl_5tuple_map SEC(".maps");
+
+//
+// Level 2: Proto + Dst IP + Dst Port (HASH)
+//
+
+struct acl_proto_dstip_port_key {
+    __u8  proto;           // Protocol
+    __u8  pad[3];
+    __u32 dst_ip;          // Destination IP
+    __u16 dst_port;        // Destination port
+    __u16 pad2;
+} __attribute__((packed));
+
+/* Proto + Dst IP + Dst Port table
+ * Match any source to specific destination
+ * Example: Block HTTPS to malicious site (* → 203.0.113.5:443/TCP)
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct acl_proto_dstip_port_key);
+    __type(value, struct acl_result);
+    __uint(max_entries, 65536);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} acl_proto_dstip_port_map SEC(".maps");
+
+//
+// Level 3: Proto + Src IP + Dst Port (HASH)
+//
+
+struct acl_proto_srcip_port_key {
+    __u8  proto;           // Protocol
+    __u8  pad[3];
+    __u32 src_ip;          // Source IP
+    __u16 dst_port;        // Destination port
+    __u16 pad2;
+} __attribute__((packed));
+
+/* Proto + Src IP + Dst Port table
+ * Match specific source to any destination on specific port
+ * Example: Block SSH from attacker (10.1.2.3:* → *:22/TCP)
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct acl_proto_srcip_port_key);
+    __type(value, struct acl_result);
+    __uint(max_entries, 65536);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} acl_proto_srcip_port_map SEC(".maps");
+
+//
+// Level 4: Proto + Dst Port (HASH)
+//
+
+struct acl_proto_port_key {
+    __u8  proto;           // Protocol
+    __u8  pad;
+    __u16 dst_port;        // Destination port
+} __attribute__((packed));
+
+/* Proto + Dst Port table
+ * Global port filtering regardless of IP
+ * Example: Block QUIC globally (* → *:443/UDP)
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct acl_proto_port_key);
+    __type(value, struct acl_result);
+    __uint(max_entries, 4096);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} acl_proto_port_map SEC(".maps");
+
+//
+// Level 5/6: LPM Prefix Match (TRIE)
+//
+
+struct acl_lpm_key {
+    __u32 prefixlen;       // In bits (e.g., 24 for /24)
+    __u32 ip;              // Network byte order
 };
 
-// Rate limiting state (per-rule)
-struct acl_rate_limit_state {
-    __u64 tokens;           // Current token count (in bytes)
-    __u64 last_update;      // Last token update timestamp (ns)
-};
+/* Source IP prefix match
+ * Example: Block all traffic from 10.0.0.0/8
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __type(key, struct acl_lpm_key);
+    __type(value, struct acl_result);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __uint(max_entries, 16384);  // Reasonable for prefix rules
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} acl_lpm_src_map SEC(".maps");
 
-// ACL configuration
+/* Destination IP prefix match
+ * Example: Allow all traffic to 192.168.0.0/16
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __type(key, struct acl_lpm_key);
+    __type(value, struct acl_result);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __uint(max_entries, 16384);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} acl_lpm_dst_map SEC(".maps");
+
+//
+// Global Configuration
+//
+
 struct acl_config {
-    __u8 default_action;    // Default action if no rule matches
-    __u8 enabled;           // ACL enabled/disabled
-    __u16 rule_count;       // Number of active rules
-    __u64 total_matches;    // Total matches across all rules
-    __u64 total_drops;      // Total drops
+    __u8 default_action;   // ACL_ACTION_PASS or ACL_ACTION_DROP
+    __u8 enabled;          // 0=disabled, 1=enabled
+    __u8 log_drops;        // Log dropped packets to ringbuf
+    __u8 pad;
 };
 
-//
-// BPF Maps
-//
-
-// ACL rules table (hash map for flexible rule management)
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);              // Up to 1024 rules
-    __type(key, struct acl_rule_key);
-    __type(value, struct acl_rule);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
-} acl_rules SEC(".maps");
-
-// Rule IDs sorted by priority (array for ordered iteration)
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1024);
-    __type(key, __u32);                     // Index
-    __type(value, __u32);                   // Rule ID
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
-} acl_rule_order SEC(".maps");
-
-// Rate limiting state per rule
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);
-    __type(key, struct acl_rule_key);
-    __type(value, struct acl_rate_limit_state);
-} acl_rate_limit_state SEC(".maps");
-
-// Global ACL configuration
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
     __type(key, __u32);
     __type(value, struct acl_config);
+    __uint(max_entries, 1);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } acl_config_map SEC(".maps");
 
-// Per-CPU statistics
+//
+// Statistics (per-CPU for lock-free updates)
+//
+
+enum acl_stat_type {
+    ACL_STAT_L1_5TUPLE_HIT = 0,
+    ACL_STAT_L2_PROTO_DSTIP_PORT_HIT = 1,
+    ACL_STAT_L3_PROTO_SRCIP_PORT_HIT = 2,
+    ACL_STAT_L4_PROTO_PORT_HIT = 3,
+    ACL_STAT_L5_LPM_SRC_HIT = 4,
+    ACL_STAT_L6_LPM_DST_HIT = 5,
+    ACL_STAT_L7_DEFAULT_PASS = 6,
+    ACL_STAT_L7_DEFAULT_DROP = 7,
+    ACL_STAT_TOTAL_DROPS = 8,
+    ACL_STAT_MAX = 9,
+};
+
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, 1);
     __type(key, __u32);
-    __type(value, struct rs_stats);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
-} acl_stats SEC(".maps");
+    __type(value, __u64);
+    __uint(max_entries, ACL_STAT_MAX);
+} acl_stats_map SEC(".maps");
 
 //
 // Helper Functions
 //
 
-// Check if IP matches rule (considering mask)
-static __always_inline int match_ip(__u32 packet_ip, __u32 rule_ip, __u32 mask)
+static __always_inline void update_stat(__u32 stat_id)
 {
-    if (mask == 0)
-        return 1;  // Match any
-    
-    return (packet_ip & mask) == (rule_ip & mask);
-}
-
-// Check if port is in range
-static __always_inline int match_port(__u16 packet_port, __u16 min, __u16 max)
-{
-    if (min == 0 && max == 0)
-        return 1;  // Match any
-    
-    if (max == 0)
-        max = 65535;  // If only min specified, match min to max
-    
-    return (packet_port >= min && packet_port <= max);
-}
-
-// Check if protocol matches
-static __always_inline int match_protocol(__u8 packet_proto, __u8 rule_proto)
-{
-    if (rule_proto == 0)
-        return 1;  // Match any
-    
-    return packet_proto == rule_proto;
-}
-
-// Check if packet matches ACL rule
-static __always_inline int match_rule(struct acl_rule *rule,
-                                      __u32 src_ip, __u32 dst_ip,
-                                      __u16 src_port, __u16 dst_port,
-                                      __u8 protocol, __u16 vlan_id,
-                                      __u8 ingress_port)
-{
-    // Check IP addresses
-    if (!match_ip(src_ip, rule->src_ip, rule->src_ip_mask))
-        return 0;
-    
-    if (!match_ip(dst_ip, rule->dst_ip, rule->dst_ip_mask))
-        return 0;
-    
-    // Check ports
-    if (!match_port(src_port, rule->src_port_min, rule->src_port_max))
-        return 0;
-    
-    if (!match_port(dst_port, rule->dst_port_min, rule->dst_port_max))
-        return 0;
-    
-    // Check protocol
-    if (!match_protocol(protocol, rule->protocol))
-        return 0;
-    
-    // Check VLAN
-    if (rule->vlan_id != 0 && rule->vlan_id != vlan_id)
-        return 0;
-    
-    // Check ingress port
-    if (rule->ingress_port != 0 && rule->ingress_port != ingress_port)
-        return 0;
-    
-    return 1;  // All criteria match
-}
-
-// Apply rate limiting (simple token bucket)
-static __always_inline int apply_rate_limit(struct acl_rule_key *key,
-                                            struct acl_rule *rule,
-                                            __u32 packet_len)
-{
-    struct acl_rate_limit_state *state;
-    __u64 now = bpf_ktime_get_ns();
-    __u64 elapsed_ns, tokens_to_add;
-    
-    state = bpf_map_lookup_elem(&acl_rate_limit_state, key);
-    if (!state) {
-        // Initialize state on first packet
-        struct acl_rate_limit_state init_state = {
-            .tokens = rule->burst_size,
-            .last_update = now,
-        };
-        bpf_map_update_elem(&acl_rate_limit_state, key, &init_state, BPF_ANY);
-        state = bpf_map_lookup_elem(&acl_rate_limit_state, key);
-        if (!state)
-            return 1;  // Allow on error
+    __u64 *counter = bpf_map_lookup_elem(&acl_stats_map, &stat_id);
+    if (counter) {
+        __sync_fetch_and_add(counter, 1);
     }
+}
+
+static __always_inline int apply_acl_action(struct xdp_md *xdp_ctx, 
+                                             struct rs_ctx *ctx,
+                                             struct acl_result *result,
+                                             __u32 stat_id)
+{
+    update_stat(stat_id);
     
-    // Calculate time elapsed since last update
-    elapsed_ns = now - state->last_update;
-    
-    // Add tokens based on rate (tokens = bytes)
-    // rate_limit_bps = bits per second
-    // tokens_per_ns = (rate_limit_bps / 8) / 1000000000
-    // tokens_to_add = tokens_per_ns * elapsed_ns
-    tokens_to_add = (rule->rate_limit_bps * elapsed_ns) / (8ULL * 1000000000ULL);
-    
-    state->tokens += tokens_to_add;
-    if (state->tokens > rule->burst_size)
-        state->tokens = rule->burst_size;  // Cap at burst size
-    
-    state->last_update = now;
-    
-    // Check if we have enough tokens
-    if (state->tokens >= packet_len) {
-        state->tokens -= packet_len;
-        return 1;  // Allow
+    switch (result->action) {
+    case ACL_ACTION_DROP:
+        ctx->drop_reason = RS_DROP_ACL_BLOCK;
+        update_stat(ACL_STAT_TOTAL_DROPS);
+        
+        /* Optional: Emit event for logging */
+        if (result->log_event) {
+            // TODO: Emit to rs_event_bus
+            // struct acl_drop_event { ... };
+            // RS_EMIT_EVENT(&evt, sizeof(evt));
+        }
+        
+        rs_debug("ACL: DROP packet proto=%u %pI4:%u -> %pI4:%u",
+                 ctx->layers.ip_proto,
+                 &ctx->layers.saddr, bpf_ntohs(ctx->layers.sport),
+                 &ctx->layers.daddr, bpf_ntohs(ctx->layers.dport));
+        
+        return XDP_DROP;
+        
+    case ACL_ACTION_REDIRECT:
+        /* Redirect to another port or AF_XDP */
+        if (result->redirect_ifindex == 0) {
+            /* Redirect to AF_XDP - handled by afxdp_redirect module */
+            ctx->mirror = 1;  // Mark for AF_XDP interception
+        } else {
+            /* Redirect to specific egress port */
+            ctx->egress_ifindex = result->redirect_ifindex;
+        }
+        
+        rs_debug("ACL: REDIRECT to ifindex=%u", result->redirect_ifindex);
+        return -1;  // Continue pipeline (not XDP_DROP/PASS)
+        
+    case ACL_ACTION_PASS:
+    default:
+        rs_debug("ACL: PASS packet");
+        return -1;  // Continue to next module
     }
-    
-    return 0;  // Drop (rate limit exceeded)
-}
-
-// Update rule statistics
-static __always_inline void update_rule_stats(struct acl_rule *rule, __u32 packet_len)
-{
-    __u64 now = bpf_ktime_get_ns();
-    
-    __sync_fetch_and_add(&rule->match_count, 1);
-    __sync_fetch_and_add(&rule->match_bytes, packet_len);
-    rule->last_match_ts = now;
-}
-
-// Update global statistics
-static __always_inline void update_global_stats(__u32 action, __u32 packet_len)
-{
-    __u32 key = 0;
-    struct rs_stats *stats;
-    
-    stats = bpf_map_lookup_elem(&acl_stats, &key);
-    if (!stats)
-        return;
-    
-    __sync_fetch_and_add(&stats->rx_packets, 1);
-    __sync_fetch_and_add(&stats->rx_bytes, packet_len);
-    
-    if (action == ACL_ACTION_DROP)
-        __sync_fetch_and_add(&stats->rx_drops, 1);
 }
 
 //
@@ -291,98 +299,147 @@ static __always_inline void update_global_stats(__u32 action, __u32 packet_len)
 //
 
 SEC("xdp")
-int acl_ingress(struct xdp_md *xdp_ctx)
+int acl_filter(struct xdp_md *xdp_ctx)
 {
-    void *data_end = (void *)(long)xdp_ctx->data_end;
-    void *data = (void *)(long)xdp_ctx->data;
-    __u32 packet_len = data_end - data;
-    
-    // Get per-CPU context (already parsed by dispatcher)
     struct rs_ctx *ctx = RS_GET_CTX();
-    if (!ctx || !ctx->parsed) {
-        rs_debug("ACL: No parsed context, skipping");
-        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-        return XDP_PASS;
-    }
-    
-    // Get global config
-    __u32 cfg_key = 0;
-    struct acl_config *config = bpf_map_lookup_elem(&acl_config_map, &cfg_key);
-    if (!config || !config->enabled) {
-        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-        return XDP_PASS;  // ACL disabled
-    }
-    
-    // Only process IPv4 for now (IPv6 support can be added later)
-    if (ctx->layers.eth_proto != 0x0800) {
-        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-        return XDP_PASS;
-    }
-    
-    // Extract parsed packet fields from context
-    __u32 src_ip = ctx->layers.saddr;
-    __u32 dst_ip = ctx->layers.daddr;
-    __u8 protocol = ctx->layers.ip_proto;
-    __u16 src_port = bpf_ntohs(ctx->layers.sport);
-    __u16 dst_port = bpf_ntohs(ctx->layers.dport);
-    __u16 vlan_id = ctx->ingress_vlan;
-    __u8 ingress_port = (__u8)(ctx->ifindex & 0xFF);
-    
-    // Iterate through rules in priority order
-    int matched = 0;
-    __u8 action = config->default_action;
-    
-    #pragma unroll
-    for (__u32 i = 0; i < 64; i++) {  // Limit to 64 rules for verifier
-        if (i >= config->rule_count)
-            break;
-        
-        // Get rule ID from ordered list
-        __u32 *rule_id_ptr = bpf_map_lookup_elem(&acl_rule_order, &i);
-        if (!rule_id_ptr)
-            continue;
-        
-        // Get rule
-        struct acl_rule_key rule_key = { .rule_id = *rule_id_ptr };
-        struct acl_rule *rule = bpf_map_lookup_elem(&acl_rules, &rule_key);
-        if (!rule)
-            continue;
-        
-        // Check if packet matches rule
-        if (match_rule(rule, src_ip, dst_ip, src_port, dst_port,
-                      protocol, vlan_id, ingress_port)) {
-            // Rule matched!
-            matched = 1;
-            action = rule->action;
-            
-            // Update statistics
-            update_rule_stats(rule, packet_len);
-            
-            // Apply action-specific logic
-            if (action == ACL_ACTION_RATE_LIMIT) {
-                // Check rate limit
-                if (!apply_rate_limit(&rule_key, rule, packet_len)) {
-                    action = ACL_ACTION_DROP;  // Rate limit exceeded
-                }
-            }
-            
-            rs_debug("ACL match: rule_id=%u, action=%u, src=%pI4, dst=%pI4, proto=%u",
-                    rule_key.rule_id, action, &src_ip, &dst_ip, protocol);
-            
-            break;  // Stop at first matching rule (highest priority)
-        }
-    }
-    
-    // Update global statistics
-    update_global_stats(action, packet_len);
-    
-    if (action == ACL_ACTION_DROP) {
-        rs_debug("ACL DROP: src=%pI4, dst=%pI4, proto=%u", &src_ip, &dst_ip, protocol);
-        ctx->drop_reason = RS_DROP_ACL_BLOCK;
+    if (!ctx) {
         return XDP_DROP;
     }
     
-    // Continue to next module
+    /* Check if ACL is enabled */
+    __u32 cfg_key = 0;
+    struct acl_config *cfg = bpf_map_lookup_elem(&acl_config_map, &cfg_key);
+    if (!cfg || !cfg->enabled) {
+        rs_debug("ACL: disabled, passing through");
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+        return XDP_DROP;  // Tail-call failed
+    }
+    
+    /* Only process IPv4 for now (IPv6 support can be added later) */
+    if (ctx->layers.eth_proto != 0x0800) {
+        rs_debug("ACL: non-IPv4 packet, skipping");
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+        return XDP_DROP;
+    }
+    
+    struct acl_result *result = NULL;
+    
+    /* Level 1: Exact 5-tuple match (highest priority) */
+    struct acl_5tuple_key key_l1 = {
+        .proto = ctx->layers.ip_proto,
+        .src_ip = ctx->layers.saddr,
+        .dst_ip = ctx->layers.daddr,
+        .sport = ctx->layers.sport,
+        .dport = ctx->layers.dport,
+    };
+    
+    result = bpf_map_lookup_elem(&acl_5tuple_map, &key_l1);
+    if (result) {
+        rs_debug("ACL: L1 5-tuple hit");
+        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L1_5TUPLE_HIT);
+        if (ret == XDP_DROP) {
+            return XDP_DROP;
+        }
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+        return XDP_DROP;
+    }
+    
+    /* Level 2: Proto + Dst IP + Dst Port */
+    struct acl_proto_dstip_port_key key_l2 = {
+        .proto = ctx->layers.ip_proto,
+        .dst_ip = ctx->layers.daddr,
+        .dst_port = ctx->layers.dport,
+    };
+    
+    result = bpf_map_lookup_elem(&acl_proto_dstip_port_map, &key_l2);
+    if (result) {
+        rs_debug("ACL: L2 proto+dstip+port hit");
+        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L2_PROTO_DSTIP_PORT_HIT);
+        if (ret == XDP_DROP) {
+            return XDP_DROP;
+        }
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+        return XDP_DROP;
+    }
+    
+    /* Level 3: Proto + Src IP + Dst Port */
+    struct acl_proto_srcip_port_key key_l3 = {
+        .proto = ctx->layers.ip_proto,
+        .src_ip = ctx->layers.saddr,
+        .dst_port = ctx->layers.dport,
+    };
+    
+    result = bpf_map_lookup_elem(&acl_proto_srcip_port_map, &key_l3);
+    if (result) {
+        rs_debug("ACL: L3 proto+srcip+port hit");
+        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L3_PROTO_SRCIP_PORT_HIT);
+        if (ret == XDP_DROP) {
+            return XDP_DROP;
+        }
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+        return XDP_DROP;
+    }
+    
+    /* Level 4: Proto + Dst Port */
+    struct acl_proto_port_key key_l4 = {
+        .proto = ctx->layers.ip_proto,
+        .dst_port = ctx->layers.dport,
+    };
+    
+    result = bpf_map_lookup_elem(&acl_proto_port_map, &key_l4);
+    if (result) {
+        rs_debug("ACL: L4 proto+port hit");
+        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L4_PROTO_PORT_HIT);
+        if (ret == XDP_DROP) {
+            return XDP_DROP;
+        }
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+        return XDP_DROP;
+    }
+    
+    /* Level 5: Source IP prefix match */
+    struct acl_lpm_key lpm_key = {
+        .prefixlen = 32,
+        .ip = ctx->layers.saddr,
+    };
+    
+    result = bpf_map_lookup_elem(&acl_lpm_src_map, &lpm_key);
+    if (result) {
+        rs_debug("ACL: L5 LPM src hit");
+        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L5_LPM_SRC_HIT);
+        if (ret == XDP_DROP) {
+            return XDP_DROP;
+        }
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+        return XDP_DROP;
+    }
+    
+    /* Level 6: Destination IP prefix match */
+    lpm_key.ip = ctx->layers.daddr;
+    
+    result = bpf_map_lookup_elem(&acl_lpm_dst_map, &lpm_key);
+    if (result) {
+        rs_debug("ACL: L6 LPM dst hit");
+        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L6_LPM_DST_HIT);
+        if (ret == XDP_DROP) {
+            return XDP_DROP;
+        }
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+        return XDP_DROP;
+    }
+    
+    /* Level 7: Default policy */
+    if (cfg->default_action == ACL_ACTION_DROP) {
+        rs_debug("ACL: L7 default DROP");
+        ctx->drop_reason = RS_DROP_ACL_BLOCK;
+        update_stat(ACL_STAT_L7_DEFAULT_DROP);
+        update_stat(ACL_STAT_TOTAL_DROPS);
+        return XDP_DROP;
+    }
+    
+    /* Default PASS */
+    rs_debug("ACL: L7 default PASS");
+    update_stat(ACL_STAT_L7_DEFAULT_PASS);
     RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-    return XDP_PASS;
+    return XDP_DROP;  // Tail-call failed
 }

@@ -21,8 +21,8 @@ version: "1.0"
 
 # Ingress pipeline (sorted by stage number)
 ingress:
-  - vlan       # Stage 20: VLAN ingress filtering
-  - acl        # Stage 40: Access Control List filtering (NEW)
+  - vlan       # Stage 10: VLAN ingress filtering
+  - acl        # Stage 30: Access Control List filtering (NEW)
   - l2learn    # Stage 80: MAC learning and lookup
   - lastcall   # Stage 90: Forward based on learned MAC or flood
 
