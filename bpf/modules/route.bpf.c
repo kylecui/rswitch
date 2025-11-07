@@ -171,9 +171,11 @@ static __always_inline int is_for_router(void *data, void *data_end,
     if (!cfg || !cfg->is_router)
         return 0;
     
-    struct ethhdr *eth = data + rs_ctx->layers.l2_offset;
-    if ((void *)(eth + 1) > data_end)
+    // Bounds check BEFORE creating pointer
+    if (data + rs_ctx->layers.l2_offset + sizeof(struct ethhdr) > data_end)
         return 0;
+    
+    struct ethhdr *eth = data + rs_ctx->layers.l2_offset;
     
     // Compare MACs
     #pragma unroll
