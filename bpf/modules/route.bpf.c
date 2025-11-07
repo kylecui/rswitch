@@ -230,7 +230,7 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_PASS;
     }
 
-    // L3 offset 准备与检查（过检关键）
+    /* --- L3 定位与一次性边界检查 --- */
     __u16 l3_off16 = ctx->layers.l3_offset;
     if (l3_off16 == 0) {
         ctx->error = RS_ERROR_PARSE_FAILED;
@@ -238,41 +238,31 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_PASS;
     }
 
-    __u64 l3_off = (__u64)l3_off16;
-    void *l3p = (void *)((__u8 *)data + l3_off);
-    if (l3p > data_end) {
-        ctx->error = RS_ERROR_PARSE_FAILED;
-        ctx->drop_reason = RS_DROP_PARSE_ERROR;
-        return XDP_DROP;
-    }
-    if ((void *)((struct iphdr *)l3p + 1) > data_end) {
+    void *l3p = (void *)((__u8 *)data + (__u64)l3_off16);
+    /* 确保至少 20B 的 IPv4 基础头在包内（能读到 daddr/ttl 等字段） */
+    if (l3p + sizeof(struct iphdr) > data_end) {
         ctx->error = RS_ERROR_PARSE_FAILED;
         ctx->drop_reason = RS_DROP_PARSE_ERROR;
         return XDP_DROP;
     }
 
-    struct iphdr *iph = (struct iphdr *)l3p;
+    /* --- 把 IPv4 头拷到栈上，用于所有“读” --- */
+    struct iphdr iph_s;
+    __builtin_memcpy(&iph_s, l3p, sizeof(iph_s));
 
-    // TTL check
-    if (iph->ttl <= 1) {
+    /* 读相关逻辑全部用栈上的 iph_s，避免 verifier 跟踪 data 指针区间 */
+    if (iph_s.ttl <= 1) {
         update_stat(ROUTE_STAT_TTL_EXCEEDED);
         ctx->drop_reason = RS_DROP_TTL_EXCEEDED;
         return XDP_DROP;
     }
 
-    // Decrement TTL & checksum
-    __u8 old_ttl = iph->ttl;
-    iph->ttl--;
-    update_ipv4_checksum(iph, old_ttl);
-    ctx->modified = 1;
-
-    // LPM route lookup
+    /* LPM route lookup 使用栈上值 */
     struct lpm_key route_key = {
         .prefixlen = 32,
-        .addr = iph->daddr,
+        .addr = iph_s.daddr,
     };
 
-    
     update_stat(ROUTE_STAT_LOOKUP);
     struct route_entry *route = bpf_map_lookup_elem(&route_tbl, &route_key);
     if (!route) {
@@ -281,16 +271,15 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
         return XDP_DROP;
     }
-    
     update_stat(ROUTE_STAT_HIT);
     if (route->type == 0)
         update_stat(ROUTE_STAT_DIRECT);
     else
         update_stat(ROUTE_STAT_STATIC);
-    
-    // Determine next-hop
-    __be32 nexthop_ip = route->nexthop ? route->nexthop : iph->daddr;
-    
+
+    /* 决定下一跳，同样只读栈数据 */
+    __be32 nexthop_ip = route->nexthop ? route->nexthop : iph_s.daddr;    
+
     // ARP lookup
     struct arp_entry *arp = bpf_map_lookup_elem(&arp_tbl, &nexthop_ip);
     if (!arp) {
@@ -320,6 +309,23 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     ctx->egress_ifindex = route->ifindex;
     ctx->action = XDP_REDIRECT;
     
+    /* --- 准备写 TTL/校验和：写前“就地二次校验”，然后只做最小写入 --- */
+    struct iphdr *iph_w = (struct iphdr *)l3p;
+    /* 再次紧邻写入处做 bounds 检查（避免 verifier 失去上下文） */
+    if ((void *)(iph_w + 1) > data_end) {
+        ctx->drop_reason = RS_DROP_PARSE_ERROR;
+        return XDP_DROP;
+    }
+
+    /* 现在才对包内头部写：先读旧 TTL，再写新 TTL，再更新校验和 */
+    __u8 old_ttl = iph_w->ttl;   /* 已保证在边界内 */
+    __u8 new_ttl = old_ttl - 1;
+    iph_w->ttl = new_ttl;
+
+    /* 你的校验和更新函数要确保只访问 20B 头内存 */
+    update_ipv4_checksum(iph_w, old_ttl);
+    ctx->modified = 1;
+
     // Next module
     RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
     return XDP_PASS;
