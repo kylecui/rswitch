@@ -266,58 +266,58 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     // update_ipv4_checksum(iph, old_ttl);
     // ctx->modified = 1;
     
-    // LPM route lookup
-    struct lpm_key route_key = {
-        .prefixlen = 32,
-        .addr = iph->daddr,
-    };
+    // // LPM route lookup
+    // struct lpm_key route_key = {
+    //     .prefixlen = 32,
+    //     .addr = iph->daddr,
+    // };
     
-    update_stat(ROUTE_STAT_LOOKUP);
-    struct route_entry *route = bpf_map_lookup_elem(&route_tbl, &route_key);
-    if (!route) {
-        update_stat(ROUTE_STAT_MISS);
-        ctx->error = RS_ERROR_NO_ROUTE;
-        ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
-        return XDP_DROP;
-    }
+    // update_stat(ROUTE_STAT_LOOKUP);
+    // struct route_entry *route = bpf_map_lookup_elem(&route_tbl, &route_key);
+    // if (!route) {
+    //     update_stat(ROUTE_STAT_MISS);
+    //     ctx->error = RS_ERROR_NO_ROUTE;
+    //     ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
+    //     return XDP_DROP;
+    // }
     
-    update_stat(ROUTE_STAT_HIT);
-    if (route->type == 0)
-        update_stat(ROUTE_STAT_DIRECT);
-    else
-        update_stat(ROUTE_STAT_STATIC);
+    // update_stat(ROUTE_STAT_HIT);
+    // if (route->type == 0)
+    //     update_stat(ROUTE_STAT_DIRECT);
+    // else
+    //     update_stat(ROUTE_STAT_STATIC);
     
-    // Determine next-hop
-    __be32 nexthop_ip = route->nexthop ? route->nexthop : iph->daddr;
+    // // Determine next-hop
+    // __be32 nexthop_ip = route->nexthop ? route->nexthop : iph->daddr;
     
-    // ARP lookup
-    struct arp_entry *arp = bpf_map_lookup_elem(&arp_tbl, &nexthop_ip);
-    if (!arp) {
-        update_stat(ROUTE_STAT_ARP_MISS);
-        ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
-        return XDP_DROP;
-    }
+    // // ARP lookup
+    // struct arp_entry *arp = bpf_map_lookup_elem(&arp_tbl, &nexthop_ip);
+    // if (!arp) {
+    //     update_stat(ROUTE_STAT_ARP_MISS);
+    //     ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
+    //     return XDP_DROP;
+    // }
     
-    update_stat(ROUTE_STAT_ARP_HIT);
+    // update_stat(ROUTE_STAT_ARP_HIT);
     
-    // Get egress iface config
-    __u32 eg_ifkey = route->ifindex;
-    struct iface_config *egress_cfg = bpf_map_lookup_elem(&iface_cfg, &eg_ifkey);
-    if (!egress_cfg) {
-        return XDP_DROP;
-    }
+    // // Get egress iface config
+    // __u32 eg_ifkey = route->ifindex;
+    // struct iface_config *egress_cfg = bpf_map_lookup_elem(&iface_cfg, &eg_ifkey);
+    // if (!egress_cfg) {
+    //     return XDP_DROP;
+    // }
     
-    // Rewrite L2 header (l2_offset is always 0)
-    if (data + sizeof(struct ethhdr) > data_end)
-        return XDP_DROP;
-    struct ethhdr *eth = data;
+    // // Rewrite L2 header (l2_offset is always 0)
+    // if (data + sizeof(struct ethhdr) > data_end)
+    //     return XDP_DROP;
+    // struct ethhdr *eth = data;
     
-    __builtin_memcpy(eth->h_source, egress_cfg->mac, 6);
-    __builtin_memcpy(eth->h_dest, arp->mac, 6);
+    // __builtin_memcpy(eth->h_source, egress_cfg->mac, 6);
+    // __builtin_memcpy(eth->h_dest, arp->mac, 6);
     
-    // Set forwarding decision
-    ctx->egress_ifindex = route->ifindex;
-    ctx->action = XDP_REDIRECT;
+    // // Set forwarding decision
+    // ctx->egress_ifindex = route->ifindex;
+    // ctx->action = XDP_REDIRECT;
     
     // Next module
     RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
