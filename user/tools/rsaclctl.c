@@ -352,7 +352,7 @@ static int cmd_add_proto_dst(int argc, char **argv)
     
     // Open map
     char map_path[256];
-    snprintf(map_path, sizeof(map_path), "%s/acl_proto_dstip_port_map", PIN_BASE_DIR);
+    snprintf(map_path, sizeof(map_path), "%s/acl_pdp_map", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd < 0) {
         fprintf(stderr, "Failed to open proto+dst map: %s\n", strerror(errno));
@@ -440,7 +440,7 @@ static int cmd_add_proto_src(int argc, char **argv)
     
     // Open map
     char map_path[256];
-    snprintf(map_path, sizeof(map_path), "%s/acl_proto_srcip_port_map", PIN_BASE_DIR);
+    snprintf(map_path, sizeof(map_path), "%s/acl_psp_map", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd < 0) {
         fprintf(stderr, "Failed to open proto+src map: %s\n", strerror(errno));
@@ -520,7 +520,7 @@ static int cmd_add_proto_port(int argc, char **argv)
     
     // Open map
     char map_path[256];
-    snprintf(map_path, sizeof(map_path), "%s/acl_proto_port_map", PIN_BASE_DIR);
+    snprintf(map_path, sizeof(map_path), "%s/acl_pp_map", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd < 0) {
         fprintf(stderr, "Failed to open proto+port map: %s\n", strerror(errno));
@@ -791,7 +791,7 @@ static int cmd_list(void)
     printf("\nLevel 2: Proto+DstIP+Port Rules:\n");
     printf("───────────────────────────────────────\n");
     
-    snprintf(map_path, sizeof(map_path), "%s/acl_proto_dstip_port_map", PIN_BASE_DIR);
+    snprintf(map_path, sizeof(map_path), "%s/acl_pdp_map", PIN_BASE_DIR);
     int proto_dst_fd = bpf_obj_get(map_path);
     if (proto_dst_fd >= 0) {
         struct acl_proto_dstip_port_key key = {0}, next_key;
@@ -822,7 +822,7 @@ static int cmd_list(void)
     printf("\nLevel 3: Proto+SrcIP+Port Rules:\n");
     printf("───────────────────────────────────────\n");
     
-    snprintf(map_path, sizeof(map_path), "%s/acl_proto_srcip_port_map", PIN_BASE_DIR);
+    snprintf(map_path, sizeof(map_path), "%s/acl_psp_map", PIN_BASE_DIR);
     int proto_src_fd = bpf_obj_get(map_path);
     if (proto_src_fd >= 0) {
         struct acl_proto_srcip_port_key key = {0}, next_key;
@@ -853,7 +853,7 @@ static int cmd_list(void)
     printf("\nLevel 4: Proto+Port Rules:\n");
     printf("───────────────────────────────────────\n");
     
-    snprintf(map_path, sizeof(map_path), "%s/acl_proto_port_map", PIN_BASE_DIR);
+    snprintf(map_path, sizeof(map_path), "%s/acl_pp_map", PIN_BASE_DIR);
     int proto_port_fd = bpf_obj_get(map_path);
     if (proto_port_fd >= 0) {
         struct acl_proto_port_key key = {0}, next_key;
@@ -925,7 +925,7 @@ static int cmd_clear(void)
     }
     
     // Clear Level 2 map
-    snprintf(map_path, sizeof(map_path), "%s/acl_proto_dstip_port_map", PIN_BASE_DIR);
+    snprintf(map_path, sizeof(map_path), "%s/acl_pdp_map", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd >= 0) {
         struct acl_proto_dstip_port_key key = {0}, next_key;
@@ -942,7 +942,7 @@ static int cmd_clear(void)
     }
     
     // Clear Level 3 map
-    snprintf(map_path, sizeof(map_path), "%s/acl_proto_srcip_port_map", PIN_BASE_DIR);
+    snprintf(map_path, sizeof(map_path), "%s/acl_psp_map", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd >= 0) {
         struct acl_proto_srcip_port_key key = {0}, next_key;
@@ -959,7 +959,7 @@ static int cmd_clear(void)
     }
     
     // Clear Level 4 map
-    snprintf(map_path, sizeof(map_path), "%s/acl_proto_port_map", PIN_BASE_DIR);
+    snprintf(map_path, sizeof(map_path), "%s/acl_pp_map", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd >= 0) {
         struct acl_proto_port_key key = {0}, next_key;

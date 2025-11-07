@@ -112,7 +112,7 @@ struct {
     __type(value, struct acl_result);
     __uint(max_entries, 65536);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
-} acl_proto_dstip_port_map SEC(".maps");
+} acl_pdp_map SEC(".maps");
 
 //
 // Level 3: Proto + Src IP + Dst Port (HASH)
@@ -136,7 +136,7 @@ struct {
     __type(value, struct acl_result);
     __uint(max_entries, 65536);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
-} acl_proto_srcip_port_map SEC(".maps");
+} acl_psp_map SEC(".maps");
 
 //
 // Level 4: Proto + Dst Port (HASH)
@@ -158,7 +158,7 @@ struct {
     __type(value, struct acl_result);
     __uint(max_entries, 4096);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
-} acl_proto_port_map SEC(".maps");
+} acl_pp_map SEC(".maps");
 
 //
 // Level 5/6: LPM Prefix Match (TRIE)
@@ -351,7 +351,7 @@ int acl_filter(struct xdp_md *xdp_ctx)
         .dst_port = ctx->layers.dport,
     };
     
-    result = bpf_map_lookup_elem(&acl_proto_dstip_port_map, &key_l2);
+    result = bpf_map_lookup_elem(&acl_pdp_map, &key_l2);
     if (result) {
         rs_debug("ACL: L2 proto+dstip+port hit");
         int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L2_PROTO_DSTIP_PORT_HIT);
@@ -369,7 +369,7 @@ int acl_filter(struct xdp_md *xdp_ctx)
         .dst_port = ctx->layers.dport,
     };
     
-    result = bpf_map_lookup_elem(&acl_proto_srcip_port_map, &key_l3);
+    result = bpf_map_lookup_elem(&acl_psp_map, &key_l3);
     if (result) {
         rs_debug("ACL: L3 proto+srcip+port hit");
         int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L3_PROTO_SRCIP_PORT_HIT);
@@ -386,7 +386,7 @@ int acl_filter(struct xdp_md *xdp_ctx)
         .dst_port = ctx->layers.dport,
     };
     
-    result = bpf_map_lookup_elem(&acl_proto_port_map, &key_l4);
+    result = bpf_map_lookup_elem(&acl_pp_map, &key_l4);
     if (result) {
         rs_debug("ACL: L4 proto+port hit");
         int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L4_PROTO_PORT_HIT);
