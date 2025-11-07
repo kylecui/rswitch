@@ -253,18 +253,18 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
 
-    // TTL check
-    if (iph->ttl <= 1) {
-        update_stat(ROUTE_STAT_TTL_EXCEEDED);
-        ctx->drop_reason = RS_DROP_TTL_EXCEEDED;
-        return XDP_DROP;
-    }
+    // // TTL check
+    // if (iph->ttl <= 1) {
+    //     update_stat(ROUTE_STAT_TTL_EXCEEDED);
+    //     ctx->drop_reason = RS_DROP_TTL_EXCEEDED;
+    //     return XDP_DROP;
+    // }
     
-    // Decrement TTL
-    __u8 old_ttl = iph->ttl;
-    iph->ttl--;
-    update_ipv4_checksum(iph, old_ttl);
-    ctx->modified = 1;
+    // // Decrement TTL
+    // __u8 old_ttl = iph->ttl;
+    // iph->ttl--;
+    // update_ipv4_checksum(iph, old_ttl);
+    // ctx->modified = 1;
     
     // LPM route lookup
     struct lpm_key route_key = {
