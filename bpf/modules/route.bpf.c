@@ -255,7 +255,7 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_PASS;
     }
     
-    rs_debug("Route: Entry on ifindex=%u, proto=0x%x", ctx->ifindex, bpf_ntohs(ctx->layers.eth_proto));
+    rs_debug("Route: Entry on ifindex=%u, proto=0x%x", ctx->ifindex, ctx->layers.eth_proto);
     
     // Check if enabled
     __u32 cfg_key = 0;
@@ -275,9 +275,9 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     
     rs_debug("Route: Packet IS for router, processing");
     
-    // Only IPv4
-    if (ctx->layers.eth_proto != bpf_htons(ETH_P_IP)) {
-        rs_debug("Route: Not IPv4 (proto=0x%x), passing", bpf_ntohs(ctx->layers.eth_proto));
+    // Only IPv4 (eth_proto already in host byte order from dispatcher)
+    if (ctx->layers.eth_proto != ETH_P_IP) {
+        rs_debug("Route: Not IPv4 (proto=0x%x), passing", ctx->layers.eth_proto);
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
         return XDP_PASS;
     }
