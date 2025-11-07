@@ -171,12 +171,11 @@ static __always_inline int is_for_router(void *data, void *data_end,
     if (!cfg || !cfg->is_router)
         return 0;
     
-    struct ethhdr *eth = data + rs_ctx->layers.l2_offset;
-    
-    // Bounds check: eth + sizeof(*eth) must not exceed data_end
-    // This check allows verifier to track eth as valid pointer with range
-    if ((void *)(eth + 1) > data_end)
+    // Bounds check first (l2_offset is always 0 in our system)
+    if (data + sizeof(struct ethhdr) > data_end)
         return 0;
+    
+    struct ethhdr *eth = data;
     
     // Direct MAC comparison using memcmp (verifier-friendly)
     if (__builtin_memcmp(eth->h_dest, cfg->mac, 6) != 0)
@@ -293,10 +292,10 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
     
-    // Rewrite L2 header
-    struct ethhdr *eth = data + ctx->layers.l2_offset;
-    if ((void *)(eth + 1) > data_end)
+    // Rewrite L2 header (l2_offset is always 0)
+    if (data + sizeof(struct ethhdr) > data_end)
         return XDP_DROP;
+    struct ethhdr *eth = data;
     
     __builtin_memcpy(eth->h_source, egress_cfg->mac, 6);
     __builtin_memcpy(eth->h_dest, arp->mac, 6);
