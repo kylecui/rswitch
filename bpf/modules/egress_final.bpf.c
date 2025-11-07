@@ -23,13 +23,11 @@
 char _license[] SEC("license") = "GPL";
 
 // Module metadata for auto-discovery
-// Stage number convention:
-//   Ingress: 10-90
-//   Egress:  100-190
+// Egress modules use reconfigurable chain - loader assigns prog_id slots dynamically
 RS_DECLARE_MODULE(
     "egress_final",             // Module name
     RS_HOOK_XDP_EGRESS,         // Hook point (egress processing)
-    190,                        // Stage number (MUST be last in egress pipeline)
+    190,                        // Stage number (high value = runs last)
     0,                          // No special flags
     "Final egress processing - clear parsed flag and pass packet"
 );

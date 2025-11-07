@@ -168,6 +168,32 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_progs SEC(".maps");
 
+/* Program chain configuration - stores next prog_id for each module
+ * 
+ * Key: current prog_id (prog_array index)
+ * Value: next prog_id to tail-call
+ * 
+ * This enables reconfigurable egress pipelines without hardcoded slots.
+ * Loader populates this when building the pipeline:
+ *   prog_chain[4] = 5  (module at slot 4 calls slot 5 next)
+ *   prog_chain[5] = 6  (module at slot 5 calls slot 6 next)
+ * 
+ * Egress modules use this to determine their next hop, avoiding race conditions:
+ *   Thread 1 (port 5): Read prog_chain[4] → 5, call prog 5 ✓
+ *   Thread 2 (port 6): Read prog_chain[4] → 5, call prog 5 ✓ (no race!)
+ * 
+ * Compare to dynamic increment (broken):
+ *   Thread 1: Read next_prog_id=4 → Set 5 → Call 5
+ *   Thread 2: Read next_prog_id=5 → Set 6 → Call 6 (skip 5!) ✗
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, RS_MAX_PROGS);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_prog_chain SEC(".maps");
+
 /* Unified Event Bus
  * 
  * Shared ringbuf for all module events (MAC learning, ACL hits, errors, etc.)
@@ -233,12 +259,42 @@ struct {
  * 
  * CRITICAL: Modules should NOT manually set next_prog_id!
  * The dispatcher initializes it to 0, then this macro auto-increments.
+ * 
+ * NOTE: Ingress modules only! Egress modules use RS_TAIL_CALL_EGRESS.
  */
 #define RS_TAIL_CALL_NEXT(xdp_ctx_ptr, rs_ctx_ptr) ({ \
     if ((rs_ctx_ptr)->call_depth < 32) { \
         (rs_ctx_ptr)->call_depth++; \
         (rs_ctx_ptr)->next_prog_id++; \
         bpf_tail_call((xdp_ctx_ptr), &rs_progs, (rs_ctx_ptr)->next_prog_id); \
+    } \
+})
+
+/* Tail-call for egress pipeline (reads next prog_id from prog_chain map)
+ * Usage: RS_TAIL_CALL_EGRESS(xdp_ctx, rs_ctx_ptr, my_prog_id)
+ * 
+ * Egress modules run concurrently during flooding - each must tail-call to the
+ * same next stage. We look up the next prog_id from rs_prog_chain map (read-only,
+ * no race condition).
+ * 
+ * Example with 3 egress modules (qos=4, mirror=5, final=6):
+ *   Loader configures: prog_chain[4]=5, prog_chain[5]=6, prog_chain[6]=0
+ * 
+ * During flooding (concurrent execution):
+ *   Core 1 (port 5): At prog 4 → Read prog_chain[4]=5 → Call prog 5 ✓
+ *   Core 2 (port 6): At prog 4 → Read prog_chain[4]=5 → Call prog 5 ✓
+ *   Core 3 (port 7): At prog 4 → Read prog_chain[4]=5 → Call prog 5 ✓
+ * 
+ * All cores read the same value (no writes, no race).
+ */
+#define RS_TAIL_CALL_EGRESS(xdp_ctx_ptr, rs_ctx_ptr, my_prog_id) ({ \
+    if ((rs_ctx_ptr)->call_depth < 32) { \
+        (rs_ctx_ptr)->call_depth++; \
+        __u32 __key = (my_prog_id); \
+        __u32 *__next = bpf_map_lookup_elem(&rs_prog_chain, &__key); \
+        if (__next && *__next != 0) { \
+            bpf_tail_call((xdp_ctx_ptr), &rs_progs, *__next); \
+        } \
     } \
 })
 

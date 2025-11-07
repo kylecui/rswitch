@@ -328,14 +328,37 @@ int rswitch_egress(struct xdp_md *ctx)
      * - Final XDP_PASS return
      */
     
-    /* Tail-call to egress pipeline using RS_TAIL_CALL_NEXT macro
-     * Loader inserts modules sequentially, macro auto-increments next_prog_id
+    /* Tail-call to egress pipeline
+     * 
+     * Egress entry (this devmap program) is NOT in rs_progs array - it's attached
+     * to devmap directly. To enter the egress module pipeline, we look up the first
+     * egress module's prog_id from rs_prog_chain[RS_ONLYKEY].
+     * 
+     * Loader configures:
+     *   prog_chain[0] = first_egress_prog_id  (special: devmap entry uses key 0)
+     *   prog_chain[first_egress_prog_id] = next_egress_prog_id
+     *   ... and so on
+     * 
+     * During flooding (concurrent):
+     *   All cores read prog_chain[0] → same value → call same first stage ✓
      */
-    // rs_debug out rctx for verification
-    rs_debug("Egress tail-call to next stage, prog_id: %u", rctx->next_prog_id);
-    RS_TAIL_CALL_NEXT(ctx, rctx);
+    __u32 chain_key = RS_ONLYKEY;  /* Key 0: devmap entry's next hop */
+    __u32 *first_egress_prog = bpf_map_lookup_elem(&rs_prog_chain, &chain_key);
     
-    /* Tail-call failed - should not happen if egress_final is loaded
+    if (!first_egress_prog || *first_egress_prog == 0) {
+        /* No egress pipeline configured - pass directly */
+        rs_debug("No egress pipeline configured, passing directly");
+        return XDP_PASS;
+    }
+    
+    rs_debug("Egress tail-call to prog %u", *first_egress_prog);
+    
+    if (rctx->call_depth < 32) {
+        rctx->call_depth++;
+        bpf_tail_call(ctx, &rs_progs, *first_egress_prog);
+    }
+    
+    /* Tail-call failed - should not happen if egress modules are loaded
      * Fall back to direct XDP_PASS (parsed won't be cleared, but packet transmits)
      */
     rs_debug("WARN: Tail-call to egress pipeline failed, passing directly");

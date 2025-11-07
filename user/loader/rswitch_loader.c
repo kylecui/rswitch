@@ -130,6 +130,7 @@ struct loader_ctx {
     /* Shared maps */
     int rs_ctx_map_fd;
     int rs_progs_fd;
+    int rs_prog_chain_fd;        /* Chain map: prog_chain[my_id] = next_id */
     int rs_port_config_map_fd;
     int rs_devmap_fd;
     int rs_stats_map_fd;
@@ -425,6 +426,7 @@ static int get_pinned_maps(struct loader_ctx *ctx)
      */
     ctx->rs_ctx_map_fd = bpf_obj_get("/sys/fs/bpf/rs_ctx_map");
     ctx->rs_progs_fd = bpf_obj_get("/sys/fs/bpf/rs_progs");
+    ctx->rs_prog_chain_fd = bpf_obj_get("/sys/fs/bpf/rs_prog_chain");
     
     /* Port config map - may or may not be pinned */
     snprintf(path, sizeof(path), "%s/rs_port_config_map", BPF_PIN_PATH);
@@ -447,6 +449,14 @@ static int get_pinned_maps(struct loader_ctx *ctx)
         if (map) {
             ctx->rs_progs_fd = bpf_map__fd(map);
             printf("Got rs_progs from dispatcher object: fd=%d\n", ctx->rs_progs_fd);
+        }
+    }
+    
+    if (ctx->rs_prog_chain_fd < 0) {
+        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_prog_chain");
+        if (map) {
+            ctx->rs_prog_chain_fd = bpf_map__fd(map);
+            printf("Got rs_prog_chain from dispatcher object: fd=%d\n", ctx->rs_prog_chain_fd);
         }
     }
     
@@ -538,26 +548,91 @@ static int build_prog_array(struct loader_ctx *ctx)
     
     printf("\nBuilding tail-call pipeline:\n");
     
-    /* Insert modules into prog_array in stage order */
+    /* Build separate pipelines for ingress and egress */
+    int ingress_count = 0, egress_count = 0;
+    int first_egress_idx = -1;
+    
+    /* Insert modules into prog_array and build chain map */
     for (i = 0; i < ctx->num_modules; i++) {
         struct loaded_module *mod = &ctx->modules[i];
+        int target_idx;
         
         if (!mod->obj || mod->prog_fd < 0)
             continue;
         
-        /* Insert at sequential index (0, 1, 2, ...) */
-        err = bpf_map_update_elem(ctx->rs_progs_fd, &idx, &mod->prog_fd, BPF_ANY);
+        /* Determine target prog_array slot */
+        if (mod->desc.hook == RS_HOOK_XDP_EGRESS) {
+            /* Egress modules: sequential slots starting after ingress */
+            target_idx = idx++;
+            if (first_egress_idx < 0) {
+                first_egress_idx = target_idx;  /* Remember first egress module */
+            }
+            egress_count++;
+        } else {
+            /* Ingress modules: sequential slots from 0 */
+            target_idx = idx++;
+            ingress_count++;
+        }
+        
+        /* Insert into prog_array */
+        err = bpf_map_update_elem(ctx->rs_progs_fd, &target_idx, &mod->prog_fd, BPF_ANY);
         if (err) {
             fprintf(stderr, "Failed to insert %s into prog_array[%u]: %s\n",
-                    mod->name, idx, strerror(errno));
+                    mod->name, target_idx, strerror(errno));
             return -1;
         }
         
-        printf("  [%u] stage=%2u: %s (fd=%d)\n", idx, mod->stage, mod->name, mod->prog_fd);
-        idx++;
+        /* Build chain: current module's slot points to next module's slot */
+        if (i + 1 < ctx->num_modules) {
+            struct loaded_module *next_mod = &ctx->modules[i + 1];
+            
+            /* Only chain within same hook type (ingress→ingress, egress→egress) */
+            if (next_mod->desc.hook == mod->desc.hook && next_mod->prog_fd >= 0) {
+                int next_idx = (mod->desc.hook == RS_HOOK_XDP_EGRESS) ? 
+                               (target_idx + 1) : (target_idx + 1);
+                
+                err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &target_idx, &next_idx, BPF_ANY);
+                if (err) {
+                    fprintf(stderr, "Failed to set prog_chain[%u]=%u: %s\n",
+                            target_idx, next_idx, strerror(errno));
+                    return -1;
+                }
+                
+                printf("  [%3u] stage=%3u hook=%-7s: %s (fd=%d) → next=%u\n", 
+                       target_idx, mod->stage, 
+                       mod->desc.hook == RS_HOOK_XDP_EGRESS ? "egress" : "ingress",
+                       mod->name, mod->prog_fd, next_idx);
+            } else {
+                /* Last module in this hook type */
+                printf("  [%3u] stage=%3u hook=%-7s: %s (fd=%d) [LAST]\n", 
+                       target_idx, mod->stage,
+                       mod->desc.hook == RS_HOOK_XDP_EGRESS ? "egress" : "ingress",
+                       mod->name, mod->prog_fd);
+            }
+        } else {
+            /* Very last module overall */
+            printf("  [%3u] stage=%3u hook=%-7s: %s (fd=%d) [LAST]\n", 
+                   target_idx, mod->stage,
+                   mod->desc.hook == RS_HOOK_XDP_EGRESS ? "egress" : "ingress",
+                   mod->name, mod->prog_fd);
+        }
     }
     
-    printf("Pipeline built with %u modules\n", idx);
+    /* Set devmap egress entry point (prog_chain[0] = first egress module) */
+    if (first_egress_idx >= 0) {
+        int key = 0;  /* RS_ONLYKEY - devmap egress uses key 0 */
+        err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &key, &first_egress_idx, BPF_ANY);
+        if (err) {
+            fprintf(stderr, "Failed to set egress entry point prog_chain[0]=%u: %s\n",
+                    first_egress_idx, strerror(errno));
+            return -1;
+        }
+        printf("\nEgress entry point: prog_chain[0] = %u (devmap→first egress module)\n",
+               first_egress_idx);
+    }
+    
+    printf("\nPipeline built: %u ingress + %u egress modules\n", 
+           ingress_count, egress_count);
     return 0;
 }
 
@@ -1189,6 +1264,7 @@ int main(int argc, char **argv)
     /* Initialize map FDs to -1 */
     ctx.rs_ctx_map_fd = -1;
     ctx.rs_progs_fd = -1;
+    ctx.rs_prog_chain_fd = -1;
     ctx.rs_port_config_map_fd = -1;
     ctx.rs_devmap_fd = -1;
     ctx.rs_stats_map_fd = -1;
