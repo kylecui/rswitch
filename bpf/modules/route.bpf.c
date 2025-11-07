@@ -162,26 +162,30 @@ static __always_inline void update_stat(enum route_stat_type stat)
         __sync_fetch_and_add(val, 1);
 }
 
-/* Check if packet is for router */
+/* Check if packet is for router (dest MAC matches any router interface) */
 static __always_inline int is_for_router(void *data, void *data_end,
                                          struct rs_ctx *rs_ctx)
 {
-    __u32 ifkey = rs_ctx->ifindex;
-    struct iface_config *cfg = bpf_map_lookup_elem(&iface_cfg, &ifkey);
-    if (!cfg || !cfg->is_router)
-        return 0;
-    
     // Bounds check first (l2_offset is always 0 in our system)
     if (data + sizeof(struct ethhdr) > data_end)
         return 0;
     
     struct ethhdr *eth = data;
     
-    // Direct MAC comparison using memcmp (verifier-friendly)
-    if (__builtin_memcmp(eth->h_dest, cfg->mac, 6) != 0)
-        return 0;
+    // Check if dest MAC matches any router interface
+    // Use bounded loop (verifier-friendly, no unroll)
+    // Typical switch has < 32 interfaces, this covers realistic deployments
+    for (__u32 ifkey = 0; ifkey < RS_MAX_INTERFACES && ifkey < 32; ifkey++) {
+        struct iface_config *cfg = bpf_map_lookup_elem(&iface_cfg, &ifkey);
+        if (!cfg || !cfg->is_router)
+            continue;
+        
+        // Direct MAC comparison using memcmp (verifier-friendly)
+        if (__builtin_memcmp(eth->h_dest, cfg->mac, 6) == 0)
+            return 1;
+    }
     
-    return 1;
+    return 0;
 }
 
 /* RFC 1624 incremental checksum update */

@@ -77,7 +77,7 @@ enum route_stat_type {
     ROUTE_STAT_MAX = 8,
 };
 
-static const char *stat_names[] = {
+static const char *stat_names[ROUTE_STAT_MAX] = {
     [ROUTE_STAT_LOOKUP] = "Route lookups",
     [ROUTE_STAT_HIT] = "Route hits",
     [ROUTE_STAT_MISS] = "Route misses",

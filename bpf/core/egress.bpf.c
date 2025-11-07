@@ -331,6 +331,8 @@ int rswitch_egress(struct xdp_md *ctx)
     /* Tail-call to egress pipeline using RS_TAIL_CALL_NEXT macro
      * Loader inserts modules sequentially, macro auto-increments next_prog_id
      */
+    // rs_debug out rctx for verification
+    rs_debug("Egress tail-call to next stage, prog_id: %u", rctx->next_prog_id);
     RS_TAIL_CALL_NEXT(ctx, rctx);
     
     /* Tail-call failed - should not happen if egress_final is loaded
