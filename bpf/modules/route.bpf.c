@@ -175,7 +175,8 @@ static __always_inline int is_for_router(void *data, void *data_end,
     // Check if dest MAC matches any router interface
     // Use bounded loop (verifier-friendly, no unroll)
     // Typical switch has < 32 interfaces, this covers realistic deployments
-    for (__u32 ifkey = 0; ifkey < RS_MAX_INTERFACES && ifkey < 32; ifkey++) {
+    #pragma unroll
+    for (__u32 ifkey = 0; ifkey < RS_MAX_INTERFACES; ifkey++) {
         struct iface_config *cfg = bpf_map_lookup_elem(&iface_cfg, &ifkey);
         if (!cfg || !cfg->is_router)
             continue;
