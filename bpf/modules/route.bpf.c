@@ -230,7 +230,14 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_PASS;
     }
     
-    // Get IP header - need explicit bounds check for verifier
+    // Check if L3 layer has been parsed (PoC pattern)
+    if (!ctx->layers.l3_offset) {
+        ctx->error = RS_ERROR_PARSE_FAILED;
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+        return XDP_PASS;
+    }
+    
+    // Get IP header - load offset to local variable for verifier
     __u16 l3_off = ctx->layers.l3_offset;
     if (data + l3_off + sizeof(struct iphdr) > data_end) {
         ctx->error = RS_ERROR_PARSE_FAILED;
