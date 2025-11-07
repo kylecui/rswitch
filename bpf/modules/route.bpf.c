@@ -244,7 +244,7 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     // }
 
     // Get IP header directly without intermediate variable
-    struct iphdr *iph = data + (ctx->layers.l3_offset & 0xFFFF);
+    struct iphdr *iph = data + (ctx->layers.l3_offset & 0xFF);
     
     // Bounds check: check the pointer before dereferencing
     if ((void *)&iph[1] > data_end) {
