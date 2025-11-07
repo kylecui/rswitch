@@ -230,13 +230,14 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_PASS;
     }
     
-    // Get IP header
-    struct iphdr *iph = data + ctx->layers.l3_offset;
-    if ((void *)(iph + 1) > data_end) {
+    // Get IP header - need explicit bounds check for verifier
+    __u16 l3_off = ctx->layers.l3_offset;
+    if (data + l3_off + sizeof(struct iphdr) > data_end) {
         ctx->error = RS_ERROR_PARSE_FAILED;
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
         return XDP_PASS;
     }
+    struct iphdr *iph = data + l3_off;
     
     // TTL check
     if (iph->ttl <= 1) {
