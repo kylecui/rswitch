@@ -237,15 +237,17 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_PASS;
     }
     
-    // Reload data pointers (may have been invalidated by previous operations)
-    data = (void *)(long)xdp_ctx->data;
-    data_end = (void *)(long)xdp_ctx->data_end;
-    
+    if (data + ctx->layers.l3_offset > data_end) {
+        ctx->error = RS_ERROR_PARSE_FAILED;
+        ctx->drop_reason = RS_DROP_PARSE_ERROR;
+        return XDP_DROP;
+    }
+
     // Get IP header directly without intermediate variable
     struct iphdr *iph = data + ctx->layers.l3_offset;
     
     // Bounds check: check the pointer before dereferencing
-    if (data + ctx->layers.l3_offset + sizeof(*iph) > data_end) {
+    if ((void *)&iph[1] > data_end) {
         ctx->error = RS_ERROR_PARSE_FAILED;
         ctx->drop_reason = RS_DROP_PARSE_ERROR;
         return XDP_DROP;
