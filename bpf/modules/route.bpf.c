@@ -153,6 +153,41 @@ struct {
 //
 // Helper Functions
 //
+struct loop_ctx {
+    const struct ethhdr *eth;
+    int found;
+};
+
+/* 6 字节 MAC 比较：编译成直白的逐字节比较，verifier 友好 */
+static __always_inline bool mac_equal6(const __u8 *a, const __u8 *b) {
+#pragma clang loop unroll(full)
+    for (int k = 0; k < 6; k++) {
+        if (a[k] != b[k]) return false;
+    }
+    return true;
+}
+
+static int scan_cb(__u32 i, void *data)
+{
+    struct loop_ctx *lc = data;
+    __u32 key = i;
+    struct iface_config *cfg = bpf_map_lookup_elem(&iface_cfg, &key);
+    if (cfg && cfg->is_router) {
+        if (mac_equal6(lc->eth->h_dest, cfg->mac)) {
+            lc->found = 1;
+            return 1; /* 非 0 → 终止循环 */
+        }
+    }
+    return 0; /* 继续循环 */
+}
+
+static __always_inline int is_for_router_fast(const struct ethhdr *eth)
+{
+    struct loop_ctx lc = { .eth = eth, .found = 0 };
+    /* 第 4 个参数 flags=0；bpf_loop 返回迭代次数或负值错误 */
+    bpf_loop(RS_MAX_INTERFACES, scan_cb, &lc, 0);
+    return lc.found;
+}
 
 static __always_inline void update_stat(enum route_stat_type stat)
 {
@@ -175,19 +210,22 @@ static __always_inline int is_for_router(void *data, void *data_end,
     // Check if dest MAC matches any router interface
     // Use bounded loop (verifier-friendly, no unroll)
     // Typical switch has < 32 interfaces, this covers realistic deployments
-    #pragma unroll
-    for (__u32 ifkey = 0; ifkey < RS_MAX_INTERFACES; ifkey++) {
-        struct iface_config *cfg = bpf_map_lookup_elem(&iface_cfg, &ifkey);
-        if (!cfg || !cfg->is_router)
-            continue;
+    // #pragma unroll
+    // for (__u32 ifkey = 0; ifkey < RS_MAX_INTERFACES; ifkey++) {
+    //     struct iface_config *cfg = bpf_map_lookup_elem(&iface_cfg, &ifkey);
+    //     if (!cfg || !cfg->is_router)
+    //         continue;
         
-        // Direct MAC comparison using memcmp (verifier-friendly)
-        if (__builtin_memcmp(eth->h_dest, cfg->mac, 6) == 0)
-            return 1;
-    }
+    //     // Direct MAC comparison using memcmp (verifier-friendly)
+    //     if (__builtin_memcmp(eth->h_dest, cfg->mac, 6) == 0)
+    //         return 1;
+    // }
     
-    return 0;
+    // return 0;
+    return is_for_router_fast(eth);
 }
+
+
 
 /* RFC 1624 incremental checksum update */
 static __always_inline void update_ipv4_checksum(struct iphdr *iph, __u8 old_ttl)
