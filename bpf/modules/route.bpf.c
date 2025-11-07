@@ -237,6 +237,10 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_PASS;
     }
     
+    // Reload data pointers (may have been invalidated by previous operations)
+    data = (void *)(long)xdp_ctx->data;
+    data_end = (void *)(long)xdp_ctx->data_end;
+    
     // Get IP header - load offset to local variable for verifier
     __u16 l3_off = ctx->layers.l3_offset;
     struct iphdr *iph = data + l3_off;
