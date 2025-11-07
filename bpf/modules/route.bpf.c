@@ -250,31 +250,41 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     
     // Get context
     struct rs_ctx *ctx = RS_GET_CTX();
-    if (!ctx)
+    if (!ctx) {
+        rs_debug("Route: No context, passing");
         return XDP_PASS;
+    }
+    
+    rs_debug("Route: Entry on ifindex=%u, proto=0x%x", ctx->ifindex, bpf_ntohs(ctx->layers.eth_proto));
     
     // Check if enabled
     __u32 cfg_key = 0;
     struct route_config *cfg = bpf_map_lookup_elem(&route_cfg, &cfg_key);
     if (!cfg || !cfg->enabled) {
+        rs_debug("Route: Disabled, passing through");
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
         return XDP_PASS;
     }
     
     // Only route packets for router
     if (!is_for_router(data, data_end, ctx)) {
+        rs_debug("Route: Packet not for router (dest MAC mismatch), passing");
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
         return XDP_PASS;
     }
     
+    rs_debug("Route: Packet IS for router, processing");
+    
     // Only IPv4
     if (ctx->layers.eth_proto != bpf_htons(ETH_P_IP)) {
+        rs_debug("Route: Not IPv4 (proto=0x%x), passing", bpf_ntohs(ctx->layers.eth_proto));
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
         return XDP_PASS;
     }
     
     // Check if L3 layer has been parsed (PoC pattern)
     if (!ctx->layers.l3_offset) {
+        rs_debug("Route: L3 not parsed (l3_offset=0), passing");
         ctx->error = RS_ERROR_PARSE_FAILED;
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
         return XDP_PASS;
@@ -294,13 +304,17 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     
     // Bounds check: verify full IP header is accessible
     if ((void *)&iph[1] > data_end) {
+        rs_debug("Route: IP header bounds check failed");
         ctx->error = RS_ERROR_PARSE_FAILED;
         ctx->drop_reason = RS_DROP_PARSE_ERROR;
         return XDP_DROP;
     }
 
+    rs_debug("Route: IP pkt saddr=%pI4 daddr=%pI4 ttl=%u", &iph->saddr, &iph->daddr, iph->ttl);
+
     // TTL check
     if (iph->ttl <= 1) {
+        rs_debug("Route: TTL exhausted, dropping");
         update_stat(ROUTE_STAT_TTL_EXCEEDED);
         ctx->drop_reason = RS_DROP_TTL_EXCEEDED;
         return XDP_DROP;
@@ -321,12 +335,15 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     update_stat(ROUTE_STAT_LOOKUP);
     struct route_entry *route = bpf_map_lookup_elem(&route_tbl, &route_key);
     if (!route) {
+        rs_debug("Route: No route found for %pI4, dropping", &iph->daddr);
         update_stat(ROUTE_STAT_MISS);
         ctx->error = RS_ERROR_NO_ROUTE;
         ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
         return XDP_DROP;
     }
     
+    rs_debug("Route: Found route type=%u ifindex=%u nexthop=%pI4", 
+             route->type, route->ifindex, &route->nexthop);
     update_stat(ROUTE_STAT_HIT);
     if (route->type == 0)
         update_stat(ROUTE_STAT_DIRECT);
@@ -337,19 +354,25 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     __be32 nexthop_ip = route->nexthop ? route->nexthop : iph->daddr;
     
     // ARP lookup
+    rs_debug("Route: ARP lookup for %pI4", &nexthop_ip);
     struct arp_entry *arp = bpf_map_lookup_elem(&arp_tbl, &nexthop_ip);
     if (!arp) {
+        rs_debug("Route: ARP miss for %pI4, dropping", &nexthop_ip);
         update_stat(ROUTE_STAT_ARP_MISS);
         ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
         return XDP_DROP;
     }
     
+    rs_debug("Route: ARP hit, MAC=%02x:%02x:%02x:%02x:%02x:%02x",
+             arp->mac[0], arp->mac[1], arp->mac[2], 
+             arp->mac[3], arp->mac[4], arp->mac[5]);
     update_stat(ROUTE_STAT_ARP_HIT);
     
     // Get egress iface config
     __u32 eg_ifkey = route->ifindex;
     struct iface_config *egress_cfg = bpf_map_lookup_elem(&iface_cfg, &eg_ifkey);
     if (!egress_cfg) {
+        rs_debug("Route: No egress iface config for ifindex=%u", eg_ifkey);
         return XDP_DROP;
     }
     
@@ -358,12 +381,20 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     struct ethhdr *eth = data;
     
+    rs_debug("Route: Rewrite L2 src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x",
+             egress_cfg->mac[0], egress_cfg->mac[1], egress_cfg->mac[2],
+             egress_cfg->mac[3], egress_cfg->mac[4], egress_cfg->mac[5],
+             arp->mac[0], arp->mac[1], arp->mac[2],
+             arp->mac[3], arp->mac[4], arp->mac[5]);
+    
     __builtin_memcpy(eth->h_source, egress_cfg->mac, 6);
     __builtin_memcpy(eth->h_dest, arp->mac, 6);
     
     // Set forwarding decision
     ctx->egress_ifindex = route->ifindex;
     ctx->action = XDP_REDIRECT;
+    
+    rs_debug("Route: Success! Redirect to ifindex=%u", route->ifindex);
     
     // Next module
     RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
