@@ -241,18 +241,11 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     data = (void *)(long)xdp_ctx->data;
     data_end = (void *)(long)xdp_ctx->data_end;
     
-    // Get IP header - must check bounds before use (PoC pattern from parse_iphdr)
-    __u16 l3_off = ctx->layers.l3_offset;
-    struct iphdr *iph = data + l3_off;
+    // Get IP header directly without intermediate variable
+    struct iphdr *iph = data + ctx->layers.l3_offset;
     
-    // Bounds check: verifier needs to see direct pointer comparison
-    if (data + l3_off + sizeof(struct iphdr) > data_end) {
-        ctx->error = RS_ERROR_PARSE_FAILED;
-        ctx->drop_reason = RS_DROP_PARSE_ERROR;
-        return XDP_DROP;
-    }
-    
-    if ((void *)&iph[1] > data_end) {
+    // Bounds check: check the pointer before dereferencing
+    if (data + ctx->layers.l3_offset + sizeof(*iph) > data_end) {
         ctx->error = RS_ERROR_PARSE_FAILED;
         ctx->drop_reason = RS_DROP_PARSE_ERROR;
         return XDP_DROP;
