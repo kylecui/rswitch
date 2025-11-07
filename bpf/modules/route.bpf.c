@@ -239,12 +239,12 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     
     // Get IP header - load offset to local variable for verifier
     __u16 l3_off = ctx->layers.l3_offset;
-    if (data + l3_off + sizeof(struct iphdr) > data_end) {
-        ctx->error = RS_ERROR_PARSE_FAILED;
-        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-        return XDP_PASS;
-    }
     struct iphdr *iph = data + l3_off;
+    if ((void *)(iph + 1) > data_end) {
+        ctx->error = RS_ERROR_PARSE_FAILED;
+        ctx->drop_reason = RS_DROP_PARSE_ERROR;
+        return XDP_DROP;
+    }
     
     // TTL check
     if (iph->ttl <= 1) {
