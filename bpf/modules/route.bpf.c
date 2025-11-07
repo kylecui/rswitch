@@ -178,12 +178,9 @@ static __always_inline int is_for_router(void *data, void *data_end,
     if ((void *)(eth + 1) > data_end)
         return 0;
     
-    // Compare MACs
-    #pragma unroll
-    for (int i = 0; i < 6; i++) {
-        if (eth->h_dest[i] != cfg->mac[i])
-            return 0;
-    }
+    // Direct MAC comparison using memcmp (verifier-friendly)
+    if (__builtin_memcmp(eth->h_dest, cfg->mac, 6) != 0)
+        return 0;
     
     return 1;
 }
