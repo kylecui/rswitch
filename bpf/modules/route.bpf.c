@@ -252,6 +252,12 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
     
+    if ((void *)&iph[1] > data_end) {
+        ctx->error = RS_ERROR_PARSE_FAILED;
+        ctx->drop_reason = RS_DROP_PARSE_ERROR;
+        return XDP_DROP;
+    }
+
     // TTL check
     if (iph->ttl <= 1) {
         update_stat(ROUTE_STAT_TTL_EXCEEDED);
