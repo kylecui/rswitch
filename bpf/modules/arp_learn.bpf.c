@@ -43,12 +43,15 @@ struct arp_entry {
     __u8 pad[2];
 };
 
-struct {
+/* 
+ * Use extern to reference the map created by route.bpf.c
+ * Do NOT recreate - just use the existing pinned map
+ */
+extern struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 4096);
     __type(key, __be32);        /* IP address (network byte order) */
     __type(value, struct arp_entry);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } arp_tbl SEC(".maps");
 
 /* Interface configuration from route module */
@@ -58,12 +61,15 @@ struct iface_config {
     __u8 pad;
 };
 
-struct {
+/* 
+ * Use extern to reference the map created by route.bpf.c
+ * Note: max_entries MUST match route.bpf.c (256, not 64)
+ */
+extern struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 64);
+    __uint(max_entries, 256);
     __type(key, __u32);
     __type(value, struct iface_config);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } iface_cfg SEC(".maps");
 
 /* ARP learning statistics */
