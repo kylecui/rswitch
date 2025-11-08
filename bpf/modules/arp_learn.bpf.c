@@ -180,7 +180,9 @@ int arp_learn_ingress(struct xdp_md *xdp_ctx)
     
     if (ar_op == ARPOP_REQUEST) {
         /* ARP Request: Learn sender (requester) */
-        rs_debug("ARP Learn: Request for %pI4 from %pI4", &arp->ar_tip, &arp->ar_sip);
+        __be32 sip = arp->ar_sip;
+        __be32 tip = arp->ar_tip;
+        rs_debug("ARP Learn: Request for %pI4 from %pI4", &tip, &sip);
         
         if (stats)
             __sync_fetch_and_add(&stats->arp_requests_seen, 1);
@@ -189,8 +191,9 @@ int arp_learn_ingress(struct xdp_md *xdp_ctx)
         
     } else if (ar_op == ARPOP_REPLY) {
         /* ARP Reply: Learn sender (replier) */
+        __be32 sip = arp->ar_sip;
         rs_debug("ARP Learn: Reply %pI4 is-at %02x:%02x:%02x:%02x:%02x:%02x",
-                 &arp->ar_sip,
+                 &sip,
                  arp->ar_sha[0], arp->ar_sha[1], arp->ar_sha[2],
                  arp->ar_sha[3], arp->ar_sha[4], arp->ar_sha[5]);
         
