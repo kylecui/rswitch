@@ -353,22 +353,7 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     // Determine next-hop
     __be32 nexthop_ip = route->nexthop ? route->nexthop : iph->daddr;
     
-    // ARP lookup
-    rs_debug("Route: ARP lookup for %pI4", &nexthop_ip);
-    struct arp_entry *arp = bpf_map_lookup_elem(&arp_tbl, &nexthop_ip);
-    if (!arp) {
-        rs_debug("Route: ARP miss for %pI4, dropping", &nexthop_ip);
-        update_stat(ROUTE_STAT_ARP_MISS);
-        ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
-        return XDP_DROP;
-    }
-    
-    rs_debug("Route: ARP hit, MAC=%02x:%02x:%02x:%02x:%02x:%02x",
-             arp->mac[0], arp->mac[1], arp->mac[2], 
-             arp->mac[3], arp->mac[4], arp->mac[5]);
-    update_stat(ROUTE_STAT_ARP_HIT);
-    
-    // Get egress iface config
+    // Get egress iface config first (needed for both ARP hit and miss cases)
     __u32 eg_ifkey = route->ifindex;
     struct iface_config *egress_cfg = bpf_map_lookup_elem(&iface_cfg, &eg_ifkey);
     if (!egress_cfg) {
@@ -376,19 +361,67 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
     
+    // ARP lookup
+    rs_debug("Route: ARP lookup for %pI4", &nexthop_ip);
+    struct arp_entry *arp = bpf_map_lookup_elem(&arp_tbl, &nexthop_ip);
+    
     // Rewrite L2 header (l2_offset is always 0)
     if (data + sizeof(struct ethhdr) > data_end)
         return XDP_DROP;
     struct ethhdr *eth = data;
     
-    rs_debug("Route: Rewrite L2 src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x",
-             egress_cfg->mac[0], egress_cfg->mac[1], egress_cfg->mac[2],
-             egress_cfg->mac[3], egress_cfg->mac[4], egress_cfg->mac[5],
-             arp->mac[0], arp->mac[1], arp->mac[2],
-             arp->mac[3], arp->mac[4], arp->mac[5]);
-    
-    __builtin_memcpy(eth->h_source, egress_cfg->mac, 6);
-    __builtin_memcpy(eth->h_dest, arp->mac, 6);
+    if (!arp) {
+        /* ARP Miss: For direct routes, flood with broadcast MAC
+         * 
+         * This mimics traditional router behavior when next-hop MAC is unknown:
+         * - Send packet with dst MAC = FF:FF:FF:FF:FF:FF (broadcast)
+         * - Target host will receive it and may respond with ARP reply
+         * - Future packets will use learned ARP entry
+         * 
+         * Note: This is a simplified approach. Full ARP implementation would:
+         * 1. Generate ARP request packet
+         * 2. Cache the original IP packet
+         * 3. Wait for ARP reply
+         * 4. Forward cached packet
+         * 
+         * Current approach: Let the first packet "probe" with broadcast MAC.
+         * Works for many network stacks (they'll accept broadcast and respond).
+         */
+        rs_debug("Route: ARP miss for %pI4, using broadcast MAC for direct route", &nexthop_ip);
+        update_stat(ROUTE_STAT_ARP_MISS);
+        
+        /* Only flood for direct routes (type=0)
+         * Static routes (type=1) with missing next-hop should drop
+         */
+        if (route->type != 0) {
+            rs_debug("Route: Static route requires explicit ARP entry, dropping");
+            ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
+            return XDP_DROP;
+        }
+        
+        // Set source MAC to egress interface, dest MAC to broadcast
+        __builtin_memcpy(eth->h_source, egress_cfg->mac, 6);
+        __builtin_memset(eth->h_dest, 0xff, 6);  // Broadcast: ff:ff:ff:ff:ff:ff
+        
+        rs_debug("Route: L2 rewrite src=%02x:%02x:%02x:%02x:%02x:%02x dst=ff:ff:ff:ff:ff:ff",
+                 egress_cfg->mac[0], egress_cfg->mac[1], egress_cfg->mac[2],
+                 egress_cfg->mac[3], egress_cfg->mac[4], egress_cfg->mac[5]);
+    } else {
+        /* ARP Hit: Normal unicast forwarding */
+        rs_debug("Route: ARP hit, MAC=%02x:%02x:%02x:%02x:%02x:%02x",
+                 arp->mac[0], arp->mac[1], arp->mac[2], 
+                 arp->mac[3], arp->mac[4], arp->mac[5]);
+        update_stat(ROUTE_STAT_ARP_HIT);
+        
+        __builtin_memcpy(eth->h_source, egress_cfg->mac, 6);
+        __builtin_memcpy(eth->h_dest, arp->mac, 6);
+        
+        rs_debug("Route: L2 rewrite src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x",
+                 egress_cfg->mac[0], egress_cfg->mac[1], egress_cfg->mac[2],
+                 egress_cfg->mac[3], egress_cfg->mac[4], egress_cfg->mac[5],
+                 arp->mac[0], arp->mac[1], arp->mac[2],
+                 arp->mac[3], arp->mac[4], arp->mac[5]);
+    }
     
     // Set forwarding decision
     ctx->egress_ifindex = route->ifindex;
