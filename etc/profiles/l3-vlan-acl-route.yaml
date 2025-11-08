@@ -6,7 +6,7 @@
 # - IP routing between VLANs (future)
 # - MAC learning for L2 fallback
 #
-# Pipeline: dispatcher → vlan → acl → route → l2learn → lastcall → egress
+# Pipeline: dispatcher → vlan → arp_learn → acl → route → l2learn → lastcall → egress
 # Use case: Gateway router, inter-VLAN routing, policy enforcement
 #
 # Note: ACL and Route modules are placeholders for future implementation
@@ -18,7 +18,8 @@ version: "1.0"
 # Ingress pipeline (sorted by stage number)
 ingress:
   - vlan       # Stage 20: VLAN ingress filtering
-  - acl        # Stage 30: Access control lists
+  - arp_learn  # Stage 25: Passive ARP learning from network traffic
+  - acl        # Stage 30: Access control lists (future)
   - route      # Stage 50: IP routing
   - l2learn    # Stage 80: MAC learning fallback
   - lastcall   # Stage 90: Forward based on route or learned MAC
