@@ -36,6 +36,7 @@ struct arphdr_eth {
 
 #define ARPOP_REQUEST 1
 #define ARPOP_REPLY   2
+#define MAX_IFACES 256
 
 /* External ARP table from route module - must match route.bpf.c definition */
 struct arp_entry {
@@ -64,7 +65,7 @@ struct iface_config {
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 64);
+    __uint(max_entries, MAX_IFACES);
     __type(key, __u32);
     __type(value, struct iface_config);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
