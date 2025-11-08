@@ -54,10 +54,12 @@ struct {
 } arp_tbl SEC(".maps");
 
 /* Interface configuration from route module */
+/* Per-interface config */
 struct iface_config {
-    __u8 mac[6];
-    __u8 is_router;
-    __u8 pad;
+    __u8  mac[6];
+    __u16 pad;
+    __u8  is_router;
+    __u8  pad2[3];
 };
 
 struct {
