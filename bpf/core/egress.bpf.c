@@ -254,13 +254,25 @@ int rswitch_egress(struct xdp_md *ctx)
         return XDP_PASS;
     }
     
-    /* VLAN isolation check - critical for security!
+    /* VLAN isolation check - critical for L2 security!
      * 
      * During flooding (egress_ifindex=0 in ctx), ingress uses BPF_F_BROADCAST
      * which sends to ALL ports. We must filter out ports not in the packet's VLAN.
      * 
-     * This is the ONLY place enforcing VLAN isolation during flooding.
+     * EXCEPTION: Routed packets (L3 forwarding)
+     * - Route module modifies packet (rewrites L2 header, decrements TTL)
+     * - Sets ctx->modified = 1
+     * - These packets are INTENTIONALLY crossing VLAN boundaries
+     * - Should NOT be subject to L2 VLAN isolation
+     * 
+     * Check: Skip VLAN isolation for routed traffic
      */
+    if (rctx->modified) {
+        rs_debug("Egress port %u: Routed packet (modified=1), skipping VLAN check", 
+                 egress_ifindex);
+        goto skip_vlan_check;
+    }
+    
     __u16 vlan_id = rctx->ingress_vlan;
     if (vlan_id == 0) vlan_id = 1;  // Default VLAN
     
@@ -281,6 +293,8 @@ int rswitch_egress(struct xdp_md *ctx)
     }
     
     rs_debug("Egress port %u is member of VLAN %u, allowing", egress_ifindex, vlan_id);
+    
+skip_vlan_check:
     
     /* Lookup egress port configuration */
     struct rs_port_config *cfg = rs_get_port_config(egress_ifindex);

@@ -210,6 +210,24 @@ int l2learn_ingress(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
     
+    /* Skip L2 forwarding lookup if routing already made decision
+     * 
+     * If Route module (or any other L3 module) has already set egress_ifindex,
+     * we should NOT override it with L2 lookup. This allows proper separation:
+     * - L3 routed traffic: Route module decides egress port
+     * - L2 switched traffic: L2Learn module decides egress port
+     * 
+     * Check: egress_ifindex != 0 means forwarding decision已经被做出
+     */
+    bool routing_decision_made = (ctx->egress_ifindex != 0);
+    
+    if (routing_decision_made) {
+        rs_debug("L2Learn: Routing decision already made (egress=%u), skipping L2 lookup",
+                 ctx->egress_ifindex);
+        /* Still do MAC learning for source, but skip destination lookup */
+        goto do_learning_only;
+    }
+    
     // Check if packet was parsed
     if (!ctx->parsed) {
         rs_debug("Packet not parsed, skipping MAC learning");
@@ -217,6 +235,7 @@ int l2learn_ingress(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
     
+do_learning_only:
     // Get port configuration
     struct rs_port_config *port = rs_get_port_config(ctx->ifindex);
     if (!port) {
@@ -246,16 +265,21 @@ int l2learn_ingress(struct xdp_md *xdp_ctx)
         learn_source_mac(ctx, xdp_ctx, eth->h_source);
     }
     
-    // Lookup destination MAC and set egress port
-    lookup_destination_mac(ctx, eth->h_dest);
+    // Lookup destination MAC ONLY if routing didn't already decide
+    if (!routing_decision_made) {
+        lookup_destination_mac(ctx, eth->h_dest);
+    }
     
     rs_debug("L2Learn: learned src=%02x:%02x:%02x:%02x:%02x:%02x",
              eth->h_source[0], eth->h_source[1], eth->h_source[2], 
              eth->h_source[3], eth->h_source[4], eth->h_source[5]);
-    rs_debug("L2Learn: lookup dst=%02x:%02x:%02x:%02x:%02x:%02x → egress=%d",
-             eth->h_dest[0], eth->h_dest[1], eth->h_dest[2],
-             eth->h_dest[3], eth->h_dest[4], eth->h_dest[5],
-             ctx->egress_ifindex);
+    
+    if (!routing_decision_made) {
+        rs_debug("L2Learn: lookup dst=%02x:%02x:%02x:%02x:%02x:%02x → egress=%d",
+                 eth->h_dest[0], eth->h_dest[1], eth->h_dest[2],
+                 eth->h_dest[3], eth->h_dest[4], eth->h_dest[5],
+                 ctx->egress_ifindex);
+    }
     
     // Proceed to next module
     RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
