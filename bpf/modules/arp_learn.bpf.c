@@ -37,21 +37,20 @@ struct arphdr_eth {
 #define ARPOP_REQUEST 1
 #define ARPOP_REPLY   2
 
-/* External ARP table from route module */
+/* External ARP table from route module - must match route.bpf.c definition */
 struct arp_entry {
-    __u8 mac[6];
-    __u8 pad[2];
+    __u8  mac[6];
+    __u16 pad;
+    __u32 ifindex;
+    __u64 timestamp;
 };
 
-/* 
- * Use extern to reference the map created by route.bpf.c
- * Do NOT recreate - just use the existing pinned map
- */
-extern struct {
+struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 4096);
     __type(key, __be32);        /* IP address (network byte order) */
     __type(value, struct arp_entry);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } arp_tbl SEC(".maps");
 
 /* Interface configuration from route module */
@@ -61,15 +60,12 @@ struct iface_config {
     __u8 pad;
 };
 
-/* 
- * Use extern to reference the map created by route.bpf.c
- * Note: max_entries MUST match route.bpf.c (256, not 64)
- */
-extern struct {
+struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 256);
+    __uint(max_entries, 64);
     __type(key, __u32);
     __type(value, struct iface_config);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } iface_cfg SEC(".maps");
 
 /* ARP learning statistics */
@@ -93,6 +89,11 @@ static __always_inline int learn_arp_entry(__be32 ip, const __u8 *mac)
     struct arp_entry new_entry = {0};
     struct arp_entry *existing;
     
+    /* Initialize new entry with timestamp */
+    __builtin_memcpy(new_entry.mac, mac, 6);
+    new_entry.ifindex = 0;  // Will be set by route module if needed
+    new_entry.timestamp = bpf_ktime_get_ns();
+    
     /* Check if this is one of our router interfaces - don't learn our own MACs */
     #pragma unroll
     for (__u32 i = 0; i < 32; i++) {
@@ -109,8 +110,6 @@ static __always_inline int learn_arp_entry(__be32 ip, const __u8 *mac)
     
     /* Check if entry already exists */
     existing = bpf_map_lookup_elem(&arp_tbl, &ip);
-    
-    __builtin_memcpy(new_entry.mac, mac, 6);
     
     __u32 stats_key = 0;
     struct arp_learn_stats *stats = bpf_map_lookup_elem(&arp_learn_stats_map, &stats_key);
