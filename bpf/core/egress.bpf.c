@@ -295,7 +295,7 @@ int rswitch_egress(struct xdp_md *ctx)
     rs_debug("Egress port %u is member of VLAN %u, allowing", egress_ifindex, vlan_id);
     
 skip_vlan_check:
-    
+    ; /* Empty statement required before declaration */
     /* Lookup egress port configuration */
     struct rs_port_config *cfg = rs_get_port_config(egress_ifindex);
     if (!cfg) {

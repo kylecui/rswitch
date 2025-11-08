@@ -236,6 +236,7 @@ int l2learn_ingress(struct xdp_md *xdp_ctx)
     }
     
 do_learning_only:
+    ; /* Empty statement required before declaration */
     // Get port configuration
     struct rs_port_config *port = rs_get_port_config(ctx->ifindex);
     if (!port) {
