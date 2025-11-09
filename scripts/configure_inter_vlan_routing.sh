@@ -18,18 +18,18 @@ echo "Step 1: Configuring router interfaces..."
 echo "  - Configuring ens35 (ifindex 4) as router for VLAN 10..."
 sudo $ROUTECTL iface-set --ifindex 4 --mac 02:00:00:00:01:0a --router
 
-# Configure ens36 (ifindex 5) for VLAN 1 (10.174.29.0/24)
-echo "  - Configuring ens36 (ifindex 5) as router for VLAN 1..."
-sudo $ROUTECTL iface-set --ifindex 5 --mac 02:00:00:00:01:01 --router
+# Configure ens37 (ifindex 6) for VLAN 1 (10.174.29.0/24)
+echo "  - Configuring ens37 (ifindex 6) as router for VLAN 1..."
+sudo $ROUTECTL iface-set --ifindex 6 --mac 02:00:00:00:01:01 --router
 
 echo
 
 # Step 2: Add direct (connected) routes
 echo "Step 2: Adding direct routes..."
 
-# Route for VLAN 1 network (10.174.29.0/24) via ens36
-echo "  - Adding route for 10.174.29.0/24 via ens36 (ifindex 5)..."
-sudo $ROUTECTL route-add --dest 10.174.29.0/24 --nexthop 0.0.0.0 --ifindex 5
+# Route for VLAN 1 network (10.174.29.0/24) via ens37 (ifindex 6)
+echo "  - Adding route for 10.174.29.0/24 via ens37 (ifindex 6)..."
+sudo $ROUTECTL route-add --dest 10.174.29.0/24 --nexthop 0.0.0.0 --ifindex 6
 
 # Route for VLAN 10 network (10.174.129.0/24) via ens35
 echo "  - Adding route for 10.174.129.0/24 via ens35 (ifindex 4)..."
