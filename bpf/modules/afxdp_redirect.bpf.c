@@ -213,8 +213,19 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	if (!qos)
 		goto next_module;
 	
-	/* Extract priority */
-	prio = extract_priority(ctx, qos);
+	/* Extract priority from packet or use pre-classified priority
+	 * Priority can come from three sources (in order of preference):
+	 * 1. rs_ctx->prio set by ingress classifier/ACL
+	 * 2. rs_ctx->prio set by egress QoS module (via DSCP marking feedback)
+	 * 3. extract_priority() reading DSCP field directly
+	 */
+	if (rs_ctx->prio < QOS_MAX_PRIORITIES) {
+		/* Priority already classified by upstream module */
+		prio = rs_ctx->prio;
+	} else {
+		/* Extract priority from DSCP field */
+		prio = extract_priority(ctx, qos);
+	}
 	
 	/* Check if this priority should be intercepted */
 	if (!(state->prio_mask & (1 << prio)))

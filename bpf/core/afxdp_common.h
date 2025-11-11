@@ -15,7 +15,17 @@
  * Defines the VOQ metadata structure, QoS configuration, and state machine.
  */
 
-#define MAX_PRIORITIES 4
+/* QoS Priority Levels */
+#define QOS_MAX_PRIORITIES  4
+
+/* Legacy alias for compatibility */
+#define MAX_PRIORITIES QOS_MAX_PRIORITIES
+
+/* Priority values (0=lowest, 3=highest) */
+#define QOS_PRIO_LOW      0
+#define QOS_PRIO_NORMAL   1
+#define QOS_PRIO_HIGH     2
+#define QOS_PRIO_CRITICAL 3
 
 /* VOQ Metadata - Sent via ringbuf from XDP to user-space VOQd */
 struct voq_meta {
