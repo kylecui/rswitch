@@ -281,7 +281,7 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	 */
 	if (state->mode == VOQD_MODE_ACTIVE) {
 		struct voq_meta *meta;
-		__u32 queue_id = 0;  /* Use queue 0 for high-priority traffic */
+		__u32 queue_id = 1;  /* Use queue 1 (queue 0 may be reserved by driver) */
 		
 		/* Submit metadata first */
 		meta = bpf_ringbuf_reserve(&voq_ringbuf, sizeof(*meta), 0);

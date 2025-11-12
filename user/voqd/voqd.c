@@ -362,7 +362,7 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 				return -EINVAL;
 			}
 			
-			ret = voqd_dataplane_add_port(&ctx->dataplane, ctx->ifnames[p], p, 0);
+			ret = voqd_dataplane_add_port(&ctx->dataplane, ctx->ifnames[p], p, 1);
 			if (ret < 0) {
 				fprintf(stderr, "Failed to add AF_XDP socket for %s: %s\n",
 				        ctx->ifnames[p], strerror(-ret));
