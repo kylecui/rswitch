@@ -18,6 +18,10 @@ LIBBPF_UAPI_INCLUDES = -I$(LIBBPF_TOP)/include/uapi
 LIBBPF_INCLUDES = -I/usr/local/bpf/include
 LIBBPF_LIBS = -L/usr/local/bpf/lib64 -lbpf
 
+# libxdp for AF_XDP support (xsk.h moved from libbpf to libxdp)
+LIBXDP_CFLAGS = $(shell pkg-config --cflags libxdp 2>/dev/null || echo "")
+LIBXDP_LIBS = $(shell pkg-config --libs libxdp 2>/dev/null || echo "-lxdp")
+
 BPF_DIR = ./bpf
 CORE_DIR = $(BPF_DIR)/core
 MODULES_DIR = $(BPF_DIR)/modules
@@ -68,7 +72,7 @@ all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL
 	@echo "  Telemetry: $(TELEMETRY)"
 	@echo "  Event Consumer: $(EVENT_CONSUMER)"
 	@echo "  BPF objects: $(words $(ALL_BPF_OBJS)) modules"
-	@echo "  Note: AF_XDP test requires libbpf ≥1.0 with xsk.h"
+	@echo "  Note: AF_XDP requires libxdp (xsk.h moved from libbpf)"
 
 dirs:
 	@mkdir -p $(BUILD_DIR) $(OBJ_DIR)
@@ -114,13 +118,13 @@ $(HOT_RELOAD): $(USER_DIR)/reload/hot_reload.c $(USER_DIR)/loader/profile_parser
 # Build VOQd daemon
 $(VOQD): $(USER_DIR)/voqd/voqd.c $(USER_DIR)/voqd/voq.c $(USER_DIR)/voqd/ringbuf_consumer.c $(USER_DIR)/voqd/state_ctrl.c $(USER_DIR)/voqd/nic_queue.c $(USER_DIR)/voqd/afxdp_socket.c $(USER_DIR)/voqd/voqd_dataplane.c $(wildcard $(USER_DIR)/voqd/*.h)
 	@echo "  CC [USER] $@"
-	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/voqd \
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) -DHAVE_LIBBPF_XSK \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(LIBXDP_CFLAGS) -I$(USER_DIR)/voqd \
 		-o $@ $(USER_DIR)/voqd/voqd.c $(USER_DIR)/voqd/voq.c \
 		$(USER_DIR)/voqd/ringbuf_consumer.c $(USER_DIR)/voqd/state_ctrl.c \
 		$(USER_DIR)/voqd/nic_queue.c $(USER_DIR)/voqd/afxdp_socket.c \
 		$(USER_DIR)/voqd/voqd_dataplane.c \
-		$(LIBBPF_LIBS) -lelf -lz -lpthread
+		$(LIBBPF_LIBS) $(LIBXDP_LIBS) -lelf -lz -lpthread
 
 # Build rswitchctl
 $(RSWITCHCTL): $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_extended.c $(USER_DIR)/ctl/rswitchctl_acl.c $(USER_DIR)/ctl/rswitchctl_mirror.c

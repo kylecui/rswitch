@@ -102,18 +102,16 @@ int voqd_dataplane_add_port(struct voqd_dataplane *dp, const char *ifname,
 		return -EINVAL;
 	}
 	
-	/* Configure socket */
+	/* Configure socket for libxdp API */
 	struct xsk_socket_config config = {
 		.rx_size = dp->config.rx_ring_size,
 		.tx_size = dp->config.tx_ring_size,
-		.fill_size = dp->config.rx_ring_size * 2,
-		.comp_size = dp->config.tx_ring_size * 2,
-		.frame_size = dp->config.frame_size,
-		.frame_headroom = XDP_PACKET_HEADROOM,
 		.bind_flags = dp->config.zero_copy ? XDP_ZEROCOPY : XDP_COPY,
 		.xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST,
-		.queue_id = queue_id,
 	};
+	
+	/* Note: fill_size, comp_size, frame_size are in xsk_umem_config, not xsk_socket_config */
+	/* These would be configured in xsk_socket_create() when creating the UMEM */
 	
 	int ret = xsk_manager_add_socket(&dp->xsk_mgr, ifname, queue_id, &config);
 	if (ret < 0) {

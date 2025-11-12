@@ -6,11 +6,19 @@
 #include <stdbool.h>
 #include <linux/if_link.h>
 
+/* Use libxdp's definitions if available, otherwise define our own */
+#ifdef HAVE_LIBBPF_XSK
+#include <xdp/xsk.h>
+#else
+
 /*
  * AF_XDP Socket Management for VOQd
  * 
  * Handles XDP socket setup, UMEM management, and packet RX/TX.
  * Integrates with VOQ manager for priority-based queuing.
+ * 
+ * NOTE: These are fallback definitions when libxdp is not available.
+ * With libxdp, use the official xsk.h structures.
  */
 
 /* AF_XDP configuration */
@@ -35,6 +43,8 @@ struct xsk_umem_config {
 	uint32_t comp_size;         /* Completion ring size */
 	uint32_t flags;             /* UMEM flags */
 };
+
+#endif /* HAVE_LIBBPF_XSK */
 
 /* AF_XDP socket instance */
 struct xsk_socket {
