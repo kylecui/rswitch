@@ -1,0 +1,293 @@
+# rSwitch Test Configuration: QoS + VOQd Integration
+#
+# Complete test setup for QoS and VOQd data plane integration:
+# - QoS classification and AF_XDP redirect
+# - VOQd with per-priority queues and DRR scheduling
+# - Token bucket rate limiting
+# - AF_XDP data plane for high-priority traffic
+#
+# Pipeline: dispatcher → vlan → qos → afxdp_redirect → lastcall → egress
+# Use case: QoS-enabled switch with user-space data plane
+
+name: qos-voqd-test
+description: "QoS + VOQd integration test configuration"
+version: "1.0"
+
+# Ingress pipeline (sorted by stage number)
+ingress:
+  - vlan            # Stage 20: VLAN ingress filtering
+  - qos              # Stage 25: QoS classification and marking
+  - afxdp_redirect   # Stage 35: AF_XDP redirect for high-priority
+  - l2learn          # Stage 80: MAC learning fallback
+  - lastcall         # Stage 90: Forward based on learned MAC
+
+# Egress pipeline
+egress:
+  - egress           # Devmap egress hook with VLAN tagging
+
+# Global settings
+settings:
+  # MAC learning enabled
+  mac_learning: true
+  mac_aging_time: 300
+
+  # VLAN enforcement enabled
+  vlan_enforcement: true
+  default_vlan: 1
+
+  # QoS settings
+  qos_enabled: true
+  qos_default_prio: 1  # NORMAL priority
+
+  # AF_XDP redirect settings
+  afxdp_redirect_enabled: true
+  afxdp_prio_mask: 0x0C  # HIGH (0x04) + CRITICAL (0x08) priorities
+  afxdp_cpu_map_id: 0
+  afxdp_cpu_core: 2
+
+  # Forwarding behavior
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+
+  # Statistics collection
+  stats_enabled: true
+
+  # Event notifications
+  ringbuf_enabled: true
+  notify_mac_learned: true
+  notify_mac_moved: true
+  notify_qos_drop: true
+  notify_afxdp_redirect: true
+
+  # Debug mode
+  debug: false
+
+# Interface-specific configuration
+interfaces:
+  - name: ens33
+    port_idx: 0
+    mode: trunk
+    allowed_vlans: [1, 10, 20, 30]
+    native_vlan: 1
+    qos_config:
+      enable_afxdp: true
+      prio_mask: 0x0C  # HIGH + CRITICAL
+      cpu_map_id: 0
+      cpu_core: 2
+
+  - name: ens34
+    port_idx: 1
+    mode: access
+    access_vlan: 10
+    qos_config:
+      enable_afxdp: true
+      prio_mask: 0x08  # CRITICAL only
+      cpu_map_id: 1
+      cpu_core: 3
+
+  - name: ens35
+    port_idx: 2
+    mode: trunk
+    allowed_vlans: [1, 20, 30, 40]
+    native_vlan: 1
+    qos_config:
+      enable_afxdp: false  # Fast-path only
+      prio_mask: 0x00
+
+  - name: ens36
+    port_idx: 3
+    mode: hybrid
+    untagged_vlans: [1]
+    tagged_vlans: [10, 20, 30]
+    pvid: 1
+    qos_config:
+      enable_afxdp: true
+      prio_mask: 0x0F  # All priorities
+      cpu_map_id: 2
+      cpu_core: 4
+
+# VOQd configuration (user-space data plane)
+voqd_config:
+  # Basic settings
+  mode: active          # active/shadow/bypass
+  num_ports: 4
+  prio_mask: 0x0C       # Which priorities to intercept (HIGH + CRITICAL)
+
+  # AF_XDP data plane settings
+  enable_afxdp: true
+  zero_copy: false      # Use copy mode (more compatible)
+  rx_ring_size: 2048
+  tx_ring_size: 2048
+  frame_size: 2048
+  batch_size: 256
+  poll_timeout_ms: 100
+  busy_poll: false
+  cpu_affinity: 2       # RX thread on CPU 2, TX on CPU 3
+
+  # Scheduler settings
+  enable_scheduler: true
+
+  # Per-port rate limiting (token bucket)
+  port_rates:
+    - port_idx: 0
+      rate_bps: 500000000    # 500 Mbps
+      burst_bytes: 65536     # 64 KB burst
+    - port_idx: 1
+      rate_bps: 1000000000   # 1 Gbps
+      burst_bytes: 131072    # 128 KB burst
+    - port_idx: 2
+      rate_bps: 100000000    # 100 Mbps
+      burst_bytes: 32768     # 32 KB burst
+    - port_idx: 3
+      rate_bps: 2000000000   # 2 Gbps
+      burst_bytes: 262144    # 256 KB burst
+
+  # Per-priority queue parameters (DRR quantum and max depth)
+  queue_params:
+    - prio: 3  # CRITICAL
+      quantum: 2048
+      max_depth: 8192
+    - prio: 2  # HIGH
+      quantum: 1536
+      max_depth: 4096
+    - prio: 1  # NORMAL
+      quantum: 1024
+      max_depth: 2048
+    - prio: 0  # LOW
+      quantum: 512
+      max_depth: 1024
+
+# QoS classification rules (DSCP → priority mapping)
+qos_classification:
+  # DSCP values (0-63) to priority mapping
+  dscp_to_prio:
+    # EF (Expedited Forwarding) - highest priority
+    46: 3  # CRITICAL
+    # AF4x (Assured Forwarding Class 4)
+    32: 2  # HIGH
+    34: 2
+    36: 2
+    38: 2
+    # AF2x (Assured Forwarding Class 2)
+    16: 1  # NORMAL
+    18: 1
+    20: 1
+    22: 1
+    # AF1x (Assured Forwarding Class 1)
+    8: 0   # LOW
+    10: 0
+    12: 0
+    14: 0
+    # CS6/CS7 (Network Control)
+    48: 3  # CRITICAL
+    56: 3
+    # CS4/CS5 (Video/Streaming)
+    32: 2  # HIGH (duplicate, but explicit)
+    40: 2
+    # CS2/CS3 (Operations)
+    16: 1  # NORMAL (duplicate)
+    24: 1
+    # CS0/CS1 (Best Effort/Routing)
+    0: 0   # LOW
+    8: 0   # LOW (duplicate)
+
+  # Default priority for unmapped DSCP
+  default_prio: 1  # NORMAL
+
+# Test scenarios
+test_scenarios:
+  - name: "high_priority_traffic"
+    description: "Test high-priority traffic redirection to AF_XDP"
+    traffic:
+      - src_ip: "192.168.1.10"
+        dst_ip: "192.168.2.10"
+        dscp: 46  # EF → CRITICAL
+        expected_prio: 3
+        expected_afxdp: true
+
+  - name: "normal_priority_traffic"
+    description: "Test normal-priority traffic stays in fast-path"
+    traffic:
+      - src_ip: "192.168.1.20"
+        dst_ip: "192.168.2.20"
+        dscp: 0   # BE → LOW
+        expected_prio: 0
+        expected_afxdp: false
+
+  - name: "rate_limiting_test"
+    description: "Test token bucket rate limiting"
+    traffic:
+      - port: 0
+        rate: 600000000  # 600 Mbps (above limit)
+        expected_drops: true
+
+# Monitoring and telemetry
+monitoring:
+  # Statistics collection
+  stats_interval_sec: 10
+  enable_prometheus: false  # Future feature
+  prometheus_port: 9090
+
+  # Log levels
+  log_level: "info"  # debug/info/warn/error
+
+  # Performance monitoring
+  enable_perf_events: false
+  perf_events:
+    - "cycles"
+    - "instructions"
+    - "cache-misses"
+
+# Deployment commands (for automation)
+deployment:
+  # BPF loader command
+  loader_cmd: "sudo ./build/rswitch_loader -p qos-voqd-test -c etc/profiles/qos-voqd-test.yaml"
+
+  # QoS control commands
+  qos_cmds:
+    - "sudo ./build/rsqosctl set-config --port 0 --prio-mask 0x0C --enable-afxdp --cpu-map-id 0 --cpu-core 2"
+    - "sudo ./build/rsqosctl set-config --port 1 --prio-mask 0x08 --enable-afxdp --cpu-map-id 1 --cpu-core 3"
+    - "sudo ./build/rsqosctl set-config --port 2 --prio-mask 0x00 --enable-afxdp false"
+    - "sudo ./build/rsqosctl set-config --port 3 --prio-mask 0x0F --enable-afxdp --cpu-map-id 2 --cpu-core 4"
+
+  # VOQd command
+  voqd_cmd: "sudo ./build/rswitch-voqd -p 4 -m active -P 0x0C -i ens33,ens34,ens35,ens36 -s -S 10"
+
+  # VOQ configuration commands
+  voq_cmds:
+    - "sudo ./build/rsvoqctl set-port-rate --port 0 --rate 500000000 --burst 65536"
+    - "sudo ./build/rsvoqctl set-port-rate --port 1 --rate 1000000000 --burst 131072"
+    - "sudo ./build/rsvoqctl set-port-rate --port 2 --rate 100000000 --burst 32768"
+    - "sudo ./build/rsvoqctl set-port-rate --port 3 --rate 2000000000 --burst 262144"
+    - "sudo ./build/rsvoqctl set-queue-params --port 0 --prio 3 --quantum 2048 --max-depth 8192"
+    - "sudo ./build/rsvoqctl set-queue-params --port 0 --prio 2 --quantum 1536 --max-depth 4096"
+    - "sudo ./build/rsvoqctl set-queue-params --port 0 --prio 1 --quantum 1024 --max-depth 2048"
+    - "sudo ./build/rsvoqctl set-queue-params --port 0 --prio 0 --quantum 512 --max-depth 1024"
+
+# Validation checks
+validation:
+  # Required kernel features
+  kernel_features:
+    - "bpf"
+    - "xdp"
+    - "af_xdp"
+
+  # Required tools
+  tools:
+    - "clang"
+    - "llvm-strip"
+    - "bpftool"
+
+  # Interface requirements
+  interface_requirements:
+    - "interfaces_exist"
+    - "interfaces_up"
+    - "no_existing_xdp"
+
+  # Performance expectations
+  performance_targets:
+    rx_throughput_mbps: 5000
+    tx_throughput_mbps: 4000
+    latency_us_p99: 100
+    cpu_usage_percent: 60

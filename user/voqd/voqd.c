@@ -328,7 +328,20 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 		.busy_poll = false,
 		.adaptive_batch = false,
 		.cpu_affinity = 0,  /* No affinity by default */
+		.default_prio = QOS_PRIO_NORMAL,  /* Default priority for unmapped DSCP */
 	};
+	
+	/* Initialize DSCP to priority mapping (standard QoS classes) */
+	/* DSCP values: 0=BE, 8=CS1, 10=AF11, 12=AF12, 14=AF13, 16=CS2, 18=AF21, 20=AF22, 22=AF23 */
+	/*              24=CS3, 26=AF31, 28=AF32, 30=AF33, 32=CS4, 34=AF41, 36=AF42, 38=AF43 */
+	/*              40=CS5, 46=EF, 48=CS6, 56=CS7 */
+	for (int i = 0; i < 64; i++) {
+		if (i == 46) dp_config.dscp_to_prio[i] = QOS_PRIO_CRITICAL;  /* EF (Expedited Forwarding) */
+		else if (i >= 32 && i <= 38) dp_config.dscp_to_prio[i] = QOS_PRIO_HIGH;     /* AF4x (High priority) */
+		else if (i >= 16 && i <= 22) dp_config.dscp_to_prio[i] = QOS_PRIO_NORMAL;   /* AF2x (Normal priority) */
+		else if (i >= 8 && i <= 14) dp_config.dscp_to_prio[i] = QOS_PRIO_LOW;       /* AF1x (Low priority) */
+		else dp_config.dscp_to_prio[i] = QOS_PRIO_LOW;  /* Best Effort and others */
+	}
 	
 	ret = voqd_dataplane_init(&ctx->dataplane, &ctx->voq, &dp_config);
 	if (ret < 0) {

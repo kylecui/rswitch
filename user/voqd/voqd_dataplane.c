@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
+#include <arpa/inet.h>      /* For ntohs, ntohl */
 #include <linux/if_xdp.h>  /* For XDP_ZEROCOPY, XDP_COPY, XDP_PACKET_HEADROOM */
 
 #include "voqd_dataplane.h"
@@ -157,18 +158,10 @@ int voqd_dataplane_rx_process(struct voqd_dataplane *dp, uint32_t port_idx)
 			continue;
 		}
 		
-		/* Simple priority extraction (based on packet length for demo) */
-		/* In production: parse IP TOS/DSCP or use pre-classification from metadata */
-		uint32_t prio = QOS_PRIO_NORMAL;
-		
-		if (len < 100)
-			prio = QOS_PRIO_LOW;        /* Small packets = low priority */
-		else if (len < 500)
-			prio = QOS_PRIO_NORMAL;
-		else if (len < 1200)
-			prio = QOS_PRIO_HIGH;
-		else
-			prio = QOS_PRIO_CRITICAL;   /* Large packets = critical (jumbo frames) */
+		/* Extract priority from packet using IP DSCP */
+		uint32_t prio = voqd_extract_priority_from_packet(pkt_data, len,
+		                                                 dp->config.dscp_to_prio,
+		                                                 dp->config.default_prio);
 		
 		/* Enqueue into VOQ with frame reference */
 		uint64_t ts_ns = 0;  /* TODO: Get timestamp from packet or use current time */
@@ -443,4 +436,155 @@ void voqd_dataplane_print_stats(struct voqd_dataplane *dp)
 		xsk_manager_get_stats(&dp->xsk_mgr, &xsk_rx, &xsk_tx);
 		printf("AF_XDP: RX=%lu, TX=%lu sockets\n", xsk_rx, xsk_tx);
 	}
+}
+
+/*
+ * QoS Classification Functions
+ */
+
+/* Ethernet frame types */
+#define ETH_P_IP    0x0800  /* IPv4 */
+#define ETH_P_IPV6  0x86DD  /* IPv6 */
+
+/* IPv4 header structure (simplified) */
+struct ipv4_hdr {
+	uint8_t version_ihl;     /* Version (4 bits) + IHL (4 bits) */
+	uint8_t tos;             /* Type of Service (DSCP + ECN) */
+	uint16_t tot_len;        /* Total Length */
+	uint16_t id;             /* Identification */
+	uint16_t frag_off;       /* Fragment Offset */
+	uint8_t ttl;             /* Time to Live */
+	uint8_t protocol;        /* Protocol */
+	uint16_t check;          /* Header Checksum */
+	uint32_t saddr;          /* Source Address */
+	uint32_t daddr;          /* Destination Address */
+} __attribute__((packed));
+
+/* IPv6 header structure (simplified) */
+struct ipv6_hdr {
+	uint32_t version_tc_fl;  /* Version (4) + Traffic Class (8) + Flow Label (20) */
+	uint16_t payload_len;    /* Payload Length */
+	uint8_t next_hdr;        /* Next Header */
+	uint8_t hop_limit;       /* Hop Limit */
+	uint8_t saddr[16];       /* Source Address */
+	uint8_t daddr[16];       /* Destination Address */
+} __attribute__((packed));
+
+/* Ethernet header structure */
+struct eth_hdr {
+	uint8_t dmac[6];         /* Destination MAC */
+	uint8_t smac[6];         /* Source MAC */
+	uint16_t eth_type;       /* Ethernet Type */
+} __attribute__((packed));
+
+/* VLAN header structure (802.1Q) */
+struct vlan_hdr {
+	uint16_t tci;            /* Tag Control Information */
+	uint16_t eth_type;       /* Ethernet Type */
+} __attribute__((packed));
+
+/* Check if packet is IPv4 */
+bool voqd_is_ipv4_packet(const uint8_t *packet, size_t len)
+{
+	if (len < sizeof(struct eth_hdr) + sizeof(struct ipv4_hdr))
+		return false;
+	
+	const struct eth_hdr *eth = (const struct eth_hdr *)packet;
+	uint16_t eth_type = ntohs(eth->eth_type);
+	
+	/* Handle VLAN tags */
+	if (eth_type == 0x8100 || eth_type == 0x88A8) {  /* VLAN */
+		if (len < sizeof(struct eth_hdr) + sizeof(struct vlan_hdr) + sizeof(struct ipv4_hdr))
+			return false;
+		const struct vlan_hdr *vlan = (const struct vlan_hdr *)(packet + sizeof(struct eth_hdr));
+		eth_type = ntohs(vlan->eth_type);
+	}
+	
+	return (eth_type == ETH_P_IP);
+}
+
+/* Check if packet is IPv6 */
+bool voqd_is_ipv6_packet(const uint8_t *packet, size_t len)
+{
+	if (len < sizeof(struct eth_hdr) + sizeof(struct ipv6_hdr))
+		return false;
+	
+	const struct eth_hdr *eth = (const struct eth_hdr *)packet;
+	uint16_t eth_type = ntohs(eth->eth_type);
+	
+	/* Handle VLAN tags */
+	if (eth_type == 0x8100 || eth_type == 0x88A8) {  /* VLAN */
+		if (len < sizeof(struct eth_hdr) + sizeof(struct vlan_hdr) + sizeof(struct ipv6_hdr))
+			return false;
+		const struct vlan_hdr *vlan = (const struct vlan_hdr *)(packet + sizeof(struct eth_hdr));
+		eth_type = ntohs(vlan->eth_type);
+	}
+	
+	return (eth_type == ETH_P_IPV6);
+}
+
+/* Parse DSCP value from IP packet header */
+uint8_t voqd_parse_ip_dscp(const uint8_t *packet, size_t len)
+{
+	uint8_t dscp = 0;
+	
+	if (voqd_is_ipv4_packet(packet, len)) {
+		/* IPv4: DSCP is in TOS field (bits 0-5) */
+		const struct eth_hdr *eth = (const struct eth_hdr *)packet;
+		size_t ip_offset = sizeof(struct eth_hdr);
+		
+		/* Skip VLAN header if present */
+		uint16_t eth_type = ntohs(eth->eth_type);
+		if (eth_type == 0x8100 || eth_type == 0x88A8) {  /* VLAN */
+			ip_offset += sizeof(struct vlan_hdr);
+		}
+		
+		if (ip_offset + sizeof(struct ipv4_hdr) <= len) {
+			const struct ipv4_hdr *ip = (const struct ipv4_hdr *)(packet + ip_offset);
+			dscp = (ip->tos >> 2) & 0x3F;  /* DSCP is bits 2-7 of TOS */
+		}
+		
+	} else if (voqd_is_ipv6_packet(packet, len)) {
+		/* IPv6: DSCP is in Traffic Class field (bits 4-9 of first 32-bit word) */
+		const struct eth_hdr *eth = (const struct eth_hdr *)packet;
+		size_t ip_offset = sizeof(struct eth_hdr);
+		
+		/* Skip VLAN header if present */
+		uint16_t eth_type = ntohs(eth->eth_type);
+		if (eth_type == 0x8100 || eth_type == 0x88A8) {  /* VLAN */
+			ip_offset += sizeof(struct vlan_hdr);
+		}
+		
+		if (ip_offset + sizeof(struct ipv6_hdr) <= len) {
+			const struct ipv6_hdr *ip = (const struct ipv6_hdr *)(packet + ip_offset);
+			/* Extract traffic class from bytes (RFC 2460 format) */
+			const uint8_t *bytes = (const uint8_t *)&ip->version_tc_fl;
+			uint8_t traffic_class = ((bytes[0] & 0x0F) << 4) | ((bytes[1] >> 4) & 0x0F);
+			dscp = (traffic_class >> 2) & 0x3F;
+		}
+	}
+	
+	return dscp;
+}
+
+/* Extract priority from packet using IP DSCP or fallback to default */
+uint8_t voqd_extract_priority_from_packet(const uint8_t *packet, size_t len, 
+                                         const uint8_t *dscp_to_prio, uint8_t default_prio)
+{
+	/* Check if this is an IP packet */
+	if (!voqd_is_ipv4_packet(packet, len) && !voqd_is_ipv6_packet(packet, len)) {
+		/* Non-IP packet: use default priority */
+		return default_prio;
+	}
+	
+	/* Try to parse DSCP from IP header */
+	uint8_t dscp = voqd_parse_ip_dscp(packet, len);
+	
+	/* Map DSCP to priority using lookup table */
+	if (dscp_to_prio && dscp < 64) {
+		return dscp_to_prio[dscp];
+	}
+	
+	/* Fallback to default priority */
+	return default_prio;
 }

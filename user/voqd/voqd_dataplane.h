@@ -33,6 +33,10 @@ struct voqd_dataplane_config {
 	bool busy_poll;            /* Use busy polling (lower latency) */
 	bool adaptive_batch;       /* Adaptive batch sizing */
 	uint32_t cpu_affinity;     /* CPU to pin threads to (0 = no pinning) */
+	
+	/* QoS classification */
+	uint8_t dscp_to_prio[64];  /* DSCP value (0-63) to priority mapping */
+	uint8_t default_prio;      /* Default priority for unmapped DSCP */
 };
 
 /* Data plane runtime state */
@@ -100,6 +104,23 @@ void voqd_dataplane_get_stats(struct voqd_dataplane *dp,
 
 /* Print data plane statistics */
 void voqd_dataplane_print_stats(struct voqd_dataplane *dp);
+
+/*
+ * QoS Classification Functions
+ */
+
+/* Extract priority from packet using IP DSCP or fallback to default */
+uint8_t voqd_extract_priority_from_packet(const uint8_t *packet, size_t len, 
+                                         const uint8_t *dscp_to_prio, uint8_t default_prio);
+
+/* Parse DSCP value from IP packet header */
+uint8_t voqd_parse_ip_dscp(const uint8_t *packet, size_t len);
+
+/* Check if packet is IPv4 */
+bool voqd_is_ipv4_packet(const uint8_t *packet, size_t len);
+
+/* Check if packet is IPv6 */
+bool voqd_is_ipv6_packet(const uint8_t *packet, size_t len);
 
 /*
  * Internal RX/TX Processing (exposed for testing)
