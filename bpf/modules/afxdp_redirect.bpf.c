@@ -180,11 +180,16 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	
 	/* Lookup VOQd state */
 	state = bpf_map_lookup_elem(&voqd_state_map, &key);
-	if (!state)
+	if (!state) {
+		bpf_printk("[AF_XDP] No VOQd state found");
 		goto next_module;
+	}
 	
 	/* Get current time for timeout checking */
 	now_ns = bpf_ktime_get_ns();
+	
+	bpf_printk("[AF_XDP] mode=%d, running=%d, prio_mask=0x%x", 
+	           state->mode, state->running, state->prio_mask);
 	
 	/*
 	 * Automatic Failover: ACTIVE/SHADOW -> BYPASS on heartbeat timeout
@@ -213,12 +218,16 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	}
 	
 	/* BYPASS mode: Skip all processing */
-	if (state->mode == VOQD_MODE_BYPASS)
+	if (state->mode == VOQD_MODE_BYPASS) {
+		bpf_printk("[AF_XDP] BYPASS mode, skipping");
 		goto next_module;
+	}
 	
 	/* Check if VOQd is actually running */
-	if (!state->running)
+	if (!state->running) {
+		bpf_printk("[AF_XDP] VOQd not running");
 		goto next_module;
+	}
 	
 	/* Lookup QoS config */
 	qos = bpf_map_lookup_elem(&qos_config_map, &key);
