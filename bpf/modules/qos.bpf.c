@@ -157,13 +157,17 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } qos_config_map SEC(".maps");
 
-/* Queue depth map - shared with afxdp_redirect for congestion detection */
-extern struct {
+/* Local queue depth tracking for QoS congestion detection
+ * This is separate from afxdp_redirect's qdepth_map and used for
+ * QoS-specific congestion management (rate limiting, ECN marking)
+ */
+struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 4096);
     __type(key, struct qdepth_key);
     __type(value, __u32);
-} qdepth_map SEC(".maps");
+    __uint(max_entries, 1024);  /* Smaller than afxdp_redirect's map */
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} qos_qdepth_map SEC(".maps");
 
 //
 // Statistics (per-CPU for performance)
@@ -427,7 +431,7 @@ int qos_process(struct xdp_md *xdp_ctx)
     }
     
     /* Congestion detection and ECN marking
-     * Uses shared qdepth_map for coordination with afxdp_redirect module
+     * Uses local qdepth_map for QoS-specific congestion management
      */
     if (cfg->flags & QOS_FLAG_ECN_ENABLED) {
         __u32 egress_ifindex = ctx->egress_ifindex;
@@ -439,7 +443,7 @@ int qos_process(struct xdp_md *xdp_ctx)
                 ._pad = 0,
             };
             
-            __u32 *qdepth = bpf_map_lookup_elem(&qdepth_map, &qkey);
+            __u32 *qdepth = bpf_map_lookup_elem(&qos_qdepth_map, &qkey);
             if (qdepth && *qdepth > 0) {
                 /* Congestion detected based on queue depth */
                 __u32 threshold = qos_cfg->ecn_threshold;
@@ -461,6 +465,10 @@ int qos_process(struct xdp_md *xdp_ctx)
                 
                 /* Increment queue depth for this packet */
                 __sync_fetch_and_add(qdepth, 1);
+            } else if (!qdepth) {
+                /* Initialize queue depth for this port/priority */
+                __u32 initial_depth = 1;
+                bpf_map_update_elem(&qos_qdepth_map, &qkey, &initial_depth, BPF_NOEXIST);
             }
         }
     }
