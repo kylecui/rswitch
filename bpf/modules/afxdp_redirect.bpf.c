@@ -277,11 +277,11 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	}
 	
 	/*
-	 * ACTIVE Mode: Redirect to user-space VOQd via cpumap
+	 * ACTIVE Mode: Redirect to user-space VOQd via AF_XDP (xsks_map)
 	 */
 	if (state->mode == VOQD_MODE_ACTIVE) {
 		struct voq_meta *meta;
-		__u32 cpu = 0;  /* Target CPU for VOQd */
+		__u32 queue_id = 0;  /* Use queue 0 for high-priority traffic */
 		
 		/* Submit metadata first */
 		meta = bpf_ringbuf_reserve(&voq_ringbuf, sizeof(*meta), 0);
@@ -296,8 +296,9 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 			
 			bpf_ringbuf_submit(meta, 0);
 			
-			/* Redirect packet to cpumap (VOQd handles via AF_XDP) */
-			return bpf_redirect_map(&afxdp_cpumap, cpu, 0);
+			/* Redirect packet to AF_XDP socket via xsks_map
+			 * VOQd's AF_XDP socket must be registered in xsks_map[queue_id] */
+			return bpf_redirect_map(&xsks_map, queue_id, 0);
 		} else {
 			/* Ringbuf full - track overload */
 			state->overload_drops++;
