@@ -74,6 +74,18 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } afxdp_cpumap SEC(".maps");
 
+/* XSKMAP for AF_XDP socket binding
+ * Required by libxdp's xsk_socket__create() to bind AF_XDP sockets.
+ * Key: queue_id, Value: AF_XDP socket fd (managed by VOQd)
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_XSKMAP);
+	__uint(max_entries, 128);  /* Support up to 128 queues */
+	__type(key, __u32);
+	__type(value, __u32);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+} xsks_map SEC(".maps");
+
 /* AF_XDP TX devmap - Queue 0 only (high-priority path)
  * 
  * Separate from rs_xdp_devmap to ensure TX queue isolation.
