@@ -148,30 +148,64 @@ display_afxdp_stats() {
     echo -e "${YELLOW}AF_XDP Redirect Status:${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    # Check VOQd state
+    # Check VOQd state - parse JSON output from bpftool
     if bpftool map show name voqd_state_map &>/dev/null; then
-        local mode=$(bpftool map lookup name voqd_state_map key 0 2>/dev/null | grep "mode:" | awk '{print $2}')
-        local running=$(bpftool map lookup name voqd_state_map key 0 2>/dev/null | grep "running:" | awk '{print $2}')
-        local prio_mask=$(bpftool map lookup name voqd_state_map key 0 2>/dev/null | grep "prio_mask:" | awk '{print $2}')
+        local json_output=$(bpftool map dump name voqd_state_map -j 2>/dev/null)
+        
+        # Parse JSON using basic tools (grep + sed)
+        # Extract values from JSON: "field": value
+        local mode=$(echo "$json_output" | grep -o '"mode":[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+        local running=$(echo "$json_output" | grep -o '"running":[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+        local prio_mask=$(echo "$json_output" | grep -o '"prio_mask":[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+        local failover_count=$(echo "$json_output" | grep -o '"failover_count":[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+        
+        # Default values if parsing failed
+        mode=${mode:-0}
+        running=${running:-0}
+        prio_mask=${prio_mask:-0}
+        failover_count=${failover_count:-0}
         
         # Convert mode number to string
         case $mode in
             0) mode_str="BYPASS" ;;
             1) mode_str="SHADOW" ;;
             2) mode_str="ACTIVE" ;;
-            *) mode_str="UNKNOWN" ;;
+            *) mode_str="UNKNOWN($mode)" ;;
         esac
         
-        local color=$GREEN
-        if [[ $running -eq 0 ]]; then
-            color=$RED
+        # Color coding
+        local mode_color=$YELLOW
+        local running_color=$RED
+        
+        if [[ $mode -eq 2 ]]; then
+            mode_color=$GREEN  # ACTIVE = green
         fi
         
-        echo -e "VOQd Mode: ${color}${mode_str}${NC}"
-        echo -e "VOQd Running: ${color}${running}${NC}"
-        echo -e "Priority Mask: 0x$(printf '%02x' $prio_mask) (intercept priorities)"
+        if [[ $running -eq 1 ]]; then
+            running_color=$GREEN  # Running = green
+        fi
+        
+        echo -e "VOQd Mode: ${mode_color}${mode_str}${NC}"
+        echo -e "VOQd Running: ${running_color}${running}${NC} (0=stopped, 1=running)"
+        echo -e "Priority Mask: ${CYAN}0x$(printf '%02x' $prio_mask)${NC} (intercept priorities)"
+        
+        if [[ $failover_count -gt 0 ]]; then
+            echo -e "Failover Count: ${RED}${failover_count}${NC} (automatic ACTIVE→BYPASS)"
+        fi
+        
+        # Status interpretation
+        if [[ $running -eq 0 ]]; then
+            echo -e "Status: ${YELLOW}VOQd not running - all traffic in XDP fast-path${NC}"
+        elif [[ $mode -eq 0 ]]; then
+            echo -e "Status: ${YELLOW}BYPASS mode - VOQd running but not intercepting${NC}"
+        elif [[ $mode -eq 1 ]]; then
+            echo -e "Status: ${CYAN}SHADOW mode - VOQd observing, XDP forwarding${NC}"
+        elif [[ $mode -eq 2 ]]; then
+            echo -e "Status: ${GREEN}ACTIVE mode - VOQd handling high-priority flows${NC}"
+        fi
     else
         echo -e "${RED}VOQd not configured${NC}"
+        echo -e "  (voqd_state_map not found - AF_XDP redirect not available)"
     fi
     
     # Show AF_XDP redirect statistics if available

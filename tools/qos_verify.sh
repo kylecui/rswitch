@@ -77,8 +77,39 @@ echo ""
 # 5. Check VOQd/AF_XDP status
 echo "[5/5] AF_XDP/VOQd Status:"
 if bpftool map show name voqd_state_map &>/dev/null; then
-    echo "VOQd state map:"
-    bpftool map dump name voqd_state_map 2>/dev/null
+    echo "VOQd state map found"
+    
+    # Parse JSON output
+    local json_output=$(bpftool map dump name voqd_state_map -j 2>/dev/null)
+    local mode=$(echo "$json_output" | grep -o '"mode":[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+    local running=$(echo "$json_output" | grep -o '"running":[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+    local prio_mask=$(echo "$json_output" | grep -o '"prio_mask":[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+    
+    mode=${mode:-0}
+    running=${running:-0}
+    prio_mask=${prio_mask:-0}
+    
+    # Convert mode to string
+    case $mode in
+        0) mode_str="BYPASS" ;;
+        1) mode_str="SHADOW" ;;
+        2) mode_str="ACTIVE" ;;
+        *) mode_str="UNKNOWN" ;;
+    esac
+    
+    echo "  Mode: $mode_str ($mode)"
+    echo "  Running: $running (0=stopped, 1=running)"
+    echo "  Priority Mask: 0x$(printf '%02x' $prio_mask)"
+    
+    if [[ $running -eq 0 ]]; then
+        echo "  ⚠️  VOQd not running - all traffic uses XDP fast-path"
+    elif [[ $mode -eq 0 ]]; then
+        echo "  ℹ️  BYPASS mode - VOQd running but not intercepting traffic"
+    elif [[ $mode -eq 1 ]]; then
+        echo "  ℹ️  SHADOW mode - VOQd observing without intercepting"
+    elif [[ $mode -eq 2 ]]; then
+        echo "  ✓ ACTIVE mode - VOQd handling high-priority flows"
+    fi
 else
     echo "  VOQd not configured (fast-path only)"
 fi
