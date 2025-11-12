@@ -555,18 +555,23 @@ static int build_prog_array(struct loader_ctx *ctx)
     
     /* Build separate pipelines for ingress and egress 
      * 
-     * Key insight: Ingress and egress use SEPARATE index spaces!
-     * - Ingress: slots 0, 1, 2, ... (sorted by stage)
-     * - Egress: slots 0, 1, 2, ... (sorted by stage, separate from ingress)
+     * CRITICAL: Ingress and egress MUST use different prog_array slots!
+     * Following PoC pattern (attached loader lines 583-585):
+     * - Ingress: slots 0, 1, 2, ... (low slots, forward)
+     * - Egress: slots 255, 254, 253, ... (high slots, backward to avoid collision)
      * 
      * prog_chain map usage:
-     * - Ingress: chain[0]→1→2→...→N (ingress pipeline)
-     * - Egress: chain[0]→1→2→...→M (egress pipeline, KEY 0 shared but context differs)
+     * - Ingress modules: chain[slot] points to next ingress slot
+     * - Egress modules: chain[slot] points to next egress slot
+     * - Devmap entry: chain[0] = first egress slot (e.g., 255)
      * 
-     * CRITICAL: Devmap egress hook reads prog_chain[0] to get first egress module.
-     * This works because egress hook has different execution context (ctx->egress_ifindex set).
+     * Why this works:
+     * - rs_progs[0..N] = ingress programs
+     * - rs_progs[255..255-M] = egress programs
+     * - NO overlap between ingress and egress slots
      */
-    int ingress_idx = 0, egress_idx = 0;
+    int ingress_idx = 0;
+    int egress_slot = 255;  /* Start from high end, go downward */
     int ingress_count = 0, egress_count = 0;
     int first_egress_prog_idx = -1;
     
@@ -618,7 +623,7 @@ static int build_prog_array(struct loader_ctx *ctx)
         ingress_count++;
     }
     
-    /* Pass 2: Insert egress modules */
+    /* Pass 2: Insert egress modules (from high slots downward) */
     for (i = 0; i < ctx->num_modules; i++) {
         struct loaded_module *mod = &ctx->modules[i];
         
@@ -628,46 +633,46 @@ static int build_prog_array(struct loader_ctx *ctx)
         if (mod->desc.hook != RS_HOOK_XDP_EGRESS)
             continue;  /* Skip ingress modules in this pass */
         
-        /* Insert into prog_array at egress_idx */
-        err = bpf_map_update_elem(ctx->rs_progs_fd, &egress_idx, &mod->prog_fd, BPF_ANY);
+        /* Insert into prog_array at egress_slot (255, 254, 253, ...) */
+        err = bpf_map_update_elem(ctx->rs_progs_fd, &egress_slot, &mod->prog_fd, BPF_ANY);
         if (err) {
             fprintf(stderr, "Failed to insert %s into prog_array[%u]: %s\n",
-                    mod->name, egress_idx, strerror(errno));
+                    mod->name, egress_slot, strerror(errno));
             return -1;
         }
         
-        /* Remember first egress module's index for devmap hook entry point */
+        /* Remember first egress module's slot for devmap hook entry point */
         if (first_egress_prog_idx < 0) {
-            first_egress_prog_idx = egress_idx;
+            first_egress_prog_idx = egress_slot;  /* 255 for first egress module */
         }
         
         /* Build chain: find next egress module */
-        int next_egress_idx = -1;
+        int next_egress_slot = -1;
         for (int j = i + 1; j < ctx->num_modules; j++) {
             if (ctx->modules[j].desc.hook == RS_HOOK_XDP_EGRESS && 
                 ctx->modules[j].prog_fd >= 0) {
-                next_egress_idx = egress_idx + 1;
+                next_egress_slot = egress_slot - 1;  /* Decrement for next egress */
                 break;
             }
         }
         
-        if (next_egress_idx >= 0) {
+        if (next_egress_slot >= 0) {
             /* Not last egress module */
-            err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &egress_idx, &next_egress_idx, BPF_ANY);
+            err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &egress_slot, &next_egress_slot, BPF_ANY);
             if (err) {
                 fprintf(stderr, "Failed to set prog_chain[%u]=%u: %s\n",
-                        egress_idx, next_egress_idx, strerror(errno));
+                        egress_slot, next_egress_slot, strerror(errno));
                 return -1;
             }
             printf("  [%3u] stage=%3u hook=egress : %s (fd=%d) → next=%u\n", 
-                   egress_idx, mod->stage, mod->name, mod->prog_fd, next_egress_idx);
+                   egress_slot, mod->stage, mod->name, mod->prog_fd, next_egress_slot);
         } else {
             /* Last egress module */
             printf("  [%3u] stage=%3u hook=egress : %s (fd=%d) [LAST]\n", 
-                   egress_idx, mod->stage, mod->name, mod->prog_fd);
+                   egress_slot, mod->stage, mod->name, mod->prog_fd);
         }
         
-        egress_idx++;
+        egress_slot--;  /* Move to next lower slot */
         egress_count++;
     }
     
