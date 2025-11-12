@@ -174,9 +174,11 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	if (rs_ctx->action == XDP_DROP)
 		return XDP_DROP;
 	
-	/* Egress port must be set by previous modules (l2learn/route) */
-	if (rs_ctx->egress_ifindex == 0)
-		goto next_module;
+	/* Note: We DO NOT check egress_ifindex here, because:
+	 * - SHADOW mode needs to observe all traffic (including flooding)
+	 * - ACTIVE mode can handle flooding by redirecting to AF_XDP
+	 * - Only skip if we really can't process (errors, etc.)
+	 */
 	
 	/* Lookup VOQd state */
 	state = bpf_map_lookup_elem(&voqd_state_map, &key);
