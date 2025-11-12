@@ -14,7 +14,7 @@ ingress:
 
 egress:
   - qos
-  - egress_final
+  - egress
 
 # 基本设置（必需）
 settings:

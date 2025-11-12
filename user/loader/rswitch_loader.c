@@ -553,87 +553,139 @@ static int build_prog_array(struct loader_ctx *ctx)
     
     printf("\nBuilding tail-call pipeline:\n");
     
-    /* Build separate pipelines for ingress and egress */
+    /* Build separate pipelines for ingress and egress 
+     * 
+     * Key insight: Ingress and egress use SEPARATE index spaces!
+     * - Ingress: slots 0, 1, 2, ... (sorted by stage)
+     * - Egress: slots 0, 1, 2, ... (sorted by stage, separate from ingress)
+     * 
+     * prog_chain map usage:
+     * - Ingress: chain[0]→1→2→...→N (ingress pipeline)
+     * - Egress: chain[0]→1→2→...→M (egress pipeline, KEY 0 shared but context differs)
+     * 
+     * CRITICAL: Devmap egress hook reads prog_chain[0] to get first egress module.
+     * This works because egress hook has different execution context (ctx->egress_ifindex set).
+     */
+    int ingress_idx = 0, egress_idx = 0;
     int ingress_count = 0, egress_count = 0;
-    int first_egress_idx = -1;
+    int first_egress_prog_idx = -1;
     
-    /* Insert modules into prog_array and build chain map */
+    /* Pass 1: Insert ingress modules */
     for (i = 0; i < ctx->num_modules; i++) {
         struct loaded_module *mod = &ctx->modules[i];
-        int target_idx;
         
         if (!mod->obj || mod->prog_fd < 0)
             continue;
         
-        /* Determine target prog_array slot */
-        if (mod->desc.hook == RS_HOOK_XDP_EGRESS) {
-            /* Egress modules: sequential slots starting after ingress */
-            target_idx = idx++;
-            if (first_egress_idx < 0) {
-                first_egress_idx = target_idx;  /* Remember first egress module */
-            }
-            egress_count++;
-        } else {
-            /* Ingress modules: sequential slots from 0 */
-            target_idx = idx++;
-            ingress_count++;
-        }
+        if (mod->desc.hook != RS_HOOK_XDP_INGRESS)
+            continue;  /* Skip egress modules in this pass */
         
-        /* Insert into prog_array */
-        err = bpf_map_update_elem(ctx->rs_progs_fd, &target_idx, &mod->prog_fd, BPF_ANY);
+        /* Insert into prog_array at ingress_idx */
+        err = bpf_map_update_elem(ctx->rs_progs_fd, &ingress_idx, &mod->prog_fd, BPF_ANY);
         if (err) {
             fprintf(stderr, "Failed to insert %s into prog_array[%u]: %s\n",
-                    mod->name, target_idx, strerror(errno));
+                    mod->name, ingress_idx, strerror(errno));
             return -1;
         }
         
-        /* Build chain: current module's slot points to next module's slot */
-        if (i + 1 < ctx->num_modules) {
-            struct loaded_module *next_mod = &ctx->modules[i + 1];
-            
-            /* Only chain within same hook type (ingress→ingress, egress→egress) */
-            if (next_mod->desc.hook == mod->desc.hook && next_mod->prog_fd >= 0) {
-                int next_idx = (mod->desc.hook == RS_HOOK_XDP_EGRESS) ? 
-                               (target_idx + 1) : (target_idx + 1);
-                
-                err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &target_idx, &next_idx, BPF_ANY);
-                if (err) {
-                    fprintf(stderr, "Failed to set prog_chain[%u]=%u: %s\n",
-                            target_idx, next_idx, strerror(errno));
-                    return -1;
-                }
-                
-                printf("  [%3u] stage=%3u hook=%-7s: %s (fd=%d) → next=%u\n", 
-                       target_idx, mod->stage, 
-                       mod->desc.hook == RS_HOOK_XDP_EGRESS ? "egress" : "ingress",
-                       mod->name, mod->prog_fd, next_idx);
-            } else {
-                /* Last module in this hook type */
-                printf("  [%3u] stage=%3u hook=%-7s: %s (fd=%d) [LAST]\n", 
-                       target_idx, mod->stage,
-                       mod->desc.hook == RS_HOOK_XDP_EGRESS ? "egress" : "ingress",
-                       mod->name, mod->prog_fd);
+        /* Build chain: find next ingress module */
+        int next_ingress_idx = -1;
+        for (int j = i + 1; j < ctx->num_modules; j++) {
+            if (ctx->modules[j].desc.hook == RS_HOOK_XDP_INGRESS && 
+                ctx->modules[j].prog_fd >= 0) {
+                next_ingress_idx = ingress_idx + 1;
+                break;
             }
-        } else {
-            /* Very last module overall */
-            printf("  [%3u] stage=%3u hook=%-7s: %s (fd=%d) [LAST]\n", 
-                   target_idx, mod->stage,
-                   mod->desc.hook == RS_HOOK_XDP_EGRESS ? "egress" : "ingress",
-                   mod->name, mod->prog_fd);
         }
+        
+        if (next_ingress_idx >= 0) {
+            /* Not last ingress module */
+            err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &ingress_idx, &next_ingress_idx, BPF_ANY);
+            if (err) {
+                fprintf(stderr, "Failed to set prog_chain[%u]=%u: %s\n",
+                        ingress_idx, next_ingress_idx, strerror(errno));
+                return -1;
+            }
+            printf("  [%3u] stage=%3u hook=ingress: %s (fd=%d) → next=%u\n", 
+                   ingress_idx, mod->stage, mod->name, mod->prog_fd, next_ingress_idx);
+        } else {
+            /* Last ingress module */
+            printf("  [%3u] stage=%3u hook=ingress: %s (fd=%d) [LAST]\n", 
+                   ingress_idx, mod->stage, mod->name, mod->prog_fd);
+        }
+        
+        ingress_idx++;
+        ingress_count++;
     }
     
-    /* Set devmap egress entry point (prog_chain[0] = first egress module) */
-    if (first_egress_idx >= 0) {
+    /* Pass 2: Insert egress modules */
+    for (i = 0; i < ctx->num_modules; i++) {
+        struct loaded_module *mod = &ctx->modules[i];
+        
+        if (!mod->obj || mod->prog_fd < 0)
+            continue;
+        
+        if (mod->desc.hook != RS_HOOK_XDP_EGRESS)
+            continue;  /* Skip ingress modules in this pass */
+        
+        /* Insert into prog_array at egress_idx */
+        err = bpf_map_update_elem(ctx->rs_progs_fd, &egress_idx, &mod->prog_fd, BPF_ANY);
+        if (err) {
+            fprintf(stderr, "Failed to insert %s into prog_array[%u]: %s\n",
+                    mod->name, egress_idx, strerror(errno));
+            return -1;
+        }
+        
+        /* Remember first egress module's index for devmap hook entry point */
+        if (first_egress_prog_idx < 0) {
+            first_egress_prog_idx = egress_idx;
+        }
+        
+        /* Build chain: find next egress module */
+        int next_egress_idx = -1;
+        for (int j = i + 1; j < ctx->num_modules; j++) {
+            if (ctx->modules[j].desc.hook == RS_HOOK_XDP_EGRESS && 
+                ctx->modules[j].prog_fd >= 0) {
+                next_egress_idx = egress_idx + 1;
+                break;
+            }
+        }
+        
+        if (next_egress_idx >= 0) {
+            /* Not last egress module */
+            err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &egress_idx, &next_egress_idx, BPF_ANY);
+            if (err) {
+                fprintf(stderr, "Failed to set prog_chain[%u]=%u: %s\n",
+                        egress_idx, next_egress_idx, strerror(errno));
+                return -1;
+            }
+            printf("  [%3u] stage=%3u hook=egress : %s (fd=%d) → next=%u\n", 
+                   egress_idx, mod->stage, mod->name, mod->prog_fd, next_egress_idx);
+        } else {
+            /* Last egress module */
+            printf("  [%3u] stage=%3u hook=egress : %s (fd=%d) [LAST]\n", 
+                   egress_idx, mod->stage, mod->name, mod->prog_fd);
+        }
+        
+        egress_idx++;
+        egress_count++;
+    }
+    
+    /* Set devmap egress entry point (prog_chain[0] = first egress module)
+     * 
+     * CRITICAL: Devmap egress hook (egress.bpf.c) reads prog_chain[RS_ONLYKEY=0]
+     * to get the first egress module FD for tail-calling.
+     */
+    if (first_egress_prog_idx >= 0) {
         int key = 0;  /* RS_ONLYKEY - devmap egress uses key 0 */
-        err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &key, &first_egress_idx, BPF_ANY);
+        err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &key, &first_egress_prog_idx, BPF_ANY);
         if (err) {
             fprintf(stderr, "Failed to set egress entry point prog_chain[0]=%u: %s\n",
-                    first_egress_idx, strerror(errno));
+                    first_egress_prog_idx, strerror(errno));
             return -1;
         }
         printf("\nEgress entry point: prog_chain[0] = %u (devmap→first egress module)\n",
-               first_egress_idx);
+               first_egress_prog_idx);
     }
     
     printf("\nPipeline built: %u ingress + %u egress modules\n", 
