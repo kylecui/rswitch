@@ -17,6 +17,7 @@
 #include "voq.h"
 #include "ringbuf_consumer.h"
 #include "state_ctrl.h"
+#include "voqd_dataplane.h"
 #include "../../bpf/core/afxdp_common.h"
 
 #define DEFAULT_RINGBUF_PIN    "/sys/fs/bpf/voq_ringbuf"
@@ -28,11 +29,17 @@ struct voqd_ctx {
 	struct voq_mgr voq;
 	struct rb_consumer ringbuf;
 	struct state_ctrl state;
+	struct voqd_dataplane dataplane;
 	
 	/* Configuration */
 	uint32_t num_ports;
 	uint32_t mode;           /* BYPASS/SHADOW/ACTIVE */
 	uint32_t prio_mask;      /* Priority interception mask */
+	
+	/* AF_XDP/Data plane configuration */
+	bool enable_afxdp;
+	bool zero_copy;
+	char *ifnames[MAX_PORTS];  /* Interface names per port */
 	
 	/* Runtime flags */
 	volatile bool running;
@@ -119,6 +126,11 @@ static void print_stats(struct voqd_ctx *ctx)
 	/* VOQ stats */
 	voq_print_stats(&ctx->voq);
 	
+	/* Data plane stats (if enabled) */
+	if (ctx->enable_afxdp) {
+		voqd_dataplane_print_stats(&ctx->dataplane);
+	}
+	
 	/* State controller stats */
 	printf("State: heartbeats=%lu, transitions=%lu\n",
 	       ctx->state.heartbeats_sent, ctx->state.mode_transitions);
@@ -185,19 +197,26 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 	ctx->running = true;
 	ctx->last_stats_print = time(NULL);
 	
+	/* AF_XDP/Data plane defaults */
+	ctx->enable_afxdp = false;  /* Will be enabled in ACTIVE mode */
+	ctx->zero_copy = false;
+	memset(ctx->ifnames, 0, sizeof(ctx->ifnames));
+	
 	/* Parse command-line options */
 	static struct option long_options[] = {
-		{"ports",     required_argument, 0, 'p'},
-		{"mode",      required_argument, 0, 'm'},
-		{"prio-mask", required_argument, 0, 'P'},
-		{"scheduler", no_argument,       0, 's'},
-		{"stats",     required_argument, 0, 'S'},
-		{"help",      no_argument,       0, 'h'},
+		{"ports",      required_argument, 0, 'p'},
+		{"mode",       required_argument, 0, 'm'},
+		{"prio-mask",  required_argument, 0, 'P'},
+		{"interfaces", required_argument, 0, 'i'},
+		{"zero-copy",  no_argument,       0, 'z'},
+		{"scheduler",  no_argument,       0, 's'},
+		{"stats",      required_argument, 0, 'S'},
+		{"help",       no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 	
 	int opt;
-	while ((opt = getopt_long(argc, argv, "p:m:P:sS:h", long_options, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "p:m:P:i:zsS:h", long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'p':
 			ctx->num_ports = atoi(optarg);
@@ -221,6 +240,22 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 		case 'P':
 			ctx->prio_mask = strtoul(optarg, NULL, 0);
 			break;
+		case 'i':
+			/* Parse comma-separated interface names */
+			{
+				char *iflist = strdup(optarg);
+				char *token = strtok(iflist, ",");
+				uint32_t idx = 0;
+				while (token && idx < MAX_PORTS) {
+					ctx->ifnames[idx++] = strdup(token);
+					token = strtok(NULL, ",");
+				}
+				free(iflist);
+			}
+			break;
+		case 'z':
+			ctx->zero_copy = true;
+			break;
 		case 's':
 			ctx->scheduler_enabled = true;
 			break;
@@ -231,12 +266,14 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 		default:
 			printf("Usage: %s [options]\n", argv[0]);
 			printf("Options:\n");
-			printf("  -p, --ports NUM         Number of ports (default: 4)\n");
-			printf("  -m, --mode MODE         Operating mode: bypass/shadow/active (default: bypass)\n");
-			printf("  -P, --prio-mask MASK    Priority interception mask (default: 0x00)\n");
-			printf("  -s, --scheduler         Enable VOQ scheduler thread\n");
-			printf("  -S, --stats INTERVAL    Stats print interval in seconds (default: 10)\n");
-			printf("  -h, --help              Show this help\n");
+			printf("  -p, --ports NUM          Number of ports (default: 4)\n");
+			printf("  -m, --mode MODE          Operating mode: bypass/shadow/active (default: bypass)\n");
+			printf("  -P, --prio-mask MASK     Priority interception mask (default: 0x00)\n");
+			printf("  -i, --interfaces IFLIST  Comma-separated interface names (e.g., ens33,ens34)\n");
+			printf("  -z, --zero-copy          Enable AF_XDP zero-copy mode\n");
+			printf("  -s, --scheduler          Enable VOQ scheduler thread\n");
+			printf("  -S, --stats INTERVAL     Stats print interval in seconds (default: 10)\n");
+			printf("  -h, --help               Show this help\n");
 			printf("\n");
 			printf("State Machine Features:\n");
 			printf("  - Auto-failover: ACTIVE/SHADOW -> BYPASS on heartbeat timeout (5s)\n");
@@ -274,6 +311,56 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 		return ret;
 	}
 	
+	/* Initialize data plane (enable AF_XDP in ACTIVE mode) */
+	if (ctx->mode == VOQD_MODE_ACTIVE) {
+		ctx->enable_afxdp = true;
+	}
+	
+	struct voqd_dataplane_config dp_config = {
+		.enable_afxdp = ctx->enable_afxdp,
+		.zero_copy = ctx->zero_copy,
+		.rx_ring_size = 2048,
+		.tx_ring_size = 2048,
+		.frame_size = 2048,
+		.enable_scheduler = ctx->scheduler_enabled,
+		.batch_size = 256,
+		.poll_timeout_ms = 100,
+		.busy_poll = false,
+		.adaptive_batch = false,
+		.cpu_affinity = 0,  /* No affinity by default */
+	};
+	
+	ret = voqd_dataplane_init(&ctx->dataplane, &ctx->voq, &dp_config);
+	if (ret < 0) {
+		fprintf(stderr, "Failed to initialize data plane: %s\n", strerror(-ret));
+		state_ctrl_destroy(&ctx->state);
+		voq_mgr_destroy(&ctx->voq);
+		return ret;
+	}
+	
+	/* Add AF_XDP sockets for each interface (if ACTIVE mode) */
+	if (ctx->enable_afxdp) {
+		for (uint32_t p = 0; p < ctx->num_ports; p++) {
+			if (!ctx->ifnames[p]) {
+				fprintf(stderr, "ACTIVE mode requires interface names (-i option)\n");
+				voqd_dataplane_destroy(&ctx->dataplane);
+				state_ctrl_destroy(&ctx->state);
+				voq_mgr_destroy(&ctx->voq);
+				return -EINVAL;
+			}
+			
+			ret = voqd_dataplane_add_port(&ctx->dataplane, ctx->ifnames[p], p, 0);
+			if (ret < 0) {
+				fprintf(stderr, "Failed to add AF_XDP socket for %s: %s\n",
+				        ctx->ifnames[p], strerror(-ret));
+				voqd_dataplane_destroy(&ctx->dataplane);
+				state_ctrl_destroy(&ctx->state);
+				voq_mgr_destroy(&ctx->voq);
+				return ret;
+			}
+		}
+	}
+	
 	/* Initialize ringbuf consumer */
 	ret = rb_consumer_init(&ctx->ringbuf, DEFAULT_RINGBUF_PIN, handle_voq_meta, ctx);
 	if (ret < 0) {
@@ -293,24 +380,53 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 		return ret;
 	}
 	
-	/* Start scheduler if enabled */
-	if (ctx->scheduler_enabled) {
-		ret = voq_start_scheduler(&ctx->voq);
+	/* Start data plane (if AF_XDP enabled) */
+	if (ctx->enable_afxdp) {
+		ret = voqd_dataplane_start(&ctx->dataplane);
 		if (ret < 0) {
-			fprintf(stderr, "Failed to start scheduler: %s\n", strerror(-ret));
+			fprintf(stderr, "Failed to start data plane: %s\n", strerror(-ret));
 			state_ctrl_stop_heartbeat(&ctx->state);
 			rb_consumer_destroy(&ctx->ringbuf);
+			voqd_dataplane_destroy(&ctx->dataplane);
 			state_ctrl_destroy(&ctx->state);
 			voq_mgr_destroy(&ctx->voq);
 			return ret;
 		}
 	}
 	
-	printf("VOQd initialized: ports=%u, mode=%s, prio_mask=0x%02x, scheduler=%s\n",
+	/* Start scheduler if enabled (legacy, now replaced by data plane TX thread) */
+	if (ctx->scheduler_enabled && !ctx->enable_afxdp) {
+		ret = voq_start_scheduler(&ctx->voq);
+		if (ret < 0) {
+			fprintf(stderr, "Failed to start scheduler: %s\n", strerror(-ret));
+			state_ctrl_stop_heartbeat(&ctx->state);
+			rb_consumer_destroy(&ctx->ringbuf);
+			voqd_dataplane_destroy(&ctx->dataplane);
+			state_ctrl_destroy(&ctx->state);
+			voq_mgr_destroy(&ctx->voq);
+			return ret;
+		}
+	}
+	
+	printf("VOQd initialized: ports=%u, mode=%s, prio_mask=0x%02x\n",
 	       ctx->num_ports,
 	       ctx->mode == VOQD_MODE_BYPASS ? "BYPASS" :
 	       ctx->mode == VOQD_MODE_SHADOW ? "SHADOW" : "ACTIVE",
-	       ctx->prio_mask,
+	       ctx->prio_mask);
+	
+	if (ctx->enable_afxdp) {
+		printf("Data plane: AF_XDP enabled, zero_copy=%s\n",
+		       ctx->zero_copy ? "yes" : "no");
+		for (uint32_t p = 0; p < ctx->num_ports; p++) {
+			if (ctx->ifnames[p]) {
+				printf("  Port %u: %s\n", p, ctx->ifnames[p]);
+			}
+		}
+	} else {
+		printf("Data plane: Metadata-only mode (ringbuf consumer)\n");
+	}
+	
+	printf("Scheduler: %s\n",
 	       ctx->scheduler_enabled ? "enabled" : "disabled");
 	
 	return 0;
@@ -321,8 +437,13 @@ static void voqd_cleanup(struct voqd_ctx *ctx)
 {
 	printf("Cleaning up...\n");
 	
-	/* Stop scheduler */
-	if (ctx->scheduler_enabled) {
+	/* Stop data plane */
+	if (ctx->enable_afxdp) {
+		voqd_dataplane_stop(&ctx->dataplane);
+	}
+	
+	/* Stop scheduler (legacy) */
+	if (ctx->scheduler_enabled && !ctx->enable_afxdp) {
 		voq_stop_scheduler(&ctx->voq);
 	}
 	
@@ -334,8 +455,16 @@ static void voqd_cleanup(struct voqd_ctx *ctx)
 	
 	/* Destroy components */
 	rb_consumer_destroy(&ctx->ringbuf);
+	voqd_dataplane_destroy(&ctx->dataplane);
 	state_ctrl_destroy(&ctx->state);
 	voq_mgr_destroy(&ctx->voq);
+	
+	/* Free interface names */
+	for (uint32_t p = 0; p < ctx->num_ports; p++) {
+		if (ctx->ifnames[p]) {
+			free(ctx->ifnames[p]);
+		}
+	}
 	
 	printf("VOQd shutdown complete\n");
 }
