@@ -30,6 +30,7 @@
 #include <linux/if_link.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <dirent.h>
 
 #include <bpf/libbpf.h>
@@ -146,6 +147,10 @@ struct loader_ctx {
     struct rs_profile profile;
     int use_profile;
     int verbose;
+    
+    /* VOQd process management */
+    pid_t voqd_pid;         /* VOQd process ID (0 = not running) */
+    int voqd_enabled;       /* VOQd should be started */
 };
 
 static volatile int keep_running = 1;
@@ -1049,6 +1054,96 @@ static int attach_xdp(struct loader_ctx *ctx)
     return 0;
 }
 
+/* Start VOQd user-space scheduler */
+static int start_voqd(struct loader_ctx *ctx)
+{
+    char cmd[1024];
+    char iface_list[512] = "";
+    int i;
+    
+    printf("\nStarting VOQd (user-space scheduler)...\n");
+    
+    /* Check if rswitch-voqd binary exists */
+    if (access("./build/rswitch-voqd", X_OK) != 0) {
+        fprintf(stderr, "VOQd binary not found: ./build/rswitch-voqd\n");
+        fprintf(stderr, "Build VOQd first or disable voqd_config in profile\n");
+        return -1;
+    }
+    
+    /* Build interface list */
+    for (i = 0; i < ctx->num_interfaces; i++) {
+        char ifname[IF_NAMESIZE];
+        if_indextoname(ctx->interfaces[i], ifname);
+        
+        if (i > 0) strcat(iface_list, ",");
+        strcat(iface_list, ifname);
+    }
+    
+    /* Build VOQd command from profile configuration */
+    struct rs_profile_voqd *voqd = &ctx->profile.voqd;
+    
+    snprintf(cmd, sizeof(cmd),
+             "./build/rswitch-voqd -i %s -p %d -m %s -P 0x%x -s %s %s &",
+             iface_list,
+             voqd->num_ports > 0 ? voqd->num_ports : ctx->num_interfaces,
+             voqd->mode == 2 ? "active" : (voqd->mode == 1 ? "shadow" : "bypass"),
+             voqd->prio_mask,
+             voqd->enable_scheduler ? "-S 10" : "",  /* Enable scheduler with 10s stats */
+             ctx->verbose ? "-v" : "");
+    
+    printf("  Command: %s\n", cmd);
+    printf("  Mode: %s\n", voqd->mode == 2 ? "ACTIVE" : (voqd->mode == 1 ? "SHADOW" : "BYPASS"));
+    printf("  Priority Mask: 0x%02x\n", voqd->prio_mask);
+    printf("  Ports: %d\n", voqd->num_ports > 0 ? voqd->num_ports : ctx->num_interfaces);
+    
+    /* Fork and exec VOQd */
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "Failed to fork VOQd process: %s\n", strerror(errno));
+        return -1;
+    }
+    
+    if (pid == 0) {
+        /* Child process - exec VOQd */
+        /* Redirect stdout/stderr to log file */
+        FILE *log = fopen("/tmp/rswitch-voqd.log", "w");
+        if (log) {
+            dup2(fileno(log), STDOUT_FILENO);
+            dup2(fileno(log), STDERR_FILENO);
+            fclose(log);
+        }
+        
+        /* Execute VOQd via shell (for background &) */
+        execl("/bin/sh", "sh", "-c", cmd, NULL);
+        
+        /* If exec fails */
+        fprintf(stderr, "Failed to exec VOQd: %s\n", strerror(errno));
+        exit(1);
+    }
+    
+    /* Parent process - store PID */
+    ctx->voqd_pid = pid;
+    ctx->voqd_enabled = 1;
+    
+    /* Give VOQd time to initialize */
+    sleep(2);
+    
+    /* Check if VOQd is still running */
+    int status;
+    if (waitpid(pid, &status, WNOHANG) != 0) {
+        fprintf(stderr, "VOQd process exited prematurely\n");
+        fprintf(stderr, "Check /tmp/rswitch-voqd.log for errors\n");
+        ctx->voqd_pid = 0;
+        ctx->voqd_enabled = 0;
+        return -1;
+    }
+    
+    printf("  ✓ VOQd started (PID: %d)\n", pid);
+    printf("  ✓ Log: /tmp/rswitch-voqd.log\n");
+    
+    return 0;
+}
+
 /* Detach XDP programs from interfaces */
 static void detach_xdp(struct loader_ctx *ctx)
 {
@@ -1166,6 +1261,39 @@ static void cleanup(struct loader_ctx *ctx)
     int i;
     
     printf("\n========== Cleanup Started ==========\n");
+    
+    /* Step 0: Stop VOQd if running */
+    if (ctx->voqd_enabled && ctx->voqd_pid > 0) {
+        printf("\nStopping VOQd (PID: %d)...\n", ctx->voqd_pid);
+        
+        /* Send SIGTERM for graceful shutdown */
+        if (kill(ctx->voqd_pid, SIGTERM) == 0) {
+            /* Wait up to 5 seconds for graceful shutdown */
+            int timeout = 5;
+            while (timeout > 0) {
+                int status;
+                if (waitpid(ctx->voqd_pid, &status, WNOHANG) != 0) {
+                    printf("  ✓ VOQd stopped gracefully\n");
+                    break;
+                }
+                sleep(1);
+                timeout--;
+            }
+            
+            /* Force kill if still running */
+            if (timeout == 0) {
+                printf("  VOQd did not stop gracefully, forcing...\n");
+                kill(ctx->voqd_pid, SIGKILL);
+                waitpid(ctx->voqd_pid, NULL, 0);
+                printf("  ✓ VOQd killed\n");
+            }
+        } else {
+            fprintf(stderr, "  Warning: Failed to stop VOQd: %s\n", strerror(errno));
+        }
+        
+        ctx->voqd_pid = 0;
+        ctx->voqd_enabled = 0;
+    }
     
     /* Step 1: Detach XDP programs from all interfaces */
     detach_xdp(ctx);
@@ -1451,6 +1579,13 @@ int main(int argc, char **argv)
     if (attach_xdp(&ctx) < 0) {
         cleanup(&ctx);
         return 1;
+    }
+    
+    /* Start VOQd if configured in profile */
+    if (ctx.use_profile && ctx.profile.voqd.enabled) {
+        if (start_voqd(&ctx) < 0) {
+            fprintf(stderr, "Warning: Failed to start VOQd, continuing with fast-path only\n");
+        }
     }
     
     printf("\nrSwitch running. Press Ctrl+C to exit.\n");

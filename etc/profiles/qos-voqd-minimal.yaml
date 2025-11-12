@@ -1,0 +1,64 @@
+# rSwitch QoS + VOQd 最小配置
+# 只包含 loader 实际使用的参数
+
+name: qos-voqd-minimal
+description: "Minimal QoS + VOQd configuration for testing"
+version: "1.0"
+
+# 处理流水线（必需）
+ingress:
+  - vlan
+  - l2learn
+  - afxdp_redirect
+  - lastcall
+
+egress:
+  - qos
+  - egress_final
+
+# 基本设置（必需）
+settings:
+  mac_learning: true
+  mac_aging_time: 300
+  vlan_enforcement: true
+  default_vlan: 1
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  stats_enabled: true
+  ringbuf_enabled: true
+  debug: false
+
+# VOQd 配置（必需 - 如果要自动启动）
+voqd_config:
+  enabled: true              # 启用 VOQd 自动启动
+  mode: active               # active/shadow/bypass
+  num_ports: 4               # 端口数量
+  prio_mask: 0x0C            # HIGH (0x04) + CRITICAL (0x08)
+  enable_afxdp: true         # 启用 AF_XDP
+  enable_scheduler: true     # 启用 DRR 调度器
+  
+  # 以下是可选的性能调优参数（有默认值）
+  zero_copy: false           # 零拷贝模式（需要硬件支持）
+  rx_ring_size: 2048         # 接收队列大小
+  tx_ring_size: 2048         # 发送队列大小
+  frame_size: 2048           # 帧大小
+  batch_size: 256            # 批处理大小
+  poll_timeout_ms: 100       # 轮询超时
+  busy_poll: false           # 忙轮询（高CPU使用率）
+  cpu_affinity: -1           # CPU 亲和性（-1 = 无绑定）
+
+# 端口配置（可选 - 如果不配置会使用默认值）
+# 注意：这里只有 VLAN 相关配置会被使用
+# ports:
+#   - name: ens33
+#     enabled: true
+#     mode: trunk            # access/trunk/hybrid
+#     allowed_vlans: [1, 10, 20]
+#     native_vlan: 1
+
+# VLAN 配置（可选）
+# vlans:
+#   - vlan_id: 1
+#     name: "default"
+#     untagged_ports: ["ens33", "ens34", "ens35", "ens36"]
