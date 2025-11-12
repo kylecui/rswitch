@@ -1083,13 +1083,14 @@ static int start_voqd(struct loader_ctx *ctx)
     struct rs_profile_voqd *voqd = &ctx->profile.voqd;
     
     snprintf(cmd, sizeof(cmd),
-             "./build/rswitch-voqd -i %s -p %d -m %s -P 0x%x -s %s %s &",
+             "./build/rswitch-voqd -i %s -p %d -m %s -P 0x%x %s%s%s &",
              iface_list,
              voqd->num_ports > 0 ? voqd->num_ports : ctx->num_interfaces,
              voqd->mode == 2 ? "active" : (voqd->mode == 1 ? "shadow" : "bypass"),
              voqd->prio_mask,
-             voqd->enable_scheduler ? "-S 10" : "",  /* Enable scheduler with 10s stats */
-             ctx->verbose ? "-v" : "");
+             voqd->enable_scheduler ? "-s " : "",     /* Enable scheduler thread */
+             voqd->enable_scheduler ? "-S 10 " : "",  /* Stats interval 10s */
+             voqd->zero_copy ? "-z" : "");            /* Zero-copy mode */
     
     printf("  Command: %s\n", cmd);
     printf("  Mode: %s\n", voqd->mode == 2 ? "ACTIVE" : (voqd->mode == 1 ? "SHADOW" : "BYPASS"));
