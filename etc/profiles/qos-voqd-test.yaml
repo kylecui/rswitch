@@ -16,14 +16,14 @@ version: "1.0"
 # Ingress pipeline (sorted by stage number)
 ingress:
   - vlan            # Stage 20: VLAN ingress filtering
-  - qos              # Stage 25: QoS classification and marking
-  - afxdp_redirect   # Stage 35: AF_XDP redirect for high-priority
   - l2learn          # Stage 80: MAC learning fallback
+  - afxdp_redirect   # Stage 85: AF_XDP redirect for high-priority
   - lastcall         # Stage 90: Forward based on learned MAC
 
-# Egress pipeline
+# Egress pipeline (sorted by stage number)
 egress:
-  - egress           # Devmap egress hook with VLAN tagging
+  - qos              # Stage 170: QoS classification and rate limiting
+  - egress_final     # Stage 190: Final egress processing
 
 # Global settings
 settings:

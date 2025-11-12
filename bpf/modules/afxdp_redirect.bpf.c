@@ -308,10 +308,9 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	
 next_module:
 	/* Call next module in chain */
-	if (rs_ctx->next_prog_id != 0) {
-		bpf_tail_call(ctx, &rs_progs, rs_ctx->next_prog_id);
-	}
+	RS_TAIL_CALL_NEXT(ctx, rs_ctx);
 	
+	/* Tail-call failed - should not happen if pipeline is properly configured */
 	return XDP_PASS;
 }
 
