@@ -95,7 +95,13 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	xsk_cfg.tx_size = config->tx_size ? config->tx_size : XSK_RING_PROD__DEFAULT_NUM_DESCS;
 	xsk_cfg.bind_flags = config->bind_flags;
 	
-	/* Create socket */
+	/* CRITICAL: XDP program already loaded by rswitch_loader
+	 * Use XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD to skip XDP program loading */
+	xsk_cfg.libxdp_flags = XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
+	xsk_cfg.xdp_flags = 0;
+	xsk_cfg.bind_flags |= XDP_COPY;  /* Force copy mode for compatibility */
+	
+	/* Create socket - will bind to existing XDP program */
 	ret = xsk_socket__create(&xsk_sock, ifname, queue_id, umem, &rx, &tx, &xsk_cfg);
 	if (ret) {
 		fprintf(stderr, "Failed to add socket for %s queue %u: %s\n",
