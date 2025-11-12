@@ -66,10 +66,16 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	if (xsks_map_fd < 0) {
 		/* Try without rswitch subdirectory */
 		xsks_map_fd = bpf_obj_get("/sys/fs/bpf/xsks_map");
+		if (xsks_map_fd >= 0) {
+			printf("Opened xsks_map from /sys/fs/bpf/xsks_map (fd=%d)\n", xsks_map_fd);
+		}
+	} else {
+		printf("Opened xsks_map from /sys/fs/bpf/rswitch/xsks_map (fd=%d)\n", xsks_map_fd);
 	}
 	
 	if (xsks_map_fd < 0) {
-		fprintf(stderr, "Warning: Could not open xsks_map (will use default)\n");
+		fprintf(stderr, "Warning: Could not open xsks_map: %s (errno=%d)\n", 
+		        strerror(errno), errno);
 	}
 	
 	/* Calculate UMEM size */
@@ -115,11 +121,14 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	xsk_cfg.xdp_flags = 0;
 	xsk_cfg.bind_flags |= XDP_COPY;  /* Force copy mode for compatibility */
 	
+	printf("Creating AF_XDP socket: %s queue %u (rx=%u, tx=%u, flags=0x%x)\n",
+	       ifname, queue_id, xsk_cfg.rx_size, xsk_cfg.tx_size, xsk_cfg.bind_flags);
+	
 	/* Create socket - will bind to existing XDP program */
 	ret = xsk_socket__create(&xsk_sock, ifname, queue_id, umem, &rx, &tx, &xsk_cfg);
 	if (ret) {
-		fprintf(stderr, "Failed to add socket for %s queue %u: %s\n",
-		        ifname, queue_id, strerror(-ret));
+		fprintf(stderr, "Failed to add socket for %s queue %u: %s (errno=%d, ret=%d)\n",
+		        ifname, queue_id, strerror(-ret), errno, ret);
 		xsk_umem__delete(umem);
 		munmap(umem_area, umem_size);
 		if (xsks_map_fd >= 0) close(xsks_map_fd);
