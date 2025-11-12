@@ -21,6 +21,7 @@
 
 #include <bpf/libbpf.h>
 #include <bpf/xsk.h>
+#include <linux/if_xdp.h> 
 
 #include "afxdp_socket.h"
 

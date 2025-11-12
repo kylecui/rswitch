@@ -34,6 +34,8 @@
  */
 
 #include <xdp/xsk.h>
+#include <bpf/bpf.h>  /* For bpf_obj_get, bpf_map_update_elem */
+#include <linux/if_xdp.h>  // 推荐加上：确保 ABI 完整
 
 int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
                       uint32_t queue_id, struct xsk_socket_config *config)
@@ -50,12 +52,24 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	size_t umem_size;
 	int ret;
 	int ifindex;
+	int xsks_map_fd = -1;
 	
 	/* Get interface index */
 	ifindex = if_nametoindex(ifname);
 	if (!ifindex) {
 		fprintf(stderr, "Interface %s not found\n", ifname);
 		return -ENODEV;
+	}
+	
+	/* Try to open xsks_map from BPF filesystem */
+	xsks_map_fd = bpf_obj_get("/sys/fs/bpf/rswitch/xsks_map");
+	if (xsks_map_fd < 0) {
+		/* Try without rswitch subdirectory */
+		xsks_map_fd = bpf_obj_get("/sys/fs/bpf/xsks_map");
+	}
+	
+	if (xsks_map_fd < 0) {
+		fprintf(stderr, "Warning: Could not open xsks_map (will use default)\n");
 	}
 	
 	/* Calculate UMEM size */
@@ -108,7 +122,22 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 		        ifname, queue_id, strerror(-ret));
 		xsk_umem__delete(umem);
 		munmap(umem_area, umem_size);
+		if (xsks_map_fd >= 0) close(xsks_map_fd);
 		return ret;
+	}
+	
+	/* Manually insert socket FD into xsks_map if we have it */
+	if (xsks_map_fd >= 0) {
+		int xsk_fd = xsk_socket__fd(xsk_sock);
+		ret = bpf_map_update_elem(xsks_map_fd, &queue_id, &xsk_fd, BPF_ANY);
+		if (ret < 0) {
+			fprintf(stderr, "Warning: Failed to update xsks_map[%u]: %s\n",
+			        queue_id, strerror(errno));
+		} else {
+			printf("Registered AF_XDP socket in xsks_map[%u] = fd %d\n",
+			       queue_id, xsk_fd);
+		}
+		close(xsks_map_fd);
 	}
 	
 	/* For now, return success but note we're using simplified struct */
