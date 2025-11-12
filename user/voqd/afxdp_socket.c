@@ -113,16 +113,16 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	/* Configure socket */
 	xsk_cfg.rx_size = config->rx_size ? config->rx_size : XSK_RING_CONS__DEFAULT_NUM_DESCS;
 	xsk_cfg.tx_size = config->tx_size ? config->tx_size : XSK_RING_PROD__DEFAULT_NUM_DESCS;
-	xsk_cfg.bind_flags = config->bind_flags;
 	
 	/* CRITICAL: XDP program already loaded by rswitch_loader
-	 * Use XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD to skip XDP program loading */
+	 * Use XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD to skip XDP program loading
+	 * bind_flags: 0 means use default (no special flags) */
 	xsk_cfg.libxdp_flags = XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
 	xsk_cfg.xdp_flags = 0;
-	xsk_cfg.bind_flags |= XDP_COPY;  /* Force copy mode for compatibility */
+	xsk_cfg.bind_flags = 0;  /* Start with no flags - let libxdp use defaults */
 	
-	printf("Creating AF_XDP socket: %s queue %u (rx=%u, tx=%u, flags=0x%x)\n",
-	       ifname, queue_id, xsk_cfg.rx_size, xsk_cfg.tx_size, xsk_cfg.bind_flags);
+	printf("Creating AF_XDP socket: %s queue %u (rx=%u, tx=%u, flags=0x%x, libxdp_flags=0x%x)\n",
+	       ifname, queue_id, xsk_cfg.rx_size, xsk_cfg.tx_size, xsk_cfg.bind_flags, xsk_cfg.libxdp_flags);
 	
 	/* Create socket - will bind to existing XDP program */
 	ret = xsk_socket__create(&xsk_sock, ifname, queue_id, umem, &rx, &tx, &xsk_cfg);
