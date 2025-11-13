@@ -1,0 +1,270 @@
+# rSwitch Profile: L3 Router with QoS and VOQd
+# 
+# 完整的 L3 路由器配置，集成 QoS 和 VOQd 功能：
+# - 支持 Queue 的单设备测试环境
+# - VLAN 处理（ingress + egress）
+# - ARP 被动学习
+# - ACL 访问控制
+# - IP 路由（支持 inter-VLAN routing）
+# - QoS 流量分类与优先级管理
+# - AF_XDP 重定向高优先级流量到用户态
+# - VOQd DRR 调度器（支持 ACTIVE/SHADOW/BYPASS 模式）
+# - MAC 学习作为 L2 fallback
+#
+# 测试目标：
+# 1. 验证 QoS 优先级分类（SSH=CRITICAL, HTTP=HIGH, FTP=LOW）
+# 2. 验证 VOQd 在 ACTIVE 模式下正确拦截高优先级流量
+# 3. 验证 AF_XDP 路径的性能和稳定性
+# 4. 验证 DRR 调度器的公平性
+#
+# Pipeline:
+#   Ingress: dispatcher → vlan → arp_learn → acl → route → l2learn → afxdp_redirect → lastcall
+#   Egress: devmap → egress_qos → egress_vlan → egress_final
+
+name: l3-qos-voqd-test
+description: "L3 router with QoS and VOQd for queue-enabled device testing"
+version: "1.0"
+
+# ============================================================================
+# 处理流水线配置
+# ============================================================================
+
+# Ingress pipeline (按照 stage 编号排序)
+ingress:
+  - vlan          # Stage 20: VLAN ingress 处理（tag removal/validation）
+  - arp_learn     # Stage 25: 被动 ARP 学习（从网络流量中学习 IP-MAC 映射）
+  - acl           # Stage 30: 访问控制列表（可选，用于 future policy enforcement）
+  - route         # Stage 50: IP 路由决策（inter-VLAN routing, L3 forwarding）
+  - l2learn       # Stage 80: MAC 学习（L2 fallback，当路由未命中时）
+  - afxdp_redirect # Stage 85: AF_XDP 重定向（高优先级流量到 VOQd）
+  - lastcall      # Stage 90: 最终转发决策（基于路由表或 MAC 表）
+
+# Egress pipeline (按照 stage 编号排序)
+egress:
+  - egress_qos    # Stage 170: QoS 优先级分类、限速、DSCP 标记
+  - egress_vlan   # Stage 180: VLAN egress 处理（tag addition/priority）
+  - egress_final  # Stage 190: 清理标志位，返回 XDP_PASS
+
+# ============================================================================
+# 全局设置
+# ============================================================================
+
+settings:
+  # MAC 学习配置
+  mac_learning: true              # 启用 MAC 地址学习（L2 fallback）
+  mac_aging_time: 300             # MAC 老化时间（秒）
+  
+  # VLAN 配置
+  vlan_enforcement: true          # 启用 VLAN 隔离
+  default_vlan: 1                 # 默认 VLAN ID
+  
+  # 转发行为
+  unknown_unicast_flood: true     # 未知单播是否泛洪
+  broadcast_flood: true           # 广播是否泛洪
+  multicast_flood: true           # 组播是否泛洪
+  
+  # 统计与事件
+  stats_enabled: true             # 启用统计计数
+  ringbuf_enabled: true           # 启用 ringbuf 事件通知
+  
+  # 调试模式
+  debug: false                    # 生产环境建议关闭（避免大量 bpf_printk）
+
+# ============================================================================
+# VOQd 配置（Virtual Output Queue Daemon）
+# ============================================================================
+
+voqd_config:
+  # 基本配置
+  enabled: true                   # 启用 VOQd 自动启动
+  mode: active                    # 运行模式：
+                                  #   - bypass: 禁用 VOQd，所有流量走快速路径
+                                  #   - shadow: VOQd 运行但不拦截，仅观察和统计
+                                  #   - active: VOQd 拦截高优先级流量并调度
+  
+  # 端口配置
+  num_ports: 3                    # 测试设备的端口数量（enp3s0, enp4s0, enp5s0）
+  
+  # 优先级拦截配置
+  prio_mask: 0x0C                 # 优先级掩码（位图）：
+                                  #   Bit 0 (0x01): LOW priority
+                                  #   Bit 1 (0x02): NORMAL priority  
+                                  #   Bit 2 (0x04): HIGH priority
+                                  #   Bit 3 (0x08): CRITICAL priority
+                                  # 0x0C = 0b1100 = HIGH + CRITICAL
+                                  # 含义：拦截 HIGH 和 CRITICAL 优先级的流量到 VOQd
+  
+  # AF_XDP 配置
+  enable_afxdp: true              # 启用 AF_XDP sockets（ACTIVE 模式必需）
+  zero_copy: false                # 零拷贝模式（需要驱动支持，测试建议 false）
+  
+  # Ring 配置（性能调优）
+  rx_ring_size: 2048              # AF_XDP RX ring 大小（2的幂次）
+  tx_ring_size: 2048              # AF_XDP TX ring 大小（2的幂次）
+  frame_size: 2048                # 帧大小（通常 2048 或 4096）
+  
+  # 调度器配置
+  enable_scheduler: true          # 启用 DRR/WFQ 调度器
+  batch_size: 64                  # 批处理大小（每次处理多少个包）
+  poll_timeout_ms: 100            # 轮询超时（毫秒）
+  
+  # CPU 亲和性（仅控制 VOQd 用户态进程）
+  cpu_affinity: -1                # VOQd 进程绑定的 CPU 核心（-1 = 不绑定，让系统调度）
+                                  # 生产环境可以绑定到专用核心，如：cpu_affinity: 2
+                                  # 注意：这只控制用户态进程，NIC IRQ 亲和性需要额外配置：
+                                  #   方法 1: 自动检测（loader 会调用 nic_queue_setup_isolation）
+                                  #   方法 2: 手动配置（运行 rswitch/scripts/setup_nic_queues.sh）
+  
+  # 性能模式
+  busy_poll: false                # 忙轮询模式（高 CPU 使用率，低延迟）
+                                  # 测试建议 false，生产环境根据需求调整
+
+# ============================================================================
+# 端口配置
+# ============================================================================
+
+ports:
+  # Port 0: enp3s0 - ACCESS 端口，VLAN 1（默认管理网络）
+  - interface: enp3s0
+    enabled: true
+    management: managed           # 受管理的端口（响应控制平面命令）
+    vlan_mode: access             # ACCESS 模式：只属于一个 VLAN，收发不带标签
+    access_vlan: 1                # 所属 VLAN ID
+    mac_learning: true            # 启用 MAC 学习
+    default_priority: 0           # 默认优先级（0=NORMAL，用于未分类流量）
+    
+  # Port 1: enp4s0 - TRUNK 端口，允许 VLAN 1, 10, 20（多 VLAN trunk）
+  - interface: enp4s0
+    enabled: true
+    management: managed
+    vlan_mode: trunk              # TRUNK 模式：允许多个 VLAN，带标签转发
+    native_vlan: 1                # Native VLAN（该 VLAN 的流量不带标签）
+    allowed_vlans: [1, 10, 20]    # 允许通过的 VLAN 列表
+    mac_learning: true
+    default_priority: 0
+    
+  # Port 2: enp5s0 - ACCESS 端口，VLAN 10（用户网络）
+  - interface: enp5s0
+    enabled: true
+    management: managed
+    vlan_mode: access
+    access_vlan: 10               # 所属 VLAN 10
+    mac_learning: true
+    default_priority: 0
+
+# ============================================================================
+# VLAN 数据库配置
+# ============================================================================
+
+vlans:
+  # VLAN 1: 默认管理 VLAN
+  - vlan_id: 1
+    name: "default-management"
+    description: "Default management VLAN"
+    tagged_ports: []              # 不需要打标签的端口（native VLAN 在 trunk 上）
+    untagged_ports: [enp3s0]      # 该 VLAN 在这些端口上不打标签（ACCESS 模式）
+    
+  # VLAN 10: 用户网络 VLAN
+  - vlan_id: 10
+    name: "user-network"
+    description: "User network VLAN for testing"
+    tagged_ports: [enp4s0]        # 该 VLAN 在 enp4s0 (TRUNK) 上打标签
+    untagged_ports: [enp5s0]      # 该 VLAN 在 enp5s0 (ACCESS) 上不打标签
+    
+  # VLAN 20: 访客网络 VLAN
+  - vlan_id: 20
+    name: "guest-network"
+    description: "Guest network VLAN"
+    tagged_ports: [enp4s0]        # 该 VLAN 在 enp4s0 (TRUNK) 上打标签
+    untagged_ports: []            # 当前没有 ACCESS 端口属于该 VLAN
+
+# ============================================================================
+# 测试说明
+# ============================================================================
+
+# 1. 加载配置：
+#    sudo ./build/rswitch_loader --profile etc/profiles/l3-qos-voqd-test.yaml \
+#                                 --ifaces enp3s0,enp4s0,enp5s0
+#
+# 2. 验证 VOQd 启动：
+#    ps aux | grep rswitch-voqd
+#    sudo ./build/rsvoqctl --show
+#
+# 3. 检查 QoS 统计：
+#    sudo ./build/rsqosctl --stats
+#
+# 4. 观察 BPF 事件：
+#    sudo ./build/rswitch-events
+#
+# 5. 监控遥测数据：
+#    sudo ./build/rswitch-telemetry --port 9090
+#    curl http://localhost:9090/metrics
+#
+# 6. 测试流量优先级：
+#    # 生成不同优先级的流量
+#    ssh user@10.0.10.2          # CRITICAL priority (SSH, port 22)
+#    curl http://10.0.10.2       # HIGH priority (HTTP, port 80)
+#    ftp 10.0.10.2               # LOW priority (FTP, port 21)
+#    ping 10.0.10.2              # HIGH priority (ICMP)
+#
+# 7. 观察 VOQd 拦截（应该只拦截 HIGH 和 CRITICAL）：
+#    sudo cat /sys/kernel/debug/tracing/trace_pipe | grep -E "QoS|afxdp|VOQd"
+#
+# 8. 性能测试：
+#    iperf3 -c 10.0.10.2 -p 5201  # 普通流量（走 XDP 快速路径）
+#    iperf3 -c 10.0.10.2 -p 22    # 高优先级（走 VOQd AF_XDP 路径，如果端口匹配）
+#
+# 9. 切换 VOQd 模式（运行时）：
+#    sudo ./build/rsvoqctl --mode shadow   # 切换到 SHADOW 模式（观察不拦截）
+#    sudo ./build/rsvoqctl --mode active   # 切换回 ACTIVE 模式
+#    sudo ./build/rsvoqctl --mode bypass   # 切换到 BYPASS 模式（完全禁用）
+#
+# 10. 调试技巧：
+#     # 查看 BPF maps 状态
+#     sudo bpftool map dump name voqd_state_map
+#     sudo bpftool map dump name qos_stats_map
+#     
+#     # 查看 egress 流水线
+#     sudo bpftool prog show | grep egress
+#     
+#     # 查看 tail-call 链
+#     sudo bpftool map dump name rs_prog_chain
+
+# ============================================================================
+# 预期行为
+# ============================================================================
+
+# 1. VLAN 1 (enp3s0) 和 VLAN 10 (enp5s0) 之间应该能够路由（通过 route 模块）
+# 2. SSH 流量（port 22）应该被分类为 CRITICAL，并且被 VOQd 拦截处理
+# 3. HTTP 流量（port 80）应该被分类为 HIGH，并且被 VOQd 拦截处理
+# 4. FTP 数据流量（port 20/21）应该被分类为 LOW，走快速路径（不被 VOQd 拦截）
+# 5. ICMP ping 应该被分类为 HIGH，并且被 VOQd 拦截处理
+# 6. 普通 TCP/UDP 流量应该被分类为 NORMAL，走快速路径
+# 7. QoS 统计应该显示每个优先级的包数和字节数
+# 8. VOQd 统计应该显示拦截的包数和调度延迟
+# 9. 在 SHADOW 模式下，VOQd 应该只记录不拦截
+# 10. Trunk 端口 enp4s0 应该正确处理 VLAN 标签（VLAN 10, 20 带标签，VLAN 1 不带标签）
+
+# ============================================================================
+# 故障排查
+# ============================================================================
+
+# 问题 1: VOQd 启动失败
+# 原因：AF_XDP 权限不足或网卡驱动不支持
+# 解决：确保以 root 运行，检查驱动支持 `ethtool -i enp3s0`
+#
+# 问题 2: 高优先级流量未被拦截
+# 原因：prio_mask 配置错误或 afxdp_redirect 模块未加载
+# 解决：检查 `sudo bpftool map dump name voqd_state_map` 中的 prio_mask 值
+#
+# 问题 3: VLAN 隔离失效
+# 原因：egress_vlan 模块未加载或配置错误
+# 解决：确认 egress pipeline 包含 egress_vlan，检查 VLAN membership
+#
+# 问题 4: 性能下降
+# 原因：VOQd 拦截了太多流量或 busy_poll=true 导致 CPU 占用高
+# 解决：调整 prio_mask（减少拦截），或设置 busy_poll=false
+#
+# 问题 5: AF_XDP ring 满导致丢包
+# 原因：rx_ring_size/tx_ring_size 太小
+# 解决：增加 ring_size 到 4096 或 8192（需要重启 loader）
