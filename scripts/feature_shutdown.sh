@@ -73,6 +73,9 @@ for dev in "${IFACES[@]}"; do
         continue
     fi
 
+    echo "    启动网卡 ${dev}："
+    ip link set "$dev" up
+
     echo "    当前 offload 状态："
     ethtool -k "$dev" | sed 's/^/      /'
 
