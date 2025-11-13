@@ -73,6 +73,7 @@ static __always_inline int should_forward(struct rs_ctx *ctx)
 SEC("xdp")
 int lastcall_forward(struct xdp_md *xdp_ctx)
 {
+    long ret = XDP_DROP;
     void *data_end = (void *)(long)xdp_ctx->data_end;
     void *data = (void *)(long)xdp_ctx->data;
     __u32 pkt_len = data_end - data;
@@ -112,7 +113,11 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
         // - Handle VLAN tag manipulation
         // - Update TX statistics
         // - Clear parsed flag after processing completes
-        return bpf_redirect_map(&rs_xdp_devmap, egress_ifindex, 0);
+        // return bpf_redirect_map(&rs_xdp_devmap, egress_ifindex, 0);
+        ret = bpf_redirect_map(&rs_xdp_devmap, egress_ifindex, 0);
+        rs_debug("Lastcall: Redirected to port %d, ret=%ld", egress_ifindex, ret);
+
+        return ret;
     }
     
     // Case 2: Flood - broadcast to all ports, egress hook will filter VLAN members
@@ -143,7 +148,10 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
     // 1. bpf_devmap_val.bpf_prog.fd is set correctly in populate_devmaps()
     // 2. Kernel version supports devmap egress with DEVMAP_HASH type
     // 3. Try using regular DEVMAP instead of DEVMAP_HASH
-    return bpf_redirect_map(&rs_xdp_devmap, 0, BPF_F_BROADCAST | BPF_F_EXCLUDE_INGRESS);
+    // return bpf_redirect_map(&rs_xdp_devmap, 0, BPF_F_BROADCAST | BPF_F_EXCLUDE_INGRESS);
+    ret = bpf_redirect_map(&rs_xdp_devmap, 0, BPF_F_BROADCAST | BPF_F_EXCLUDE_INGRESS);
+    rs_debug("Lastcall: Broadcasted packet, ret=%ld", ret);
+    return ret;
     
     // Note: We cannot update individual TX stats for broadcast here
     // as we don't know which ports will actually receive the packet.
