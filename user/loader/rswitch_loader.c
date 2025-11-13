@@ -436,8 +436,12 @@ static int get_pinned_maps(struct loader_ctx *ctx)
     /* Port config map - may or may not be pinned */
     snprintf(path, sizeof(path), "%s/rs_port_config_map", BPF_PIN_PATH);
     ctx->rs_port_config_map_fd = bpf_obj_get(path);
-    
+
+#ifdef LASTCALL_MANUAL_BROADCAST
     snprintf(path, sizeof(path), "%s/rs_devmap", BPF_PIN_PATH);
+#else    
+    snprintf(path, sizeof(path), "%s/rs_xdp_devmap", BPF_PIN_PATH);    
+#endif
     ctx->rs_devmap_fd = bpf_obj_get(path);
     
     snprintf(path, sizeof(path), "%s/rs_stats_map", BPF_PIN_PATH);
@@ -473,7 +477,11 @@ static int get_pinned_maps(struct loader_ctx *ctx)
     }
     
     if (ctx->rs_devmap_fd < 0) {
+#ifdef LASTCALL_MANUAL_BROADCAST    
         struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_devmap");
+#else    
+        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_xdp_devmap");
+#endif  
         if (map) {
             ctx->rs_devmap_fd = bpf_map__fd(map);
         }
