@@ -192,6 +192,7 @@ struct {
     __type(key, __u32);
     __type(value, __u64);
     __uint(max_entries, QOS_STAT_MAX);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } qos_stats_map SEC(".maps");
 
 //
