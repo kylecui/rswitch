@@ -369,6 +369,8 @@ skip_vlan_check:
     
     if (rctx->call_depth < 32) {
         rctx->call_depth++;
+        /* Set next_prog_id so egress modules know their slot for chain traversal */
+        rctx->next_prog_id = *first_egress_prog;
         bpf_tail_call(ctx, &rs_progs, *first_egress_prog);
     }
     

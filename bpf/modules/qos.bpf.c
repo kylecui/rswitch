@@ -383,13 +383,13 @@ int qos_process(struct xdp_md *xdp_ctx)
     struct qos_config_ext *cfg = bpf_map_lookup_elem(&qos_config_ext_map, &cfg_key);
     if (!cfg || !(cfg->flags & QOS_FLAG_ENABLED)) {
         rs_debug("QoS: disabled, passing through");
-        RS_TAIL_CALL_EGRESS(xdp_ctx, ctx, 170);  // Continue to next egress module
+        RS_TAIL_CALL_EGRESS(xdp_ctx, ctx);  // Continue to next egress module
         return XDP_DROP;
     }
     
     /* Only process IPv4 for now */
     if (ctx->layers.eth_proto != ETH_P_IP) {
-        RS_TAIL_CALL_EGRESS(xdp_ctx, ctx, 170);
+        RS_TAIL_CALL_EGRESS(xdp_ctx, ctx);
         return XDP_DROP;
     }
     
@@ -399,7 +399,7 @@ int qos_process(struct xdp_md *xdp_ctx)
     /* Get IP header for DSCP manipulation */
     struct iphdr *iph = data + (ctx->layers.l3_offset & RS_L3_OFFSET_MASK);
     if ((void *)(iph + 1) > data_end) {
-        RS_TAIL_CALL_EGRESS(xdp_ctx, ctx, 170);
+        RS_TAIL_CALL_EGRESS(xdp_ctx, ctx);
         return XDP_DROP;
     }
     
@@ -487,6 +487,6 @@ int qos_process(struct xdp_md *xdp_ctx)
     rs_debug("QoS: processed priority=%u egress=%u", priority, ctx->egress_ifindex);
     
     /* Continue to next egress module */
-    RS_TAIL_CALL_EGRESS(xdp_ctx, ctx, 170);
+    RS_TAIL_CALL_EGRESS(xdp_ctx, ctx);
     return XDP_DROP;
 }

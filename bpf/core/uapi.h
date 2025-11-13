@@ -271,29 +271,35 @@ struct {
 })
 
 /* Tail-call for egress pipeline (reads next prog_id from prog_chain map)
- * Usage: RS_TAIL_CALL_EGRESS(xdp_ctx, rs_ctx_ptr, my_prog_id)
+ * Usage: RS_TAIL_CALL_EGRESS(xdp_ctx, rs_ctx_ptr)
  * 
- * Egress modules run concurrently during flooding - each must tail-call to the
- * same next stage. We look up the next prog_id from rs_prog_chain map (read-only,
- * no race condition).
+ * CRITICAL: Unlike ingress, egress modules must use rs_ctx->next_prog_id to track
+ * their current slot (255, 254, 253...) because they run concurrently during flooding.
  * 
- * Example with 3 egress modules (qos=4, mirror=5, final=6):
- *   Loader configures: prog_chain[4]=5, prog_chain[5]=6, prog_chain[6]=0
+ * Flow:
+ * 1. egress.bpf.c (devmap hook): Sets rs_ctx->next_prog_id = prog_chain[0] (e.g., 255)
+ * 2. First egress module (qos): Uses next_prog_id=255 to lookup prog_chain[255]→254
+ * 3. Second egress module (egress_final): Uses next_prog_id=254, finds prog_chain[254]=0 (end)
  * 
- * During flooding (concurrent execution):
- *   Core 1 (port 5): At prog 4 → Read prog_chain[4]=5 → Call prog 5 ✓
- *   Core 2 (port 6): At prog 4 → Read prog_chain[4]=5 → Call prog 5 ✓
- *   Core 3 (port 7): At prog 4 → Read prog_chain[4]=5 → Call prog 5 ✓
+ * Example with 2 egress modules (qos at slot 255, egress_final at slot 254):
+ *   Loader configures: prog_chain[0]=255, prog_chain[255]=254, prog_chain[254]=0
  * 
- * All cores read the same value (no writes, no race).
+ * Execution:
+ *   egress.bpf.c: Sets next_prog_id=255, tail-calls rs_progs[255] (qos)
+ *   qos: Reads prog_chain[255]=254, sets next_prog_id=254, tail-calls rs_progs[254]
+ *   egress_final: Reads prog_chain[254]=0 (end), returns XDP_PASS
+ * 
+ * During flooding (concurrent):
+ *   All cores use their own rs_ctx (per-CPU), no race condition.
  */
-#define RS_TAIL_CALL_EGRESS(xdp_ctx_ptr, rs_ctx_ptr, my_prog_id) ({ \
+#define RS_TAIL_CALL_EGRESS(xdp_ctx_ptr, rs_ctx_ptr) ({ \
     if ((rs_ctx_ptr)->call_depth < 32) { \
         (rs_ctx_ptr)->call_depth++; \
-        __u32 __key = (my_prog_id); \
-        __u32 *__next = bpf_map_lookup_elem(&rs_prog_chain, &__key); \
-        if (__next && *__next != 0) { \
-            bpf_tail_call((xdp_ctx_ptr), &rs_progs, *__next); \
+        __u32 __current_slot = (rs_ctx_ptr)->next_prog_id; \
+        __u32 *__next_slot = bpf_map_lookup_elem(&rs_prog_chain, &__current_slot); \
+        if (__next_slot && *__next_slot != 0) { \
+            (rs_ctx_ptr)->next_prog_id = *__next_slot; \
+            bpf_tail_call((xdp_ctx_ptr), &rs_progs, *__next_slot); \
         } \
     } \
 })
