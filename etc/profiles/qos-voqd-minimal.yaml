@@ -13,7 +13,7 @@ ingress:
   - lastcall
 
 egress:
-  - qos
+  - egress_qos
   - egress
 
 # 基本设置（必需）

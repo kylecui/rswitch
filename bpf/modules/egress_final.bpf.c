@@ -33,7 +33,7 @@ RS_DECLARE_MODULE(
 );
 
 /* Egress final - complete packet processing and transmit */
-SEC("xdp")
+SEC("xdp/devmap")
 int egress_final(struct xdp_md *xdp_ctx)
 {
     __u32 key = 0;

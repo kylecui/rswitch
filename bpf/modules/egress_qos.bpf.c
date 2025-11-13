@@ -36,11 +36,11 @@ char _license[] SEC("license") = "GPL";
 
 // Module metadata
 RS_DECLARE_MODULE(
-    "qos",                          // Module name
+    "egress_qos",                   // Module name
     RS_HOOK_XDP_EGRESS,            // Hook point: egress processing
     170,                           // Stage (before egress_final at 190)
     RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_MODIFIES_PACKET | RS_FLAG_CREATES_EVENTS,
-    "QoS - Priority classification and congestion control"
+    "Egress QoS - Priority classification and congestion control"
 );
 
 //
@@ -367,7 +367,7 @@ static __always_inline __u8 classify_packet_priority(struct xdp_md *xdp_ctx, str
 // Main QoS Processing
 //
 
-SEC("xdp")
+SEC("xdp/devmap")
 int qos_process(struct xdp_md *xdp_ctx)
 {
     struct rs_ctx *ctx = RS_GET_CTX();

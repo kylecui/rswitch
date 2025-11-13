@@ -22,7 +22,7 @@ ingress:
 
 # Egress pipeline (sorted by stage number)
 egress:
-  - qos              # Stage 170: QoS classification and rate limiting
+  - egress_qos       # Stage 170: QoS classification and rate limiting
   - egress_final     # Stage 190: Final egress processing
 
 # Global settings

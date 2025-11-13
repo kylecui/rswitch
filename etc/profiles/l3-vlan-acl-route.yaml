@@ -26,7 +26,7 @@ ingress:
 
 # Egress pipeline
 egress:
-  - qos        # Stage 170: Quality of Service (priority classification, rate limiting)
+  - egress_qos # Stage 170: Quality of Service (priority classification, rate limiting)
   - egress     # Devmap egress hook with VLAN tagging
 
 # Global settings
