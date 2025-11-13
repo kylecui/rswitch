@@ -7,14 +7,15 @@ version: "1.0"
 
 # 处理流水线（必需）
 ingress:
-  - vlan
+  - vlan # VLAN 处理， must be paired with egress_vlan
   - l2learn
   - afxdp_redirect
   - lastcall
 
 egress:
   - egress_qos
-  - egress
+  - egress_vlan
+  - egress_final
 
 # 基本设置（必需）
 settings:
