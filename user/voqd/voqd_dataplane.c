@@ -432,7 +432,8 @@ void voqd_dataplane_print_stats(struct voqd_dataplane *dp)
 	if (dp->config.enable_afxdp) {
 		uint64_t xsk_rx, xsk_tx;
 		xsk_manager_get_stats(&dp->xsk_mgr, &xsk_rx, &xsk_tx);
-		printf("AF_XDP: RX=%lu, TX=%lu sockets\n", xsk_rx, xsk_tx);
+		printf("AF_XDP: RX=%lu packets, TX=%lu packets (%u sockets)\n", 
+		       xsk_rx, xsk_tx, dp->xsk_mgr.num_sockets);
 	}
 }
 

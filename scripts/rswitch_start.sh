@@ -132,7 +132,7 @@ log "[4/5] Configuring QoS priorities..."
 sleep 2
 
 # Check if QoS maps are available
-if ./build/rsqosctl --stats >> "$LOG_FILE" 2>&1; then
+if ./build/rsqosctl stats >> "$LOG_FILE" 2>&1; then
     log "  QoS maps available"
     
     # Uncomment these lines if you want DHCP to work (not be intercepted by VOQd)
@@ -148,14 +148,25 @@ fi
 # Step 5: Verify VOQd status
 log "[5/5] Verifying VOQd status..."
 
-if pgrep -x "rswitch-voqd" > /dev/null; then
-    VOQD_PID=$(pgrep -x "rswitch-voqd")
-    log "  ✓ VOQd running (PID: $VOQD_PID)"
-else
-    warn "  VOQd not running (check /tmp/rswitch-voqd.log)"
+# Wait up to 10 seconds for VOQd to start (loader starts it asynchronously)
+VOQD_TIMEOUT=10
+VOQD_FOUND=0
+for i in $(seq 1 $VOQD_TIMEOUT); do
+    if pgrep -x "rswitch-voqd" > /dev/null; then
+        VOQD_PID=$(pgrep -x "rswitch-voqd")
+        log "  ✓ VOQd running (PID: $VOQD_PID)"
+        VOQD_FOUND=1
+        break
+    fi
+    sleep 1
+done
+
+if [ $VOQD_FOUND -eq 0 ]; then
+    warn "  VOQd not running after ${VOQD_TIMEOUT}s (check /tmp/rswitch-voqd.log)"
+    warn "  This is non-critical - rSwitch will operate in fast-path mode only"
     if [ -f "/tmp/rswitch-voqd.log" ]; then
-        warn "  VOQd log:"
-        tail -5 /tmp/rswitch-voqd.log | while read line; do
+        warn "  Recent VOQd log:"
+        tail -10 /tmp/rswitch-voqd.log | while read line; do
             warn "    $line"
         done
     fi

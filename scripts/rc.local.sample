@@ -9,6 +9,12 @@
 sleep 5
 
 # Start rSwitch
-/home/jzzn/dev/rSwitch/tools/scripts/jzzn/rswitch_start.sh
+/home/jzzn/dev/rswitch/scripts/rswitch_start.sh
+
+sleep 5
+
+/home/jzzn/dev/rswitch/build/rsqosctl add-class --proto tcp --dport 22 --priority normal
+/home/jzzn/dev/rswitch/build/rsqosctl add-class --proto udp --dport 67 --priority normal
+/home/jzzn/dev/rswitch/build/rsqosctl add-class --proto udp --dport 68 --priority normal
 
 exit 0
