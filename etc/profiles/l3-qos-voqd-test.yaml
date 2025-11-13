@@ -166,7 +166,7 @@ ports:
     enabled: true
     management: managed
     vlan_mode: access
-    access_vlan: 10               # 所属 VLAN 10
+    access_vlan: 1               # 所属 VLAN 10
     mac_learning: true
     default_priority: 0
 
@@ -179,15 +179,15 @@ vlans:
   - vlan_id: 1
     name: "default-management"
     description: "Default management VLAN"
-    tagged_ports: []              # 不需要打标签的端口（native VLAN 在 trunk 上）
-    untagged_ports: [enp3s0]      # 该 VLAN 在这些端口上不打标签（ACCESS 模式）
+    tagged_ports: [enp4s0]              # 不需要打标签的端口（native VLAN 在 trunk 上）
+    untagged_ports: [enp3s0, enp5s0]      # 该 VLAN 在这些端口上不打标签（ACCESS 模式）
     
   # VLAN 10: 用户网络 VLAN
   - vlan_id: 10
     name: "user-network"
     description: "User network VLAN for testing"
     tagged_ports: [enp4s0]        # 该 VLAN 在 enp4s0 (TRUNK) 上打标签
-    untagged_ports: [enp5s0]      # 该 VLAN 在 enp5s0 (ACCESS) 上不打标签
+    untagged_ports: []      # 该 VLAN 在 enp5s0 (ACCESS) 上不打标签
     
   # VLAN 20: 访客网络 VLAN
   - vlan_id: 20
