@@ -111,6 +111,8 @@ static __always_inline int learn_source_mac(struct rs_ctx *ctx,
     existing = bpf_map_lookup_elem(&rs_mac_table, &key);
     
     if (existing) {
+        
+        rs_debug("L2learn: learn source mac, key existing, egress port: %u", existing->ifindex);
         // Entry exists - check if port changed (MAC moved)
         if (existing->ifindex != ctx->ifindex) {
             rs_debug("MAC %02x:%02x:%02x:%02x:%02x:%02x moved: port %d → %d",
