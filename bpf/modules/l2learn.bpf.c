@@ -210,6 +210,8 @@ int l2learn_ingress(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
     
+    rs_debug("target port: %u", ctx->egress_ifindex);
+
     /* Skip L2 forwarding lookup if routing already made decision
      * 
      * If Route module (or any other L3 module) has already set egress_ifindex,
