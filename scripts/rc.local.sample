@@ -1,0 +1,14 @@
+#!/bin/bash
+# /etc/rc.local - Run at system boot
+# 
+# This should be linked to /etc/rc.local:
+#   sudo ln -sf /home/jzzn/dev/rSwitch/tools/scripts/jzzn/rc.local.new /etc/rc.local
+#   sudo chmod +x /etc/rc.local
+
+# Wait for network to be ready
+sleep 5
+
+# Start rSwitch
+/home/jzzn/dev/rSwitch/tools/scripts/jzzn/rswitch_start.sh
+
+exit 0
