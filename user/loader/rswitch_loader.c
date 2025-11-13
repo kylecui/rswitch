@@ -662,18 +662,26 @@ static int build_prog_array(struct loader_ctx *ctx)
             first_egress_prog_idx = egress_slot;  /* 255 for first egress module */
         }
         
-        /* Build chain: find next egress module */
+        /* Build chain: find next egress module and calculate its slot
+         * Next module will be at (current_slot - 1) because we're counting down
+         */
         int next_egress_slot = -1;
+        int next_egress_count = 0;
+        
         for (int j = i + 1; j < ctx->num_modules; j++) {
             if (ctx->modules[j].desc.hook == RS_HOOK_XDP_EGRESS && 
                 ctx->modules[j].prog_fd >= 0) {
-                next_egress_slot = egress_slot - 1;  /* Decrement for next egress */
-                break;
+                next_egress_count++;
+                if (next_egress_count == 1) {
+                    /* Found immediate next egress module - it will be at slot-1 */
+                    next_egress_slot = egress_slot - 1;
+                    break;
+                }
             }
         }
         
         if (next_egress_slot >= 0) {
-            /* Not last egress module */
+            /* Not last egress module - link to next */
             err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &egress_slot, &next_egress_slot, BPF_ANY);
             if (err) {
                 fprintf(stderr, "Failed to set prog_chain[%u]=%u: %s\n",
@@ -688,7 +696,7 @@ static int build_prog_array(struct loader_ctx *ctx)
                    egress_slot, mod->stage, mod->name, mod->prog_fd);
         }
         
-        egress_slot--;  /* Move to next lower slot */
+        egress_slot--;  /* Move to next lower slot for next module */
         egress_count++;
     }
     
