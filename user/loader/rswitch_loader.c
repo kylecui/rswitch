@@ -31,6 +31,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/types.h>
 #include <dirent.h>
 
 #include <bpf/libbpf.h>
@@ -154,11 +155,24 @@ struct loader_ctx {
 };
 
 static volatile int keep_running = 1;
+static volatile int shutdown_in_progress = 0;
 
 /* Signal handler for graceful shutdown */
 static void sig_handler(int sig)
 {
+    if (shutdown_in_progress) {
+        /* Already shutting down, ignore duplicate signals */
+        return;
+    }
+    
+    shutdown_in_progress = 1;
     keep_running = 0;
+    
+    /* Print signal info for debugging */
+    const char *sig_name = (sig == SIGINT) ? "SIGINT" : 
+                           (sig == SIGTERM) ? "SIGTERM" : 
+                           (sig == SIGHUP) ? "SIGHUP" : "Unknown";
+    fprintf(stderr, "\n\nReceived %s, initiating shutdown...\n", sig_name);
 }
 
 /* Set RLIMIT_MEMLOCK to unlimited for BPF operations */
@@ -1353,14 +1367,28 @@ static void detach_xdp(struct loader_ctx *ctx)
     for (i = 0; i < ctx->num_interfaces; i++) {
         __u32 ifindex = ctx->interfaces[i];
         char ifname[IF_NAMESIZE];
+        char cmd[256];
         
         if_indextoname(ifindex, ifname);
+        
+        /* Detach XDP program */
         if (bpf_xdp_detach(ifindex, ctx->xdp_flags, NULL) < 0) {
             fprintf(stderr, "  Warning: Failed to detach from %s (ifindex=%u): %s\n",
                     ifname, ifindex, strerror(errno));
+            
+            /* Try force detach as fallback */
+            snprintf(cmd, sizeof(cmd), "ip link set %s xdp off 2>/dev/null", ifname);
+            if (system(cmd) == 0) {
+                printf("  Force detached from %s using ip command\n", ifname);
+            }
         } else {
-            printf("  Detached from %s (ifindex=%u)\n", ifname, ifindex);
+            printf("  ✓ Detached from %s (ifindex=%u)\n", ifname, ifindex);
         }
+        
+        /* Bring interface back up */
+        snprintf(cmd, sizeof(cmd), "ip link set %s up 2>/dev/null", ifname);
+        system(cmd);
+        printf("  ✓ Restored %s to UP state\n", ifname);
     }
 }
 
@@ -1467,15 +1495,15 @@ static void cleanup(struct loader_ctx *ctx)
         
         /* Send SIGTERM for graceful shutdown */
         if (kill(ctx->voqd_pid, SIGTERM) == 0) {
-            /* Wait up to 5 seconds for graceful shutdown */
-            int timeout = 5;
+            /* Wait up to 2 seconds for graceful shutdown (reduced from 5s) */
+            int timeout = 20;  /* 20 * 100ms = 2 seconds */
             while (timeout > 0) {
                 int status;
                 if (waitpid(ctx->voqd_pid, &status, WNOHANG) != 0) {
                     printf("  ✓ VOQd stopped gracefully\n");
                     break;
                 }
-                sleep(1);
+                usleep(100000);  /* 100ms */
                 timeout--;
             }
             
@@ -1494,10 +1522,31 @@ static void cleanup(struct loader_ctx *ctx)
         ctx->voqd_enabled = 0;
     }
     
-    /* Step 1: Detach XDP programs from all interfaces */
+    /* Step 1: Flush TX queues to prevent netdev watchdog timeout
+     * CRITICAL: Do this BEFORE detaching XDP to allow pending packets to drain */
+    printf("\nFlushing TX queues...\n");
+    for (i = 0; i < ctx->num_interfaces; i++) {
+        char ifname[IF_NAMESIZE];
+        if_indextoname(ctx->interfaces[i], ifname);
+        
+        /* Bring interface down briefly to flush queues */
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "ip link set %s down 2>/dev/null", ifname);
+        system(cmd);
+        printf("  Flushed %s\n", ifname);
+    }
+    
+    /* Small delay to allow kernel to process queue flush */
+    usleep(100000);  /* 100ms */
+    
+    /* Step 2: Detach XDP programs from all interfaces
+     * IMPORTANT: Do this while maps are still valid, so XDP programs can clean up */
     detach_xdp(ctx);
     
-    /* Step 2: Close map file descriptors */
+    /* Step 3: Brief delay to ensure XDP fully detached before closing maps */
+    usleep(50000);  /* 50ms */
+    
+    /* Step 4: Close map file descriptors */
     close_map_fds(ctx);
     
     /* Step 3: Close module BPF objects */
@@ -1699,9 +1748,10 @@ int main(int argc, char **argv)
     printf("Interfaces: %d\n", ctx.num_interfaces);
     printf("\n");
     
-    /* Setup */
+    /* Setup signal handlers for graceful shutdown */
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
+    signal(SIGHUP, sig_handler);
     
     if (bump_memlock_rlimit()) {
         return 1;
@@ -1791,10 +1841,32 @@ int main(int argc, char **argv)
     }
     
     printf("\nrSwitch running. Press Ctrl+C to exit.\n");
+    printf("Attached to %d interface%s\n", ctx.num_interfaces, ctx.num_interfaces > 1 ? "s" : "");
+    if (ctx.voqd_enabled) {
+        printf("VOQd enabled (PID: %d)\n", ctx.voqd_pid);
+    }
+    printf("\n");
     
-    /* Main loop */
+    /* Main loop - use shorter sleep for faster shutdown response */
+    int loop_count = 0;
     while (keep_running) {
-        sleep(1);
+        usleep(100000);  /* 100ms - much faster response than sleep(1) */
+        
+        /* Periodic health check every 10 seconds */
+        if (++loop_count >= 100) {  /* 100 * 100ms = 10 seconds */
+            loop_count = 0;
+            
+            /* Check if VOQd is still alive */
+            if (ctx.voqd_enabled && ctx.voqd_pid > 0) {
+                int status;
+                pid_t result = waitpid(ctx.voqd_pid, &status, WNOHANG);
+                if (result != 0) {
+                    fprintf(stderr, "Warning: VOQd process died unexpectedly\n");
+                    ctx.voqd_pid = 0;
+                    ctx.voqd_enabled = 0;
+                }
+            }
+        }
     }
     
     /* Cleanup */
