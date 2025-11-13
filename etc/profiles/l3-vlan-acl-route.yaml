@@ -119,7 +119,7 @@ qos:
 
 # Port configurations (same as l2-vlan-lab)
 ports:
-  - interface: ens161
+  - interface: ens34
     enabled: true
     management: managed
     vlan_mode: trunk
@@ -128,7 +128,7 @@ ports:
     mac_learning: true
     default_priority: 0
     
-  - interface: ens192
+  - interface: ens35
     enabled: true
     management: managed
     vlan_mode: access
@@ -136,7 +136,7 @@ ports:
     mac_learning: true
     default_priority: 0
     
-  - interface: ens224
+  - interface: ens36
     enabled: true
     management: managed
     vlan_mode: access
@@ -144,7 +144,7 @@ ports:
     mac_learning: true
     default_priority: 0
     
-  - interface: ens256
+  - interface: ens37
     enabled: true
     management: managed
     vlan_mode: access
@@ -156,20 +156,20 @@ ports:
 vlans:
   - vlan_id: 1
     name: "default"
-    tagged_ports: [ens161]
-    untagged_ports: [ens224, ens256]
+    tagged_ports: [ens34]
+    untagged_ports: [ens36, ens37]
     
   - vlan_id: 10
     name: "management"
-    tagged_ports: [ens161]
-    untagged_ports: [ens192]
+    tagged_ports: [ens34]
+    untagged_ports: [ens35]
     
   - vlan_id: 20
     name: "guest"
-    tagged_ports: [ens161]
+    tagged_ports: [ens34]
     untagged_ports: []
     
   - vlan_id: 30
     name: "iot"
-    tagged_ports: [ens161]
+    tagged_ports: [ens34]
     untagged_ports: []
