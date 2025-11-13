@@ -223,6 +223,7 @@ int rswitch_dispatcher(struct xdp_md *ctx)
                  rctx->layers.ip_proto,
                  bpf_ntohs(rctx->layers.sport), bpf_ntohs(rctx->layers.dport),
                  rctx->dscp);
+        rs_debug("IPv4: ingress=%u, egress=%u", rctx->ifindex, rctx->egress_ifindex);
     }
     
     /* Update ingress statistics */
