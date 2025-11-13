@@ -240,7 +240,7 @@ int rswitch_dispatcher(struct xdp_md *ctx)
     
     /* Execute tail-call chain */
     rs_debug("Starting pipeline on port %u, target port %u, first_prog_id=%u", 
-             ifindex, ctx->egress_ifindex, rctx->next_prog_id);
+             ifindex, rctx->egress_ifindex, rctx->next_prog_id);
     
     /* Tail-call to first module - does not return on success */
     bpf_tail_call(ctx, &rs_progs, rctx->next_prog_id);

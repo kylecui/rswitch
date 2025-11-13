@@ -270,7 +270,8 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_PASS;
     }
     
-    rs_debug("Route: Entry on ifindex=%u, proto=0x%x", ctx->ifindex, ctx->layers.eth_proto);
+    rs_debug("Route: Entry on ifindex=%u, proto=0x%x, target=%u", 
+        ctx->ifindex, ctx->layers.eth_proto, ctx->egress_ifindex);
     
     // Check if enabled
     __u32 cfg_key = 0;

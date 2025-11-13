@@ -275,6 +275,8 @@ do_learning_only:
              eth->h_source[0], eth->h_source[1], eth->h_source[2], 
              eth->h_source[3], eth->h_source[4], eth->h_source[5]);
     
+    rs_debug("L2Learn: ingress_ifindex=%d, egress_ifindex=%d",
+             ctx->ifindex, ctx->egress_ifindex);             
     if (!routing_decision_made) {
         rs_debug("L2Learn: lookup dst=%02x:%02x:%02x:%02x:%02x:%02x → egress=%d",
                  eth->h_dest[0], eth->h_dest[1], eth->h_dest[2],
