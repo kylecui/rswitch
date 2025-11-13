@@ -93,6 +93,24 @@ voqd_config:
                                   #   Bit 3 (0x08): CRITICAL priority
                                   # 0x0C = 0b1100 = HIGH + CRITICAL
                                   # 含义：拦截 HIGH 和 CRITICAL 优先级的流量到 VOQd
+                                  #
+                                  # 常见端口的默认优先级（可通过 rsqosctl 覆盖）：
+                                  #   SSH (22), Telnet (23), SNMP (161/162), DNS (53), NTP (123) → CRITICAL
+                                  #   HTTP (80), HTTPS (443), DHCP (67/68), ICMP → HIGH
+                                  #   FTP (20/21), SMTP (25) → LOW
+                                  #   其他 → NORMAL
+                                  #
+                                  # 注意：DHCP (UDP 67/68) 默认是 HIGH 优先级，会被拦截！
+                                  # 如果 DHCP 无法工作，有两种解决方法：
+                                  #   方法 1: 修改 prio_mask = 0x08（只拦截 CRITICAL，不拦截 HIGH）
+                                  #   方法 2: 运行时改变 DHCP 优先级为 NORMAL：
+                                  #     sudo ./build/rsqosctl add-class --proto udp --dport 67 --priority normal
+                                  #     sudo ./build/rsqosctl add-class --proto udp --dport 68 --priority normal
+                                  #
+                                  # 如果不想拦截 SSH，同样有两种方法：
+                                  #   方法 1: 修改 prio_mask = 0x04（只拦截 HIGH，不拦截 CRITICAL）
+                                  #   方法 2: 运行时改变 SSH 优先级：
+                                  #     sudo ./build/rsqosctl add-class --proto tcp --dport 22 --priority normal
   
   # AF_XDP 配置
   enable_afxdp: true              # 启用 AF_XDP sockets（ACTIVE 模式必需）
@@ -193,6 +211,25 @@ vlans:
 # 3. 检查 QoS 统计：
 #    sudo ./build/rsqosctl --stats
 #
+# 3a. 修改端口优先级（可选）：
+#     # 如果 DHCP 无法工作（被拦截），改为 NORMAL 优先级
+#     sudo ./build/rsqosctl add-class --proto udp --dport 67 --priority normal
+#     sudo ./build/rsqosctl add-class --proto udp --dport 68 --priority normal
+#     
+#     # 如果不想让 SSH 被 VOQd 拦截，改为 NORMAL 优先级
+#     sudo ./build/rsqosctl add-class --proto tcp --dport 22 --priority normal
+#     
+#     # 或者改为 HIGH（仍会被拦截，但低于 CRITICAL）
+#     sudo ./build/rsqosctl add-class --proto tcp --dport 22 --priority high
+#     
+#     # 验证分类表
+#     sudo bpftool map dump name qos_class_map
+#     
+#     # 删除自定义规则（恢复默认）
+#     sudo ./build/rsqosctl del-class --proto udp --dport 67
+#     sudo ./build/rsqosctl del-class --proto udp --dport 68
+#     sudo ./build/rsqosctl del-class --proto tcp --dport 22
+#
 # 4. 观察 BPF 事件：
 #    sudo ./build/rswitch-events
 #
@@ -234,9 +271,17 @@ vlans:
 # 预期行为
 # ============================================================================
 
+# 注意：以下行为基于默认的端口分类规则。如果你使用 rsqosctl 修改了分类，
+# 行为会相应改变。
+
 # 1. VLAN 1 (enp3s0) 和 VLAN 10 (enp5s0) 之间应该能够路由（通过 route 模块）
 # 2. SSH 流量（port 22）应该被分类为 CRITICAL，并且被 VOQd 拦截处理
+#    - 如果希望 SSH 走快速路径，运行：
+#      sudo ./build/rsqosctl add-class --proto tcp --dport 22 --priority normal
 # 3. HTTP 流量（port 80）应该被分类为 HIGH，并且被 VOQd 拦截处理
+# 3a. DHCP 流量（UDP 67/68）应该被分类为 HIGH，并且被 VOQd 拦截处理
+#     - 如果 DHCP 无法工作，需要改为 NORMAL 或调整 prio_mask
+#     - 推荐：prio_mask=0x08（只拦截 CRITICAL），让 DHCP 走快速路径
 # 4. FTP 数据流量（port 20/21）应该被分类为 LOW，走快速路径（不被 VOQd 拦截）
 # 5. ICMP ping 应该被分类为 HIGH，并且被 VOQd 拦截处理
 # 6. 普通 TCP/UDP 流量应该被分类为 NORMAL，走快速路径
@@ -253,18 +298,25 @@ vlans:
 # 原因：AF_XDP 权限不足或网卡驱动不支持
 # 解决：确保以 root 运行，检查驱动支持 `ethtool -i enp3s0`
 #
-# 问题 2: 高优先级流量未被拦截
+# 问题 2: DHCP 无法工作（客户端获取不到 IP）
+# 原因：DHCP (UDP 67/68) 默认是 HIGH 优先级，被 prio_mask=0x0C 拦截
+# 解决：方法 1: 修改 prio_mask=0x08（只拦截 CRITICAL）
+#       方法 2: 运行时改变 DHCP 优先级：
+#         sudo ./build/rsqosctl add-class --proto udp --dport 67 --priority normal
+#         sudo ./build/rsqosctl add-class --proto udp --dport 68 --priority normal
+#
+# 问题 3: 高优先级流量未被拦截
 # 原因：prio_mask 配置错误或 afxdp_redirect 模块未加载
 # 解决：检查 `sudo bpftool map dump name voqd_state_map` 中的 prio_mask 值
 #
-# 问题 3: VLAN 隔离失效
+# 问题 4: VLAN 隔离失效
 # 原因：egress_vlan 模块未加载或配置错误
 # 解决：确认 egress pipeline 包含 egress_vlan，检查 VLAN membership
 #
-# 问题 4: 性能下降
+# 问题 5: 性能下降
 # 原因：VOQd 拦截了太多流量或 busy_poll=true 导致 CPU 占用高
 # 解决：调整 prio_mask（减少拦截），或设置 busy_poll=false
 #
-# 问题 5: AF_XDP ring 满导致丢包
+# 问题 6: AF_XDP ring 满导致丢包
 # 原因：rx_ring_size/tx_ring_size 太小
 # 解决：增加 ring_size 到 4096 或 8192（需要重启 loader）

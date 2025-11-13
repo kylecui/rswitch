@@ -971,6 +971,129 @@ static int initialize_vlan_map(struct loader_ctx *ctx)
     return 0;
 }
 
+/* Initialize QoS configuration maps
+ * 
+ * CRITICAL: QoS module checks QOS_FLAG_ENABLED in qos_config_ext_map.
+ * Without this initialization, QoS will be disabled and all packets pass through.
+ */
+static int initialize_qos_config(struct loader_ctx *ctx)
+{
+    int err;
+    char path[256];
+    int qos_config_ext_fd = -1;
+    int qos_config_fd = -1;
+    
+    /* Try to open qos_config_ext_map (pinned by egress_qos module) */
+    snprintf(path, sizeof(path), "%s/qos_config_ext_map", BPF_PIN_PATH);
+    qos_config_ext_fd = bpf_obj_get(path);
+    
+    if (qos_config_ext_fd < 0) {
+        /* QoS module not loaded, skip initialization */
+        if (ctx->verbose) {
+            printf("QoS config: egress_qos module not loaded, skipping\n");
+        }
+        return 0;
+    }
+    
+    /* Try to open qos_config_map (shared with afxdp_redirect) */
+    snprintf(path, sizeof(path), "%s/qos_config_map", BPF_PIN_PATH);
+    qos_config_fd = bpf_obj_get(path);
+    
+    printf("Initializing QoS configuration:\n");
+    
+    /* Initialize qos_config_ext (local to egress_qos) */
+    struct qos_config_ext {
+        __u32 flags;
+        __u8  default_priority;
+        __u8  pad[3];
+        __u8  dscp_map[4];  /* QOS_MAX_PRIORITIES = 4 */
+    } __attribute__((aligned(8)));
+    
+    struct qos_config_ext cfg_ext = {
+        .flags = (1 << 0),  /* QOS_FLAG_ENABLED */
+        .default_priority = 1,  /* NORMAL priority for unclassified */
+        .dscp_map = {10, 18, 34, 46},  /* LOW=AF11, NORMAL=AF21, HIGH=AF41, CRITICAL=EF */
+    };
+    
+    /* Check if profile overrides QoS settings */
+    if (ctx->use_profile) {
+        /* Enable rate limiting if configured */
+        if (ctx->profile.settings.stats_enabled) {
+            cfg_ext.flags |= (1 << 1);  /* QOS_FLAG_RATE_LIMIT_ENABLED */
+        }
+        /* Enable ECN marking (recommended for production) */
+        cfg_ext.flags |= (1 << 2);  /* QOS_FLAG_ECN_ENABLED */
+        /* Enable DSCP rewriting (standard behavior) */
+        cfg_ext.flags |= (1 << 3);  /* QOS_FLAG_DSCP_REWRITE */
+    }
+    
+    __u32 key = 0;
+    err = bpf_map_update_elem(qos_config_ext_fd, &key, &cfg_ext, BPF_ANY);
+    if (err) {
+        fprintf(stderr, "  Failed to initialize qos_config_ext_map: %s\n", strerror(errno));
+        close(qos_config_ext_fd);
+        if (qos_config_fd >= 0) close(qos_config_fd);
+        return -1;
+    }
+    
+    printf("  ✓ QoS enabled (flags=0x%x)\n", cfg_ext.flags);
+    printf("  ✓ Default priority: NORMAL\n");
+    printf("  ✓ DSCP marking: LOW=%u, NORMAL=%u, HIGH=%u, CRITICAL=%u\n",
+           cfg_ext.dscp_map[0], cfg_ext.dscp_map[1], cfg_ext.dscp_map[2], cfg_ext.dscp_map[3]);
+    
+    /* Initialize qos_config (shared with afxdp_redirect) */
+    if (qos_config_fd >= 0) {
+        struct qos_config {
+            __u32 dscp2prio[64];
+            __u32 default_port;
+            __u32 ecn_threshold;
+            __u32 drop_threshold;
+        } __attribute__((aligned(8)));
+        
+        struct qos_config cfg = {
+            .default_port = 0,
+            .ecn_threshold = 100,   /* ECN marking at 100 packets queue depth */
+            .drop_threshold = 200,  /* Drop low-priority at 200 packets */
+        };
+        
+        /* Initialize DSCP->priority mapping (default: DSCP value >> 3 maps to priority) */
+        for (int i = 0; i < 64; i++) {
+            /* Standard DiffServ mapping:
+             * EF (46) -> CRITICAL (3)
+             * AF4x (32-38) -> HIGH (2)
+             * AF2x (16-22) -> NORMAL (1)
+             * AF1x (8-14) -> LOW (0)
+             * Default (0) -> NORMAL (1)
+             */
+            if (i == 46) {  /* EF */
+                cfg.dscp2prio[i] = 3;  /* CRITICAL */
+            } else if (i >= 32 && i <= 38) {  /* AF4x */
+                cfg.dscp2prio[i] = 2;  /* HIGH */
+            } else if (i >= 16 && i <= 22) {  /* AF2x */
+                cfg.dscp2prio[i] = 1;  /* NORMAL */
+            } else if (i >= 8 && i <= 14) {  /* AF1x */
+                cfg.dscp2prio[i] = 0;  /* LOW */
+            } else {
+                cfg.dscp2prio[i] = 1;  /* NORMAL (default) */
+            }
+        }
+        
+        err = bpf_map_update_elem(qos_config_fd, &key, &cfg, BPF_ANY);
+        if (err) {
+            fprintf(stderr, "  Warning: Failed to initialize qos_config_map: %s\n", strerror(errno));
+        } else {
+            printf("  ✓ DSCP->priority mapping initialized\n");
+            printf("  ✓ ECN threshold: %u packets\n", cfg.ecn_threshold);
+            printf("  ✓ Drop threshold: %u packets\n", cfg.drop_threshold);
+        }
+        
+        close(qos_config_fd);
+    }
+    
+    close(qos_config_ext_fd);
+    return 0;
+}
+
 /* Populate devmaps with queue isolation
  * 
  * Following PoC pattern: find rs_xdp_devmap from lastcall module object
@@ -1647,6 +1770,9 @@ int main(int argc, char **argv)
     
     /* Initialize VLAN map with default configuration */
     initialize_vlan_map(&ctx);
+    
+    /* Initialize QoS configuration */
+    initialize_qos_config(&ctx);
     
     /* Populate devmaps with queue isolation */
     populate_devmaps(&ctx);
