@@ -257,16 +257,24 @@ static int read_module_metadata(const char *path, struct rs_module_desc *desc)
     return -1;
 }
 
-/* Check if module is in profile's ingress list */
+/* Check if module is in profile's ingress or egress list */
 static int is_module_in_profile(const char *module_name, struct rs_profile *profile)
 {
-    if (!profile || profile->ingress_count == 0) {
+    if (!profile || (profile->ingress_count == 0 && profile->egress_count == 0)) {
         /* No profile - load all modules (backward compatibility) */
         return 1;
     }
     
+    /* Check ingress modules */
     for (int i = 0; i < profile->ingress_count; i++) {
         if (strcmp(module_name, profile->ingress_modules[i]) == 0) {
+            return 1;
+        }
+    }
+    
+    /* Check egress modules */
+    for (int i = 0; i < profile->egress_count; i++) {
+        if (strcmp(module_name, profile->egress_modules[i]) == 0) {
             return 1;
         }
     }
