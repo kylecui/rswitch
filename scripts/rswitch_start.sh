@@ -10,7 +10,7 @@
 set -e  # Exit on error
 
 # Configuration
-RSWITCH_DIR="/home/jzzn/dev/rSwitch/rswitch"
+RSWITCH_DIR="/home/jzzn/dev/rswitch"
 PROFILE="etc/profiles/l3-qos-voqd-test.yaml"
 INTERFACES="enp3s0,enp4s0,enp5s0"
 LOG_DIR="/var/log/rswitch"
