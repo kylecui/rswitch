@@ -144,10 +144,16 @@ The loader checks module ABI compatibility during discovery.
 - 80-89: Learning ← **l2learn.bpf.c = 80**
 - 90-99: Final decision ← **lastcall.bpf.c = 90**
 
-**Egress Pipeline**:
-- 20-29: VLAN tagging
-- 30-49: QoS enforcement
-- 70-89: Telemetry
+**Egress Pipeline** (Stages 100-199, Slots 255↓):
+- 100-119: Pre-egress processing
+- 120-139: VLAN tag manipulation ← **egress_vlan.bpf.c = 180**
+- 170-179: QoS enforcement ← **qos.bpf.c = 170**
+- 180-189: Mirroring and telemetry
+- 190-199: Final egress ← **egress_final.bpf.c = 190**
+
+**Note**: Egress modules are assigned descending slots (255, 254, 253...) 
+to avoid collision with ingress slots (0, 1, 2...). Stage numbers are 
+only for ordering in YAML profiles.
 
 ## Total Lines of Code
 

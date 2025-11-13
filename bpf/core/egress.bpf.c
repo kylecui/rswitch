@@ -325,36 +325,53 @@ skip_vlan_check:
     rs_debug("Egress on port %u: vlan_mode=%u, pkt_len=%u", 
              egress_ifindex, cfg->vlan_mode, pkt_len);
     
-    /* Egress pipeline: Tail-call to final module
+    /* Egress pipeline: Tail-call chain execution
      * 
-     * Stage number convention:
-     *   Ingress: 10-90   (vlan=10, l2learn=80, lastcall=90)
-     *   Egress:  100-190 (future: egress_qos=110, egress_mirror=120, egress_final=190)
+     * Architecture:
+     *   - Egress modules stored in rs_progs[255, 254, 253, ...] (high slots, descending)
+     *   - prog_chain[slot] → next_slot for chaining (e.g., chain[255]=254, chain[254]=0)
+     *   - prog_chain[0] = first egress module slot (entry point from devmap hook)
      * 
-     * Minimal egress pipeline (current):
-     *   rswitch_egress (this) → egress_final (stage 190)
+     * Stage conventions (for ordering in YAML profiles):
+     *   Ingress: 10-90   (vlan=20, acl=30, route=50, l2learn=80, lastcall=90)
+     *   Egress:  100-190 (qos=170, egress_vlan=180, egress_final=190)
      * 
-     * Future egress pipeline:
-     *   rswitch_egress → egress_qos → egress_mirror → egress_final
+     * Current egress pipeline:
+     *   rswitch_egress (devmap hook) → qos (slot 255, stage 170) → 
+     *   egress_final (slot 254, stage 190)
      * 
-     * egress_final is responsible for:
-     * - Clearing parsed=0 flag (marks processing complete)
-     * - Final XDP_PASS return
+     * Future expansion:
+     *   rswitch_egress → qos → egress_vlan → mirror → egress_final
+     * 
+     * Module responsibilities:
+     *   - qos: Priority classification, rate limiting, DSCP marking
+     *   - egress_vlan: VLAN tag manipulation based on port mode
+     *   - egress_final: Statistics, clear parsed flag, return XDP_PASS
      */
     
     /* Tail-call to egress pipeline
      * 
      * Egress entry (this devmap program) is NOT in rs_progs array - it's attached
-     * to devmap directly. To enter the egress module pipeline, we look up the first
-     * egress module's prog_id from rs_prog_chain[RS_ONLYKEY].
+     * to devmap directly via bpf_devmap_val.bpf_prog.fd in populate_devmaps().
+     * 
+     * To enter the egress module pipeline, we:
+     * 1. Read prog_chain[0] → first egress module slot (e.g., 255)
+     * 2. Set rs_ctx->next_prog_id = slot (for modules to traverse chain)
+     * 3. Tail-call to rs_progs[slot]
      * 
      * Loader configures:
-     *   prog_chain[0] = first_egress_prog_id  (special: devmap entry uses key 0)
-     *   prog_chain[first_egress_prog_id] = next_egress_prog_id
-     *   ... and so on
+     *   prog_chain[0] = 255          (entry: devmap → first module)
+     *   prog_chain[255] = 254        (qos → egress_final)
+     *   prog_chain[254] = 0          (egress_final → end)
      * 
-     * During flooding (concurrent):
-     *   All cores read prog_chain[0] → same value → call same first stage ✓
+     * Module execution:
+     *   Each module reads prog_chain[current_slot] to find next_slot,
+     *   updates rs_ctx->next_prog_id, and tail-calls to rs_progs[next_slot].
+     * 
+     * Concurrent flooding (BPF_F_BROADCAST):
+     *   Multiple cores process same packet to different ports simultaneously.
+     *   Each core has its own rs_ctx (per-CPU map), no race condition.
+     *   All cores read same prog_chain values (read-only, no writes).
      */
     __u32 chain_key = RS_ONLYKEY;  /* Key 0: devmap entry's next hop */
     __u32 *first_egress_prog = bpf_map_lookup_elem(&rs_prog_chain, &chain_key);

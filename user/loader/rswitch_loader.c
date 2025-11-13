@@ -484,18 +484,12 @@ static int get_pinned_maps(struct loader_ctx *ctx)
         }
     }
     
-    if (ctx->rs_devmap_fd < 0) {
-#ifdef LASTCALL_MANUAL_BROADCAST    
-        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_devmap");
-#else    
-        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_xdp_devmap");
-#endif  
-        if (map) {
-            ctx->rs_devmap_fd = bpf_map__fd(map);
-        }
-    }
+    /* Note: rs_devmap_fd (rs_xdp_devmap) is defined in lastcall module,
+     * which hasn't been loaded yet at this point. It will be obtained later
+     * in populate_devmaps() after modules are loaded. Devmap=-1 here is expected.
+     */
     
-    printf("Map FDs: rs_progs=%d, port_config=%d, devmap=%d\n",
+    printf("Map FDs: rs_progs=%d, port_config=%d, devmap=%d (devmap loaded later from modules)\n",
            ctx->rs_progs_fd, ctx->rs_port_config_map_fd, ctx->rs_devmap_fd);
     
     return 0;
@@ -1001,9 +995,9 @@ static int populate_devmaps(struct loader_ctx *ctx)
             struct bpf_map *map = bpf_object__find_map_by_name(ctx->modules[i].obj, "rs_xdp_devmap");
             if (map) {
                 xdp_devmap_fd = bpf_map__fd(map);
-                if (ctx->verbose) {
-                    printf("Found rs_xdp_devmap in lastcall module: fd=%d\n", xdp_devmap_fd);
-                }
+                printf("Found rs_xdp_devmap in lastcall module: fd=%d\n", xdp_devmap_fd);
+                /* Update context for consistency */
+                ctx->rs_devmap_fd = xdp_devmap_fd;
                 break;
             }
         }
