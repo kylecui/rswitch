@@ -155,10 +155,19 @@ int egress_vlan_xdp(struct xdp_md *ctx)
         return XDP_DROP;
     }
     
-    // Get egress port from context (set by lastcall or route module)
-    __u32 egress_ifindex = rs_ctx->egress_ifindex;
+    /* Get egress port from XDP context (devmap sets this)
+     * 
+     * IMPORTANT: During flooding (BPF_F_BROADCAST), devmap calls this egress
+     * program once per destination port. The actual egress port is in
+     * ctx->egress_ifindex (set by devmap), NOT in rs_ctx->egress_ifindex
+     * (which is 0 for broadcast).
+     * 
+     * For unicast: rs_ctx->egress_ifindex == ctx->egress_ifindex (both set)
+     * For flooding: rs_ctx->egress_ifindex == 0, ctx->egress_ifindex = actual port
+     */
+    __u32 egress_ifindex = ctx->egress_ifindex;
     if (egress_ifindex == 0) {
-        rs_debug("egress_vlan: No egress port set");
+        rs_debug("egress_vlan: No egress port set in ctx");
         // Continue to next module
         RS_TAIL_CALL_EGRESS(ctx, rs_ctx);
         return XDP_PASS;
