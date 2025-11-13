@@ -28,7 +28,8 @@ char _license[] SEC("license") = "GPL";
  * - Uses bpf_devmap_val for egress hook attachment
  */
 struct {
-    __uint(type, BPF_MAP_TYPE_DEVMAP_HASH);
+    // __uint(type, BPF_MAP_TYPE_DEVMAP_HASH);
+    __uint(type, BPF_MAP_TYPE_DEVMAP);
     __uint(max_entries, RS_MAX_INTERFACES);
     __type(key, __u32);         /* ifindex */
     __type(value, struct bpf_devmap_val);
