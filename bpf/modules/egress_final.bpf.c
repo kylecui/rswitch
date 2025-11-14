@@ -29,7 +29,7 @@ RS_DECLARE_MODULE(
     RS_HOOK_XDP_EGRESS,         // Hook point (egress processing)
     190,                        // Stage number (high value = runs last)
     0,                          // No special flags
-    "Final egress processing - checksum validation and packet transmission"
+    "Final egress: checksum validation and transmission"
 );
 
 /* Calculate IP header checksum from scratch (for verification) */
@@ -38,19 +38,35 @@ static __always_inline __u16 ip_checksum(struct iphdr *iph)
     __u32 sum = 0;
     __u16 *p = (__u16 *)iph;
     
-    /* IP header is always 20-60 bytes, length in 32-bit words */
-    int len = (iph->ihl) * 4;  /* ihl is in 4-byte units */
+    /* IP header is always 20-60 bytes (5-15 32-bit words)
+     * ihl is in 4-byte units, so we need (ihl * 2) 16-bit words
+     */
+    int ihl = iph->ihl;  /* 4-byte words */
+    if (ihl < 5 || ihl > 15)
+        return 0;  /* Invalid header length */
+    
+    int num_words = ihl * 2;  /* Convert to 16-bit words */
     
     /* Checksum field should be zero for calculation */
     __u16 saved_check = iph->check;
     iph->check = 0;
     
-    /* Sum all 16-bit words */
+    /* Sum all 16-bit words - use fixed unroll size for BPF verifier */
     #pragma unroll
-    for (int i = 0; i < 30; i++) {  /* Max 60 bytes / 2 = 30 words */
-        if (i * 2 >= len)
+    for (int i = 0; i < 15; i++) {  /* Max 15 words (30 bytes = min header) */
+        if (i >= num_words)
             break;
-        sum += *p++;
+        sum += p[i];
+    }
+    
+    /* Handle remaining words if header is larger (up to 60 bytes total) */
+    if (num_words > 15) {
+        #pragma unroll
+        for (int i = 15; i < 30; i++) {  /* Words 15-29 (bytes 30-59) */
+            if (i >= num_words)
+                break;
+            sum += p[i];
+        }
     }
     
     /* Restore original checksum */
