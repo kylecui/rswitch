@@ -276,10 +276,10 @@ int egress_final(struct xdp_md *xdp_ctx)
                 return XDP_DROP;
             }
             
-            if (iph->check != bpf_htons(correct_cksum)) {
+            if (iph->check != correct_cksum) {
                 rs_debug("Egress final: Bad IP checksum 0x%04x, fixing to 0x%04x",
-                         bpf_ntohs(iph->check), correct_cksum);
-                iph->check = bpf_htons(correct_cksum);
+                         bpf_ntohs(iph->check), bpf_ntohs(correct_cksum));
+                iph->check = correct_cksum;
                 update_final_stat(EGRESS_FINAL_CKSUM_FIXED);
             } else {
                 update_final_stat(EGRESS_FINAL_CKSUM_OK);
