@@ -48,7 +48,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
     /* IHL 在低 4 bit */
     ihl = iph->ihl & 0x0f;
     if (ihl < 5) {
-        rs_debug("Egress final: IP header IHL too small, cannot compute checksum");
+        rs_debug("Egress final: IP header IHL too small (ihl = %d), cannot compute checksum", ihl);
         return -1;
     }
     if (ihl > 15) {
