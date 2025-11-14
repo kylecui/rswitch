@@ -33,86 +33,156 @@ RS_DECLARE_MODULE(
 );
 
 /* Calculate IP header checksum from scratch (for verification) */
-static __always_inline __u16 ip_checksum(struct iphdr *iph, void *data_end)
+static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 *out)
 {
     __u32 sum = 0;
-    __u16 *p = (__u16 *)iph;
-    
-    /* IP header is always 20-60 bytes (5-15 32-bit words)
-     * Most common case: 20 bytes (5 words = 10 16-bit words)
-     * 
-     * For BPF verifier, we need to verify bounds for each access.
-     * We always sum the standard 20-byte header, then conditionally
-     * add options if present and verified.
-     */
-    int ihl = iph->ihl;
+    __u16 *p;
+    int ihl;
+
+    /* 至少要能访问完整的 20 字节基础头 */
+    if ((void *)(iph + 1) > data_end)
+        return -1;
+
+    /* IHL 在低 4 bit */
+    ihl = iph->ihl & 0x0f;
     if (ihl < 5)
-        return 0;  /* Invalid header length */
-    
-    /* Checksum field should be zero for calculation */
-    __u16 saved_check = iph->check;
-    iph->check = 0;
-    
-    /* Verify we can access standard IP header (20 bytes = 10 words)
-     * BPF verifier: (void *)(iph + 1) means iph[0..19] is safe */
-    if ((void *)(iph + 1) > data_end) {
-        iph->check = saved_check;
-        return 0;
-    }
-    
-    /* Sum standard IP header (20 bytes = 10 words)
-     * Manually unrolled for BPF verifier */
-    sum += p[0];  /* version+ihl, tos */
-    sum += p[1];  /* total_len */
-    sum += p[2];  /* id */
-    sum += p[3];  /* frag_off */
-    sum += p[4];  /* ttl+protocol, checksum */
-    sum += p[5];  /* saddr[0:1] */
-    sum += p[6];  /* saddr[2:3] */
-    sum += p[7];  /* daddr[0:1] */
-    sum += p[8];  /* daddr[2:3] */
-    sum += p[9];  /* first 2 bytes of options (if any) */
-    
-    /* Handle IP options if header is larger (uncommon)
-     * Must verify bounds before each access beyond standard header */
+        return -1;
+    if (ihl > 15)
+        return -1;   /* RFC 791 最大 60 字节 */
+    p = (__u16 *)iph;
+
+    /*
+     * IPv4 头部 20 字节 = 10 个 16-bit words：
+     *
+     *  word 0 : ver/ihl, tos
+     *  word 1 : tot_len
+     *  word 2 : id
+     *  word 3 : frag_off
+     *  word 4 : ttl, protocol
+     *  word 5 : check         <-- 这里要当作 0
+     *  word 6 : saddr[15:0]
+     *  word 7 : saddr[31:16]
+     *  word 8 : daddr[15:0]
+     *  word 9 : daddr[31:16]
+     */
+
+    /* 先累加 0~4 */
+    sum += p[0];
+    sum += p[1];
+    sum += p[2];
+    sum += p[3];
+    sum += p[4];
+
+    /* word 5 (checksum) 当成 0，不累加 */
+
+    /* 确认可以访问到 word 9 （偏移 18，最后一个字节偏移 19） */
+    if ((void *)iph + 20 > data_end)
+        return -1;
+
+    /* 再累加 6~9（源/目的地址） */
+    sum += p[6];
+    sum += p[7];
+    sum += p[8];
+    sum += p[9];
+
+    /* 处理 IP options（ihl > 5 的情况） */
     if (ihl > 5) {
-        /* Options start at byte 20 (word 10)
-         * Each ihl unit = 4 bytes = 2 words
-         * Max options = 40 bytes (ihl=15) = 20 additional words */
-        
-        /* Verify we can access up to ihl*4 bytes (ihl*2 words) */
-        void *options_end = (void *)iph + (ihl * 4);
-        if (options_end > data_end) {
-            /* Options extend beyond packet, only checksum what we have */
-            iph->check = saved_check;
-            goto fold_checksum;
+        /*
+         * 额外头长 = (ihl - 5) * 4 字节
+         * 多出来的 16-bit word 下标范围：10 .. 9 + (ihl - 5) * 2
+         * 为了让 verifier 好推理，每一段访问前都做“iph + 常量偏移”检查。
+         */
+
+        /* ihl >= 6 → 头长 >= 24 字节 → 额外 bytes: 20..23 → words 10, 11 */
+        if (ihl >= 6) {
+            if ((void *)iph + 24 > data_end)
+                return -1;
+            sum += p[10];
+            sum += p[11];
         }
-        
-        /* Now safe to access options (words 10-29)
-         * Use conditional checks for each group to help verifier */
-        if (ihl >= 6)  sum += p[10];
-        if (ihl >= 7)  { sum += p[11]; sum += p[12]; }
-        if (ihl >= 8)  { sum += p[13]; sum += p[14]; }
-        if (ihl >= 9)  { sum += p[15]; sum += p[16]; }
-        if (ihl >= 10) { sum += p[17]; sum += p[18]; }
-        if (ihl >= 11) { sum += p[19]; sum += p[20]; }
-        if (ihl >= 12) { sum += p[21]; sum += p[22]; }
-        if (ihl >= 13) { sum += p[23]; sum += p[24]; }
-        if (ihl >= 14) { sum += p[25]; sum += p[26]; }
-        if (ihl >= 15) { sum += p[27]; sum += p[28]; sum += p[29]; }
-        /* ihl > 15 is invalid per RFC 791 */
+
+        /* ihl >= 7 → 头长 >= 28 字节 → bytes: 24..27 → words 12, 13 */
+        if (ihl >= 7) {
+            if ((void *)iph + 28 > data_end)
+                return -1;
+            sum += p[12];
+            sum += p[13];
+        }
+
+        /* ihl >= 8 → 头长 >= 32 字节 → bytes: 28..31 → words 14, 15 */
+        if (ihl >= 8) {
+            if ((void *)iph + 32 > data_end)
+                return -1;
+            sum += p[14];
+            sum += p[15];
+        }
+
+        /* ihl >= 9 → 头长 >= 36 字节 → bytes: 32..35 → words 16, 17 */
+        if (ihl >= 9) {
+            if ((void *)iph + 36 > data_end)
+                return -1;
+            sum += p[16];
+            sum += p[17];
+        }
+
+        /* ihl >= 10 → 头长 >= 40 字节 → bytes: 36..39 → words 18, 19 */
+        if (ihl >= 10) {
+            if ((void *)iph + 40 > data_end)
+                return -1;
+            sum += p[18];
+            sum += p[19];
+        }
+
+        /* ihl >= 11 → 头长 >= 44 字节 → bytes: 40..43 → words 20, 21 */
+        if (ihl >= 11) {
+            if ((void *)iph + 44 > data_end)
+                return -1;
+            sum += p[20];
+            sum += p[21];
+        }
+
+        /* ihl >= 12 → 头长 >= 48 字节 → bytes: 44..47 → words 22, 23 */
+        if (ihl >= 12) {
+            if ((void *)iph + 48 > data_end)
+                return -1;
+            sum += p[22];
+            sum += p[23];
+        }
+
+        /* ihl >= 13 → 头长 >= 52 字节 → bytes: 48..51 → words 24, 25 */
+        if (ihl >= 13) {
+            if ((void *)iph + 52 > data_end)
+                return -1;
+            sum += p[24];
+            sum += p[25];
+        }
+
+        /* ihl >= 14 → 头长 >= 56 字节 → bytes: 52..55 → words 26, 27 */
+        if (ihl >= 14) {
+            if ((void *)iph + 56 > data_end)
+                return -1;
+            sum += p[26];
+            sum += p[27];
+        }
+
+        /* ihl >= 15 → 头长 = 60 字节 → bytes: 56..59 → words 28, 29 */
+        if (ihl >= 15) {
+            if ((void *)iph + 60 > data_end)
+                return -1;
+            sum += p[28];
+            sum += p[29];
+        }
     }
-    
-fold_checksum:
-    /* Restore original checksum */
-    iph->check = saved_check;
-    
-    /* Fold 32-bit sum to 16 bits */
+
+    /* 折叠 32-bit sum 到 16 bit */
     sum = (sum & 0xffff) + (sum >> 16);
     sum = (sum & 0xffff) + (sum >> 16);
-    
-    return (__u16)~sum;
+
+    /* 返回“头部 checksum（假定 checksum 字段为 0 重新计算出来的值）” */
+    *out = (__u16)~sum;
+    return 0;
 }
+
 
 /* Statistics for checksum validation */
 enum egress_final_stat {
@@ -171,7 +241,12 @@ int egress_final(struct xdp_md *xdp_ctx)
         /* Verify minimum IP header (20 bytes) is within packet bounds */
         if ((void *)(iph + 1) <= data_end) {
             /* Calculate correct checksum */
-            __u16 correct_cksum = ip_checksum(iph, data_end);
+            __u16 correct_cksum;
+            if (ip_checksum(iph, data_end, &correct_cksum) < 0) {
+                rs_debug("Egress final: Invalid IP header, cannot compute checksum");
+                update_final_stat(EGRESS_FINAL_NON_IP);
+                return XDP_DROP;
+            }
             
             if (iph->check != correct_cksum) {
                 rs_debug("Egress final: Bad IP checksum 0x%04x, fixing to 0x%04x",
