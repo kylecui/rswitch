@@ -33,7 +33,7 @@ RS_DECLARE_MODULE(
 );
 
 /* Calculate IP header checksum from scratch (for verification) */
-static __always_inline __u16 ip_checksum(struct iphdr *iph)
+static __always_inline __u16 ip_checksum(struct iphdr *iph, void *data_end)
 {
     __u32 sum = 0;
     __u16 *p = (__u16 *)iph;
@@ -41,10 +41,9 @@ static __always_inline __u16 ip_checksum(struct iphdr *iph)
     /* IP header is always 20-60 bytes (5-15 32-bit words)
      * Most common case: 20 bytes (5 words = 10 16-bit words)
      * 
-     * For simplicity and BPF verifier compatibility, we always
-     * process the standard 20-byte header (10 words).
-     * Options (if present) are rare and not critical for checksum
-     * validation in our use case.
+     * For BPF verifier, we need to verify bounds for each access.
+     * We always sum the standard 20-byte header, then conditionally
+     * add options if present and verified.
      */
     int ihl = iph->ihl;
     if (ihl < 5)
@@ -54,9 +53,15 @@ static __always_inline __u16 ip_checksum(struct iphdr *iph)
     __u16 saved_check = iph->check;
     iph->check = 0;
     
+    /* Verify we can access standard IP header (20 bytes = 10 words)
+     * BPF verifier: (void *)(iph + 1) means iph[0..19] is safe */
+    if ((void *)(iph + 1) > data_end) {
+        iph->check = saved_check;
+        return 0;
+    }
+    
     /* Sum standard IP header (20 bytes = 10 words)
-     * This covers version+ihl, tos, total_len, id, frag_off,
-     * ttl+protocol, checksum, saddr, daddr */
+     * Manually unrolled for BPF verifier */
     sum += p[0];  /* version+ihl, tos */
     sum += p[1];  /* total_len */
     sum += p[2];  /* id */
@@ -66,21 +71,39 @@ static __always_inline __u16 ip_checksum(struct iphdr *iph)
     sum += p[6];  /* saddr[2:3] */
     sum += p[7];  /* daddr[0:1] */
     sum += p[8];  /* daddr[2:3] */
-    sum += p[9];  /* options (if any) or padding */
+    sum += p[9];  /* first 2 bytes of options (if any) */
     
-    /* Handle options if header is larger (uncommon, but check anyway)
-     * Only process if ihl > 5 (more than 20 bytes) */
+    /* Handle IP options if header is larger (uncommon)
+     * Must verify bounds before each access beyond standard header */
     if (ihl > 5) {
-        /* Options are in words 10-29 (up to 40 more bytes)
-         * For performance, we only check up to ihl=10 (40 bytes total) */
+        /* Options start at byte 20 (word 10)
+         * Each ihl unit = 4 bytes = 2 words
+         * Max options = 40 bytes (ihl=15) = 20 additional words */
+        
+        /* Verify we can access up to ihl*4 bytes (ihl*2 words) */
+        void *options_end = (void *)iph + (ihl * 4);
+        if (options_end > data_end) {
+            /* Options extend beyond packet, only checksum what we have */
+            iph->check = saved_check;
+            goto fold_checksum;
+        }
+        
+        /* Now safe to access options (words 10-29)
+         * Use conditional checks for each group to help verifier */
         if (ihl >= 6)  sum += p[10];
-        if (ihl >= 7)  sum += p[11] + p[12];
-        if (ihl >= 8)  sum += p[13] + p[14];
-        if (ihl >= 9)  sum += p[15] + p[16];
-        if (ihl >= 10) sum += p[17] + p[18];
-        /* ihl > 10 is extremely rare, skip for simplicity */
+        if (ihl >= 7)  { sum += p[11]; sum += p[12]; }
+        if (ihl >= 8)  { sum += p[13]; sum += p[14]; }
+        if (ihl >= 9)  { sum += p[15]; sum += p[16]; }
+        if (ihl >= 10) { sum += p[17]; sum += p[18]; }
+        if (ihl >= 11) { sum += p[19]; sum += p[20]; }
+        if (ihl >= 12) { sum += p[21]; sum += p[22]; }
+        if (ihl >= 13) { sum += p[23]; sum += p[24]; }
+        if (ihl >= 14) { sum += p[25]; sum += p[26]; }
+        if (ihl >= 15) { sum += p[27]; sum += p[28]; sum += p[29]; }
+        /* ihl > 15 is invalid per RFC 791 */
     }
     
+fold_checksum:
     /* Restore original checksum */
     iph->check = saved_check;
     
@@ -139,10 +162,16 @@ int egress_final(struct xdp_md *xdp_ctx)
         void *data = (void *)(long)xdp_ctx->data;
         void *data_end = (void *)(long)xdp_ctx->data_end;
         
-        struct iphdr *iph = data + (ctx->layers.l3_offset & RS_L3_OFFSET_MASK);
+        /* Apply mask to help verifier prove bounds (see BPF Verifier 调优技巧 doc)
+         * L3 offset is typically 14-22 bytes (Ethernet + optional VLAN tags)
+         * 0x3F (63) is sufficient to cover all reasonable cases */
+        __u16 l3_off = ctx->layers.l3_offset & 0x3F;
+        struct iphdr *iph = data + l3_off;
+        
+        /* Verify minimum IP header (20 bytes) is within packet bounds */
         if ((void *)(iph + 1) <= data_end) {
             /* Calculate correct checksum */
-            __u16 correct_cksum = ip_checksum(iph);
+            __u16 correct_cksum = ip_checksum(iph, data_end);
             
             if (iph->check != correct_cksum) {
                 rs_debug("Egress final: Bad IP checksum 0x%04x, fixing to 0x%04x",
