@@ -83,7 +83,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
 
     /* 确认可以访问到 word 9 （偏移 18，最后一个字节偏移 19） */
     if ((void *)iph + 20 > data_end) { 
-        rs_ctx_debug("Egress final: IP header truncated before daddr, cannot compute checksum");
+        rs_debug("Egress final: IP header truncated before daddr, cannot compute checksum");
         return -1;
     }
 
@@ -104,7 +104,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
         /* ihl >= 6 → 头长 >= 24 字节 → 额外 bytes: 20..23 → words 10, 11 */
         if (ihl >= 6) {
             if ((void *)iph + 24 > data_end) {
-                rs_ctx_debug("Egress final: IP header truncated in options/6, cannot compute checksum");
+                rs_debug("Egress final: IP header truncated in options/6, cannot compute checksum");
                 return -1;
             }
             sum += p[10];
@@ -114,7 +114,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
         /* ihl >= 7 → 头长 >= 28 字节 → bytes: 24..27 → words 12, 13 */
         if (ihl >= 7) {
             if ((void *)iph + 28 > data_end) {
-                rs_ctx_debug("Egress final: IP header truncated in options/7, cannot compute checksum");
+                rs_debug("Egress final: IP header truncated in options/7, cannot compute checksum");
                 return -1;
             }
             sum += p[12];
@@ -124,7 +124,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
         /* ihl >= 8 → 头长 >= 32 字节 → bytes: 28..31 → words 14, 15 */
         if (ihl >= 8) {
             if ((void *)iph + 32 > data_end) {
-                rs_ctx_debug("Egress final: IP header truncated in options/8, cannot compute checksum");
+                rs_debug("Egress final: IP header truncated in options/8, cannot compute checksum");
                 return -1;
             }
             sum += p[14];
@@ -134,7 +134,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
         /* ihl >= 9 → 头长 >= 36 字节 → bytes: 32..35 → words 16, 17 */
         if (ihl >= 9) {
             if ((void *)iph + 36 > data_end) {
-                rs_ctx_debug("Egress final: IP header truncated in options/9, cannot compute checksum");
+                rs_debug("Egress final: IP header truncated in options/9, cannot compute checksum");
                 return -1;
             }
             sum += p[16];
@@ -144,7 +144,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
         /* ihl >= 10 → 头长 >= 40 字节 → bytes: 36..39 → words 18, 19 */
         if (ihl >= 10) {
             if ((void *)iph + 40 > data_end) {
-                rs_ctx_debug("Egress final: IP header truncated in options/10, cannot compute checksum");
+                rs_debug("Egress final: IP header truncated in options/10, cannot compute checksum");
                 return -1;
             }
             sum += p[18];
@@ -154,7 +154,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
         /* ihl >= 11 → 头长 >= 44 字节 → bytes: 40..43 → words 20, 21 */
         if (ihl >= 11) {
             if ((void *)iph + 44 > data_end) {
-                rs_ctx_debug("Egress final: IP header truncated in options/11, cannot compute checksum");
+                rs_debug("Egress final: IP header truncated in options/11, cannot compute checksum");
                 return -1;
             }
             sum += p[20];
@@ -164,7 +164,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
         /* ihl >= 12 → 头长 >= 48 字节 → bytes: 44..47 → words 22, 23 */
         if (ihl >= 12) {
             if ((void *)iph + 48 > data_end) {
-                rs_ctx_debug("Egress final: IP header truncated in options/12, cannot compute checksum");
+                rs_debug("Egress final: IP header truncated in options/12, cannot compute checksum");
                 return -1;
             }
             sum += p[22];
@@ -174,7 +174,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
         /* ihl >= 13 → 头长 >= 52 字节 → bytes: 48..51 → words 24, 25 */
         if (ihl >= 13) {
             if ((void *)iph + 52 > data_end) {
-                rs_ctx_debug("Egress final: IP header truncated in options/13, cannot compute checksum");
+                rs_debug("Egress final: IP header truncated in options/13, cannot compute checksum");
                 return -1;
             }   
             sum += p[24];
@@ -184,7 +184,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
         /* ihl >= 14 → 头长 >= 56 字节 → bytes: 52..55 → words 26, 27 */
         if (ihl >= 14) {
             if ((void *)iph + 56 > data_end) {
-                rs_ctx_debug("Egress final: IP header truncated in options/14, cannot compute checksum");
+                rs_debug("Egress final: IP header truncated in options/14, cannot compute checksum");
                 return -1;
             }
             sum += p[26];
@@ -194,7 +194,7 @@ static __always_inline int ip_checksum(struct iphdr *iph, void *data_end, __u16 
         /* ihl >= 15 → 头长 = 60 字节 → bytes: 56..59 → words 28, 29 */
         if (ihl >= 15) {
             if ((void *)iph + 60 > data_end) {
-                rs_ctx_debug("Egress final: IP header truncated in options/15, cannot compute checksum");
+                rs_debug("Egress final: IP header truncated in options/15, cannot compute checksum");
                 return -1;
             }
             sum += p[28];
