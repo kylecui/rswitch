@@ -29,8 +29,64 @@ RS_DECLARE_MODULE(
     RS_HOOK_XDP_EGRESS,         // Hook point (egress processing)
     190,                        // Stage number (high value = runs last)
     0,                          // No special flags
-    "Final egress processing - clear parsed flag and pass packet"
+    "Final egress processing - checksum validation and packet transmission"
 );
+
+/* Calculate IP header checksum from scratch (for verification) */
+static __always_inline __u16 ip_checksum(struct iphdr *iph)
+{
+    __u32 sum = 0;
+    __u16 *p = (__u16 *)iph;
+    
+    /* IP header is always 20-60 bytes, length in 32-bit words */
+    int len = (iph->ihl) * 4;  /* ihl is in 4-byte units */
+    
+    /* Checksum field should be zero for calculation */
+    __u16 saved_check = iph->check;
+    iph->check = 0;
+    
+    /* Sum all 16-bit words */
+    #pragma unroll
+    for (int i = 0; i < 30; i++) {  /* Max 60 bytes / 2 = 30 words */
+        if (i * 2 >= len)
+            break;
+        sum += *p++;
+    }
+    
+    /* Restore original checksum */
+    iph->check = saved_check;
+    
+    /* Fold 32-bit sum to 16 bits */
+    while (sum >> 16)
+        sum = (sum & 0xffff) + (sum >> 16);
+    
+    return (__u16)~sum;
+}
+
+/* Statistics for checksum validation */
+enum egress_final_stat {
+    EGRESS_FINAL_PACKETS = 0,
+    EGRESS_FINAL_CKSUM_OK = 1,
+    EGRESS_FINAL_CKSUM_FIXED = 2,
+    EGRESS_FINAL_NON_IP = 3,
+    EGRESS_FINAL_STAT_MAX = 4,
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, __u64);
+    __uint(max_entries, EGRESS_FINAL_STAT_MAX);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} egress_final_stats SEC(".maps");
+
+static __always_inline void update_final_stat(__u32 stat_id)
+{
+    __u64 *counter = bpf_map_lookup_elem(&egress_final_stats, &stat_id);
+    if (counter) {
+        __sync_fetch_and_add(counter, 1);
+    }
+}
 
 /* Egress final - complete packet processing and transmit */
 SEC("xdp/devmap")
@@ -44,6 +100,33 @@ int egress_final(struct xdp_md *xdp_ctx)
         /* Should not happen, but don't block packet */
         rs_debug("WARN: No context in egress_final");
         return XDP_PASS;
+    }
+    
+    update_final_stat(EGRESS_FINAL_PACKETS);
+    
+    /* Verify and fix IP checksum if this is an IPv4 packet
+     * This catches any checksum errors from earlier modules (e.g., QoS DSCP rewriting)
+     */
+    if (ctx->layers.eth_proto == ETH_P_IP && ctx->layers.l3_offset != 0) {
+        void *data = (void *)(long)xdp_ctx->data;
+        void *data_end = (void *)(long)xdp_ctx->data_end;
+        
+        struct iphdr *iph = data + (ctx->layers.l3_offset & RS_L3_OFFSET_MASK);
+        if ((void *)(iph + 1) <= data_end) {
+            /* Calculate correct checksum */
+            __u16 correct_cksum = ip_checksum(iph);
+            
+            if (iph->check != correct_cksum) {
+                rs_debug("Egress final: Bad IP checksum 0x%04x, fixing to 0x%04x",
+                         bpf_ntohs(iph->check), bpf_ntohs(correct_cksum));
+                iph->check = correct_cksum;
+                update_final_stat(EGRESS_FINAL_CKSUM_FIXED);
+            } else {
+                update_final_stat(EGRESS_FINAL_CKSUM_OK);
+            }
+        }
+    } else {
+        update_final_stat(EGRESS_FINAL_NON_IP);
     }
     
     /* Clear parsed flag - packet processing complete

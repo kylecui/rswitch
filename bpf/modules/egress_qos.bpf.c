@@ -220,17 +220,38 @@ static __always_inline void set_dscp_in_iph(struct iphdr *iph, __u8 dscp)
     __u8 new_tos = (dscp << 2) | (old_tos & 0x03);  // Preserve ECN bits
     
     if (old_tos != new_tos) {
-        /* Incremental checksum update for ToS field change */
-        __u32 sum = ~bpf_ntohs(iph->check) & 0xffff;
-        sum += (~(__u32)old_tos) & 0xff;
-        sum += (__u32)new_tos & 0xff;
-        sum = (sum & 0xffff) + (sum >> 16);
-        sum = (sum & 0xffff) + (sum >> 16);
-        iph->check = bpf_htons(~sum & 0xffff);
+        /* RFC 1624 incremental checksum update
+         * HC' = ~(~HC + ~m + m')
+         * Where m and m' are 16-bit words (IHL+TOS in network byte order)
+         * 
+         * IP header layout (big-endian):
+         *   [Version:4 | IHL:4 | TOS:8] [Total Length:16]
+         *   \--------16-bit word-------/
+         * 
+         * We modify TOS (byte 1), so we need to update the checksum
+         * considering the full 16-bit word containing TOS.
+         */
+        __u16 old_check = iph->check;
         
+        /* Read first byte (version+ihl) directly */
+        __u8 ver_ihl = *((__u8 *)iph);
+        __u16 old_word = ((__u16)ver_ihl << 8) | old_tos;  // Big-endian word
+        __u16 new_word = ((__u16)ver_ihl << 8) | new_tos;
+        
+        /* Apply RFC 1624 formula */
+        __u32 sum = (__u32)(~old_check & 0xffff);
+        sum += (__u32)(~old_word & 0xffff);
+        sum += (__u32)new_word;
+        
+        /* Fold carries */
+        sum = (sum & 0xffff) + (sum >> 16);
+        sum = (sum & 0xffff) + (sum >> 16);
+        
+        iph->check = (__u16)~sum;
         iph->tos = new_tos;
         
-        rs_debug("QoS: DSCP rewrite %u → %u", old_tos >> 2, dscp);
+        rs_debug("QoS: DSCP rewrite %u → %u (cksum 0x%04x → 0x%04x)", 
+                 old_tos >> 2, dscp, bpf_ntohs(old_check), bpf_ntohs(iph->check));
     }
 }
 
@@ -244,17 +265,25 @@ static __always_inline void mark_ecn_ce(struct iphdr *iph)
     if (ecn == 0x01 || ecn == 0x02) {  // ECT(0) or ECT(1)
         __u8 new_tos = (old_tos & 0xFC) | 0x03;  // Set CE (Congestion Experienced)
         
-        /* Update checksum */
-        __u32 sum = ~bpf_ntohs(iph->check) & 0xffff;
-        sum += (~(__u32)old_tos) & 0xff;
-        sum += (__u32)new_tos & 0xff;
-        sum = (sum & 0xffff) + (sum >> 16);
-        sum = (sum & 0xffff) + (sum >> 16);
-        iph->check = bpf_htons(~sum & 0xffff);
+        /* RFC 1624 incremental checksum update (same as set_dscp_in_iph) */
+        __u16 old_check = iph->check;
         
+        __u8 ver_ihl = *((__u8 *)iph);
+        __u16 old_word = ((__u16)ver_ihl << 8) | old_tos;
+        __u16 new_word = ((__u16)ver_ihl << 8) | new_tos;
+        
+        __u32 sum = (__u32)(~old_check & 0xffff);
+        sum += (__u32)(~old_word & 0xffff);
+        sum += (__u32)new_word;
+        
+        sum = (sum & 0xffff) + (sum >> 16);
+        sum = (sum & 0xffff) + (sum >> 16);
+        
+        iph->check = (__u16)~sum;
         iph->tos = new_tos;
         
-        rs_debug("QoS: ECN marked (CE)");
+        rs_debug("QoS: ECN marked CE (cksum 0x%04x → 0x%04x)", 
+                 bpf_ntohs(old_check), bpf_ntohs(iph->check));
         update_stat(QOS_STAT_ECN_MARKED);
     }
 }
