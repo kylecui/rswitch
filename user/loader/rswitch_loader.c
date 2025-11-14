@@ -1449,16 +1449,22 @@ static void unpin_maps(void)
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
         
-        /* Only unpin rSwitch-related maps (rs_*, acl_*, afxdp_*, qos_*, voq_*, arp_*, route_*, mirror_*, iface_*) */
+        /* Only unpin rSwitch-related maps (rs_*, acl_*, afxdp_*, qos_*, voq_*, voqd_*, 
+         * arp_*, route_*, mirror_*, iface_*, egress_*, ingress_*, xsks_map, qdepth_map) */
         if (strncmp(entry->d_name, "rs_", 3) != 0 && 
             strncmp(entry->d_name, "acl_", 4) != 0 &&
             strncmp(entry->d_name, "afxdp_", 6) != 0 &&
             strncmp(entry->d_name, "qos_", 4) != 0 &&
             strncmp(entry->d_name, "voq_", 4) != 0 &&
+            strncmp(entry->d_name, "voqd_", 5) != 0 &&
             strncmp(entry->d_name, "arp_", 4) != 0 &&
             strncmp(entry->d_name, "route_", 6) != 0 &&
             strncmp(entry->d_name, "mirror_", 7) != 0 &&
-            strncmp(entry->d_name, "iface_", 6) != 0)
+            strncmp(entry->d_name, "iface_", 6) != 0 &&
+            strncmp(entry->d_name, "egress_", 7) != 0 &&
+            strncmp(entry->d_name, "ingress_", 8) != 0 &&
+            strcmp(entry->d_name, "xsks_map") != 0 &&
+            strcmp(entry->d_name, "qdepth_map") != 0)
             continue;
         
         snprintf(path, sizeof(path), "/sys/fs/bpf/%s", entry->d_name);
