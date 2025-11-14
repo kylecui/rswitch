@@ -249,6 +249,17 @@ int egress_vlan_xdp(struct xdp_md *ctx)
             // Update context to reflect added tag
             rs_ctx->layers.vlan_depth = 1;
             rs_ctx->layers.vlan_ids[0] = egress_vlan;
+            
+            /* CRITICAL: Update L3 offset after adding VLAN tag
+             * VLAN tag is 4 bytes (TPID + TCI), inserted between Ethernet header and payload
+             * All layer offsets after L2 must be shifted by 4 bytes */
+            if (rs_ctx->layers.l3_offset != 0) {
+                rs_ctx->layers.l3_offset += 4;
+                rs_debug("egress_vlan: Updated L3 offset after tag add: +4 bytes");
+            }
+            if (rs_ctx->layers.l4_offset != 0) {
+                rs_ctx->layers.l4_offset += 4;
+            }
         }
     } else if (!should_tag && packet_is_tagged) {
         // Need to remove VLAN tag
@@ -259,6 +270,16 @@ int egress_vlan_xdp(struct xdp_md *ctx)
             // Update context to reflect removed tag
             rs_ctx->layers.vlan_depth = 0;
             rs_ctx->layers.vlan_ids[0] = 0;
+            
+            /* CRITICAL: Update L3 offset after removing VLAN tag
+             * VLAN tag removal shifts all layers 4 bytes earlier */
+            if (rs_ctx->layers.l3_offset >= 4) {
+                rs_ctx->layers.l3_offset -= 4;
+                rs_debug("egress_vlan: Updated L3 offset after tag remove: -4 bytes");
+            }
+            if (rs_ctx->layers.l4_offset >= 4) {
+                rs_ctx->layers.l4_offset -= 4;
+            }
         }
     }
     
