@@ -151,7 +151,7 @@ static int parse_priority(const char *prio_str)
     if (prio >= 0 && prio < QOS_MAX_PRIORITIES)
         return prio;
     
-    fprintf(stderr, "Invalid priority: %s (must be 0-3 or low/normal/high/critical)\\n", prio_str);
+    fprintf(stderr, "Invalid priority: %s (must be 0-3 or low/normal/high/critical)\n", prio_str);
     return -1;
 }
 
@@ -217,13 +217,13 @@ static int cmd_add_class(int argc, char **argv)
             prio_str = optarg;
             break;
         default:
-            fprintf(stderr, "Usage: rsqosctl add-class --proto <proto> [--dport <port>] [--dscp <dscp>] --priority <priority>\\n");
+            fprintf(stderr, "Usage: rsqosctl add-class --proto <proto> [--dport <port>] [--dscp <dscp>] --priority <priority>\n");
             return -1;
         }
     }
     
     if (!proto_str || !prio_str) {
-        fprintf(stderr, "Missing required arguments (need --proto and --priority)\\n");
+        fprintf(stderr, "Missing required arguments (need --proto and --priority)\n");
         return -1;
     }
     
@@ -239,18 +239,18 @@ static int cmd_add_class(int argc, char **argv)
     snprintf(map_path, sizeof(map_path), "%s/qos_class_map", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open QoS class map: %s\\n", strerror(errno));
+        fprintf(stderr, "Failed to open QoS class map: %s\n", strerror(errno));
         return -1;
     }
     
     ret = bpf_map_update_elem(fd, &key, &result, BPF_ANY);
     if (ret < 0) {
-        fprintf(stderr, "Failed to add classification rule: %s\\n", strerror(errno));
+        fprintf(stderr, "Failed to add classification rule: %s\n", strerror(errno));
         close(fd);
         return -1;
     }
     
-    printf("Added classification rule: proto=%u dport=%u dscp=%u → priority=%s\\n",
+    printf("Added classification rule: proto=%u dport=%u dscp=%u → priority=%s\n",
            key.proto, ntohs(key.dport), key.dscp, priority_names[result.priority]);
     
     close(fd);
@@ -285,13 +285,13 @@ static int cmd_set_rate_limit(int argc, char **argv)
             burst_str = optarg;
             break;
         default:
-            fprintf(stderr, "Usage: rsqosctl set-rate-limit --priority <priority> --rate <rate> [--burst <burst>]\\n");
+            fprintf(stderr, "Usage: rsqosctl set-rate-limit --priority <priority> --rate <rate> [--burst <burst>]\n");
             return -1;
         }
     }
     
     if (!prio_str || !rate_str) {
-        fprintf(stderr, "Missing required arguments (need --priority and --rate)\\n");
+        fprintf(stderr, "Missing required arguments (need --priority and --rate)\n");
         return -1;
     }
     
@@ -301,7 +301,7 @@ static int cmd_set_rate_limit(int argc, char **argv)
     
     rate_bps = parse_rate(rate_str);
     if (rate_bps == 0) {
-        fprintf(stderr, "Invalid rate: %s\\n", rate_str);
+        fprintf(stderr, "Invalid rate: %s\n", rate_str);
         return -1;
     }
     
@@ -318,7 +318,7 @@ static int cmd_set_rate_limit(int argc, char **argv)
     snprintf(map_path, sizeof(map_path), "%s/qos_rate_limiters", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open rate limiter map: %s\\n", strerror(errno));
+        fprintf(stderr, "Failed to open rate limiter map: %s\n", strerror(errno));
         return -1;
     }
     
@@ -335,12 +335,12 @@ static int cmd_set_rate_limit(int argc, char **argv)
     uint32_t key = priority;
     ret = bpf_map_update_elem(fd, &key, &limiter, BPF_ANY);
     if (ret < 0) {
-        fprintf(stderr, "Failed to set rate limit: %s\\n", strerror(errno));
+        fprintf(stderr, "Failed to set rate limit: %s\n", strerror(errno));
         close(fd);
         return -1;
     }
     
-    printf("Set rate limit for priority %s: %lu bps, burst %lu bytes\\n",
+    printf("Set rate limit for priority %s: %lu bps, burst %lu bytes\n",
            priority_names[priority], rate_bps, burst_bytes);
     
     close(fd);
@@ -355,14 +355,14 @@ static int cmd_set_dscp(int argc, char **argv)
     int fd, ret;
     
     if (argc < 5 || strcmp(argv[1], "--priority") != 0 || strcmp(argv[3], "--dscp") != 0) {
-        fprintf(stderr, "Usage: rsqosctl set-dscp --priority <priority> --dscp <dscp>\\n");
-        fprintf(stderr, "Common DSCP values:\\n");
-        fprintf(stderr, "  0  = Best Effort (BE)\\n");
-        fprintf(stderr, "  10 = AF11 (Low priority data)\\n");
-        fprintf(stderr, "  18 = AF21 (Standard data)\\n");
-        fprintf(stderr, "  26 = AF31 (High priority data)\\n");
-        fprintf(stderr, "  34 = AF41 (Video)\\n");
-        fprintf(stderr, "  46 = EF (Voice, critical)\\n");
+        fprintf(stderr, "Usage: rsqosctl set-dscp --priority <priority> --dscp <dscp>\n");
+        fprintf(stderr, "Common DSCP values:\n");
+        fprintf(stderr, "  0  = Best Effort (BE)\n");
+        fprintf(stderr, "  10 = AF11 (Low priority data)\n");
+        fprintf(stderr, "  18 = AF21 (Standard data)\n");
+        fprintf(stderr, "  26 = AF31 (High priority data)\n");
+        fprintf(stderr, "  34 = AF41 (Video)\n");
+        fprintf(stderr, "  46 = EF (Voice, critical)\n");
         return -1;
     }
     
@@ -374,7 +374,7 @@ static int cmd_set_dscp(int argc, char **argv)
         return -1;
     
     if (dscp < 0 || dscp > 63) {
-        fprintf(stderr, "Invalid DSCP: %d (must be 0-63)\\n", dscp);
+        fprintf(stderr, "Invalid DSCP: %d (must be 0-63)\n", dscp);
         return -1;
     }
     
@@ -382,7 +382,7 @@ static int cmd_set_dscp(int argc, char **argv)
     snprintf(map_path, sizeof(map_path), "%s/qos_config_map", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open QoS config map: %s\\n", strerror(errno));
+        fprintf(stderr, "Failed to open QoS config map: %s\n", strerror(errno));
         return -1;
     }
     
@@ -405,12 +405,12 @@ static int cmd_set_dscp(int argc, char **argv)
     
     ret = bpf_map_update_elem(fd, &key, &cfg, BPF_ANY);
     if (ret < 0) {
-        fprintf(stderr, "Failed to set DSCP mapping: %s\\n", strerror(errno));
+        fprintf(stderr, "Failed to set DSCP mapping: %s\n", strerror(errno));
         close(fd);
         return -1;
     }
     
-    printf("Set DSCP mapping: priority %s → DSCP %d\\n", priority_names[priority], dscp);
+    printf("Set DSCP mapping: priority %s → DSCP %d\n", priority_names[priority], dscp);
     
     close(fd);
     return 0;
@@ -423,14 +423,14 @@ static int cmd_set_congestion(int argc, char **argv)
     int fd, ret;
     
     if (argc < 3 || strcmp(argv[1], "--threshold") != 0) {
-        fprintf(stderr, "Usage: rsqosctl set-congestion --threshold <percentage>\\n");
-        fprintf(stderr, "Example: rsqosctl set-congestion --threshold 75\\n");
+        fprintf(stderr, "Usage: rsqosctl set-congestion --threshold <percentage>\n");
+        fprintf(stderr, "Example: rsqosctl set-congestion --threshold 75\n");
         return -1;
     }
     
     threshold_pct = atoi(argv[2]);
     if (threshold_pct < 1 || threshold_pct > 100) {
-        fprintf(stderr, "Invalid threshold: %d (must be 1-100)\\n", threshold_pct);
+        fprintf(stderr, "Invalid threshold: %d (must be 1-100)\n", threshold_pct);
         return -1;
     }
     
@@ -438,7 +438,7 @@ static int cmd_set_congestion(int argc, char **argv)
     snprintf(map_path, sizeof(map_path), "%s/qos_config_map", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open QoS config map: %s\\n", strerror(errno));
+        fprintf(stderr, "Failed to open QoS config map: %s\n", strerror(errno));
         return -1;
     }
     
@@ -458,12 +458,12 @@ static int cmd_set_congestion(int argc, char **argv)
     
     ret = bpf_map_update_elem(fd, &key, &cfg, BPF_ANY);
     if (ret < 0) {
-        fprintf(stderr, "Failed to set congestion threshold: %s\\n", strerror(errno));
+        fprintf(stderr, "Failed to set congestion threshold: %s\n", strerror(errno));
         close(fd);
         return -1;
     }
     
-    printf("Set congestion threshold: %d%%\\n", threshold_pct);
+    printf("Set congestion threshold: %d%%\n", threshold_pct);
     
     close(fd);
     return 0;
@@ -480,7 +480,7 @@ static int cmd_set_enabled(int enable)
     snprintf(map_path, sizeof(map_path), "%s/qos_config_map", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open QoS config map: %s\\n", strerror(errno));
+        fprintf(stderr, "Failed to open QoS config map: %s\n", strerror(errno));
         return -1;
     }
     
@@ -500,12 +500,12 @@ static int cmd_set_enabled(int enable)
     
     ret = bpf_map_update_elem(fd, &key, &cfg, BPF_ANY);
     if (ret < 0) {
-        fprintf(stderr, "Failed to update QoS state: %s\\n", strerror(errno));
+        fprintf(stderr, "Failed to update QoS state: %s\n", strerror(errno));
         close(fd);
         return -1;
     }
     
-    printf("QoS %s\\n", enable ? "enabled" : "disabled");
+    printf("QoS %s\n", enable ? "enabled" : "disabled");
     
     close(fd);
     return 0;
@@ -521,12 +521,12 @@ static int cmd_stats(void)
     snprintf(map_path, sizeof(map_path), "%s/qos_stats_map", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open QoS stats map: %s\\n", strerror(errno));
+        fprintf(stderr, "Failed to open QoS stats map: %s\n", strerror(errno));
         return -1;
     }
     
-    printf("\\nQoS Statistics:\\n");
-    printf("═══════════════════════════════════════\\n");
+    printf("\nQoS Statistics:\n");
+    printf("═══════════════════════════════════════\n");
     
     for (i = 0; i < QOS_STAT_MAX; i++) {
         uint32_t key = i;
@@ -534,15 +534,15 @@ static int cmd_stats(void)
         
         if (bpf_map_lookup_elem(fd, &key, &val) == 0) {
             stats[i] = val;
-            printf("  %-25s: %llu\\n", stat_names[i], (unsigned long long)val);
+            printf("  %-25s: %llu\n", stat_names[i], (unsigned long long)val);
         }
     }
     
     close(fd);
     
     // Show rate limiter statistics
-    printf("\\nRate Limiter Statistics:\\n");
-    printf("───────────────────────────────────────\\n");
+    printf("\nRate Limiter Statistics:\n");
+    printf("───────────────────────────────────────\n");
     
     snprintf(map_path, sizeof(map_path), "%s/qos_rate_limiters", PIN_BASE_DIR);
     fd = bpf_obj_get(map_path);
@@ -552,28 +552,28 @@ static int cmd_stats(void)
             struct qos_rate_limiter limiter;
             
             if (bpf_map_lookup_elem(fd, &key, &limiter) == 0 && limiter.rate_bps > 0) {
-                printf("  Priority %s:\\n", priority_names[i]);
-                printf("    Rate: %u bps, Burst: %u bytes\\n", limiter.rate_bps, limiter.burst_bytes);
-                printf("    Total: %llu bytes, Dropped: %llu bytes (%u packets)\\n",
+                printf("  Priority %s:\n", priority_names[i]);
+                printf("    Rate: %u bps, Burst: %u bytes\n", limiter.rate_bps, limiter.burst_bytes);
+                printf("    Total: %llu bytes, Dropped: %llu bytes (%u packets)\n",
                        (unsigned long long)limiter.total_bytes,
                        (unsigned long long)limiter.dropped_bytes,
                        limiter.dropped_packets);
-                printf("    Current tokens: %llu bytes\\n\\n",
+                printf("    Current tokens: %llu bytes\n\n",
                        (unsigned long long)limiter.tokens);
             }
         }
         close(fd);
     }
     
-    printf("\\n");
+    printf("\n");
     return 0;
 }
 
 // List configuration
 static int cmd_list(void)
 {
-    printf("\\nQoS Configuration:\\n");
-    printf("═══════════════════════════════════════\\n");
+    printf("\nQoS Configuration:\n");
+    printf("═══════════════════════════════════════\n");
     
     // Show global config
     char map_path[256];
@@ -583,28 +583,28 @@ static int cmd_list(void)
         uint32_t key = 0;
         struct qos_config cfg;
         if (bpf_map_lookup_elem(cfg_fd, &key, &cfg) == 0) {
-            printf("Status: %s\\n", (cfg.flags & QOS_FLAG_ENABLED) ? "ENABLED" : "DISABLED");
-            printf("Features:\\n");
-            printf("  - Rate limiting: %s\\n", (cfg.flags & QOS_FLAG_RATE_LIMIT_ENABLED) ? "ON" : "OFF");
-            printf("  - ECN marking: %s\\n", (cfg.flags & QOS_FLAG_ECN_ENABLED) ? "ON" : "OFF");
-            printf("  - DSCP rewrite: %s\\n", (cfg.flags & QOS_FLAG_DSCP_REWRITE) ? "ON" : "OFF");
-            printf("Default Priority: %s\\n", priority_names[cfg.default_priority]);
-            printf("Congestion Threshold: %u%%\\n", cfg.congestion_threshold_pct);
-            printf("Queue Size: %u packets\\n\\n", cfg.queue_size_packets);
+            printf("Status: %s\n", (cfg.flags & QOS_FLAG_ENABLED) ? "ENABLED" : "DISABLED");
+            printf("Features:\n");
+            printf("  - Rate limiting: %s\n", (cfg.flags & QOS_FLAG_RATE_LIMIT_ENABLED) ? "ON" : "OFF");
+            printf("  - ECN marking: %s\n", (cfg.flags & QOS_FLAG_ECN_ENABLED) ? "ON" : "OFF");
+            printf("  - DSCP rewrite: %s\n", (cfg.flags & QOS_FLAG_DSCP_REWRITE) ? "ON" : "OFF");
+            printf("Default Priority: %s\n", priority_names[cfg.default_priority]);
+            printf("Congestion Threshold: %u%%\n", cfg.congestion_threshold_pct);
+            printf("Queue Size: %u packets\n\n", cfg.queue_size_packets);
             
-            printf("DSCP Remarking:\\n");
+            printf("DSCP Remarking:\n");
             for (int i = 0; i < QOS_MAX_PRIORITIES; i++) {
                 if (cfg.dscp_map[i] != 0) {
-                    printf("  Priority %s → DSCP %u\\n", priority_names[i], cfg.dscp_map[i]);
+                    printf("  Priority %s → DSCP %u\n", priority_names[i], cfg.dscp_map[i]);
                 }
             }
-            printf("\\n");
+            printf("\n");
         }
         close(cfg_fd);
     }
     
-    printf("Classification Rules:\\n");
-    printf("───────────────────────────────────────\\n");
+    printf("Classification Rules:\n");
+    printf("───────────────────────────────────────\n");
     
     snprintf(map_path, sizeof(map_path), "%s/qos_class_map", PIN_BASE_DIR);
     int class_fd = bpf_obj_get(map_path);
@@ -615,7 +615,7 @@ static int cmd_list(void)
         
         while (bpf_map_get_next_key(class_fd, &key, &next_key) == 0) {
             if (bpf_map_lookup_elem(class_fd, &next_key, &result) == 0) {
-                printf("  proto=%u dport=%u dscp=%u → %s\\n",
+                printf("  proto=%u dport=%u dscp=%u → %s\n",
                        next_key.proto, ntohs(next_key.dport), next_key.dscp,
                        priority_names[result.priority]);
                 count++;
@@ -624,12 +624,12 @@ static int cmd_list(void)
         }
         
         if (count == 0)
-            printf("  (none - using built-in defaults)\\n");
+            printf("  (none - using built-in defaults)\n");
         
         close(class_fd);
     }
     
-    printf("\\n");
+    printf("\n");
     return 0;
 }
 
@@ -651,7 +651,7 @@ static int cmd_clear(void)
             count++;
         }
         
-        printf("Cleared %d classification rules\\n", count);
+        printf("Cleared %d classification rules\n", count);
         close(fd);
     }
     
@@ -664,7 +664,7 @@ static int cmd_clear(void)
             struct qos_rate_limiter zero = {0};
             bpf_map_update_elem(fd, &key, &zero, BPF_ANY);
         }
-        printf("Cleared all rate limiters\\n");
+        printf("Cleared all rate limiters\n");
         close(fd);
     }
     
@@ -673,28 +673,28 @@ static int cmd_clear(void)
 
 static void usage(const char *prog)
 {
-    fprintf(stderr, "Usage: %s <command> [options]\\n\\n", prog);
-    fprintf(stderr, "Commands:\\n");
-    fprintf(stderr, "  add-class       Add traffic classification rule\\n");
-    fprintf(stderr, "  set-rate-limit  Configure per-priority rate limiting\\n");
-    fprintf(stderr, "  set-dscp        Configure DSCP remarking\\n");
-    fprintf(stderr, "  set-congestion  Configure congestion control threshold\\n");
-    fprintf(stderr, "  enable          Enable QoS\\n");
-    fprintf(stderr, "  disable         Disable QoS\\n");
-    fprintf(stderr, "  list            List configuration\\n");
-    fprintf(stderr, "  stats           Show statistics\\n");
-    fprintf(stderr, "  clear           Clear all rules\\n\\n");
-    fprintf(stderr, "Examples:\\n");
-    fprintf(stderr, "  # Classify SSH as critical priority\\n");
-    fprintf(stderr, "  %s add-class --proto tcp --dport 22 --priority critical\\n\\n", prog);
-    fprintf(stderr, "  # Rate limit background traffic to 1 Mbps\\n");
-    fprintf(stderr, "  %s set-rate-limit --priority low --rate 1M --burst 64K\\n\\n", prog);
-    fprintf(stderr, "  # Mark critical traffic with EF DSCP (46)\\n");
-    fprintf(stderr, "  %s set-dscp --priority critical --dscp 46\\n\\n", prog);
-    fprintf(stderr, "  # Set congestion threshold to 75%% of queue\\n");
-    fprintf(stderr, "  %s set-congestion --threshold 75\\n\\n", prog);
-    fprintf(stderr, "  # Enable QoS processing\\n");
-    fprintf(stderr, "  %s enable\\n", prog);
+    fprintf(stderr, "Usage: %s <command> [options]\n\n", prog);
+    fprintf(stderr, "Commands:\n");
+    fprintf(stderr, "  add-class       Add traffic classification rule\n");
+    fprintf(stderr, "  set-rate-limit  Configure per-priority rate limiting\n");
+    fprintf(stderr, "  set-dscp        Configure DSCP remarking\n");
+    fprintf(stderr, "  set-congestion  Configure congestion control threshold\n");
+    fprintf(stderr, "  enable          Enable QoS\n");
+    fprintf(stderr, "  disable         Disable QoS\n");
+    fprintf(stderr, "  list            List configuration\n");
+    fprintf(stderr, "  stats           Show statistics\n");
+    fprintf(stderr, "  clear           Clear all rules\n\n");
+    fprintf(stderr, "Examples:\n");
+    fprintf(stderr, "  # Classify SSH as critical priority\n");
+    fprintf(stderr, "  %s add-class --proto tcp --dport 22 --priority critical\n\n", prog);
+    fprintf(stderr, "  # Rate limit background traffic to 1 Mbps\n");
+    fprintf(stderr, "  %s set-rate-limit --priority low --rate 1M --burst 64K\n\n", prog);
+    fprintf(stderr, "  # Mark critical traffic with EF DSCP (46)\n");
+    fprintf(stderr, "  %s set-dscp --priority critical --dscp 46\n\n", prog);
+    fprintf(stderr, "  # Set congestion threshold to 75%% of queue\n");
+    fprintf(stderr, "  %s set-congestion --threshold 75\n\n", prog);
+    fprintf(stderr, "  # Enable QoS processing\n");
+    fprintf(stderr, "  %s enable\n", prog);
 }
 
 int main(int argc, char **argv)
@@ -725,7 +725,7 @@ int main(int argc, char **argv)
     } else if (strcmp(cmd, "clear") == 0) {
         return cmd_clear();
     } else {
-        fprintf(stderr, "Unknown command: %s\\n\\n", cmd);
+        fprintf(stderr, "Unknown command: %s\n\n", cmd);
         usage(argv[0]);
         return 1;
     }

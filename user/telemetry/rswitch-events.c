@@ -215,7 +215,7 @@ static int should_rate_limit(struct event_ctx *ctx, __u8 event_type, __u64 times
     if (rl->event_count > 0) {
         // Log dropped event count
         if (ctx->verbose) {
-            printf("Rate limited %u %s events in last %u ms\\n", 
+            printf("Rate limited %u %s events in last %u ms\n", 
                    rl->event_count, event_type_names[event_type], rl->rate_limit_ms);
         }
         rl->event_count = 0;
@@ -239,14 +239,14 @@ static void process_mac_learned_event(struct event_ctx *ctx, struct rs_event_mac
             "\\"mac\\": \\"%02x:%02x:%02x:%02x:%02x:%02x\\", "
             "\\"vlan\\": %u, "
             "\\"moved\\": %s"
-            "}\\n",
+            "}\n",
             timestamp, event->hdr.ifindex,
             event->mac[0], event->mac[1], event->mac[2],
             event->mac[3], event->mac[4], event->mac[5],
             event->vlan_id,
             event->prev_ifindex != 0 ? "true" : "false");
     } else {
-        fprintf(ctx->output_fp, "[%s] MAC_LEARNED: %02x:%02x:%02x:%02x:%02x:%02x on ifindex=%u vlan=%u%s\\n",
+        fprintf(ctx->output_fp, "[%s] MAC_LEARNED: %02x:%02x:%02x:%02x:%02x:%02x on ifindex=%u vlan=%u%s\n",
                 timestamp,
                 event->mac[0], event->mac[1], event->mac[2],
                 event->mac[3], event->mac[4], event->mac[5],
@@ -281,12 +281,12 @@ static void process_acl_drop_event(struct event_ctx *ctx, struct rs_event_acl_dr
             "\\"sport\\": %u, "
             "\\"dport\\": %u, "
             "\\"acl_level\\": %u"
-            "}\\n",
+            "}\n",
             timestamp, event->hdr.ifindex, event->proto,
             src_ip, dst_ip, ntohs(event->sport), ntohs(event->dport), 
             event->acl_level);
     } else {
-        fprintf(ctx->output_fp, "[%s] ACL_DROP: proto=%u %s:%u → %s:%u (L%u) on ifindex=%u\\n",
+        fprintf(ctx->output_fp, "[%s] ACL_DROP: proto=%u %s:%u → %s:%u (L%u) on ifindex=%u\n",
                 timestamp, event->proto, src_ip, ntohs(event->sport),
                 dst_ip, ntohs(event->dport), event->acl_level, event->hdr.ifindex);
     }
@@ -310,12 +310,12 @@ static void process_qos_rate_limited_event(struct event_ctx *ctx, struct rs_even
             "\\"packet_len\\": %u, "
             "\\"rate_bps\\": %u, "
             "\\"tokens_remaining\\": %llu"
-            "}\\n",
+            "}\n",
             timestamp, event->hdr.ifindex, event->priority, 
             event->packet_len, event->rate_bps, 
             (unsigned long long)event->bucket_tokens_remaining);
     } else {
-        fprintf(ctx->output_fp, "[%s] QOS_RATE_LIMITED: priority=%u len=%u rate=%u bps tokens=%llu on ifindex=%u\\n",
+        fprintf(ctx->output_fp, "[%s] QOS_RATE_LIMITED: priority=%u len=%u rate=%u bps tokens=%llu on ifindex=%u\n",
                 timestamp, event->priority, event->packet_len, event->rate_bps,
                 (unsigned long long)event->bucket_tokens_remaining, event->hdr.ifindex);
     }
@@ -342,13 +342,13 @@ static void process_arp_learned_event(struct event_ctx *ctx, struct rs_event_arp
             "\\"ip\\": \\"%s\\", "
             "\\"mac\\": \\"%02x:%02x:%02x:%02x:%02x:%02x\\", "
             "\\"is_update\\": %s"
-            "}\\n",
+            "}\n",
             timestamp, event->hdr.ifindex, ip,
             event->mac[0], event->mac[1], event->mac[2],
             event->mac[3], event->mac[4], event->mac[5],
             event->is_update ? "true" : "false");
     } else {
-        fprintf(ctx->output_fp, "[%s] ARP_LEARNED: %s → %02x:%02x:%02x:%02x:%02x:%02x%s on ifindex=%u\\n",
+        fprintf(ctx->output_fp, "[%s] ARP_LEARNED: %s → %02x:%02x:%02x:%02x:%02x:%02x%s on ifindex=%u\n",
                 timestamp, ip,
                 event->mac[0], event->mac[1], event->mac[2],
                 event->mac[3], event->mac[4], event->mac[5],
@@ -365,12 +365,12 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     struct rs_event_header *hdr = data;
     
     if (data_sz < sizeof(*hdr)) {
-        fprintf(stderr, "Invalid event: size %zu < header size %zu\\n", data_sz, sizeof(*hdr));
+        fprintf(stderr, "Invalid event: size %zu < header size %zu\n", data_sz, sizeof(*hdr));
         return 0;
     }
     
     if (hdr->size > data_sz) {
-        fprintf(stderr, "Invalid event: declared size %u > actual size %zu\\n", hdr->size, data_sz);
+        fprintf(stderr, "Invalid event: declared size %u > actual size %zu\n", hdr->size, data_sz);
         return 0;
     }
     
@@ -412,7 +412,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
         if (ectx->verbose) {
             char timestamp[32];
             ktime_to_iso8601(hdr->timestamp_ns, timestamp, sizeof(timestamp));
-            fprintf(ectx->output_fp, "[%s] UNKNOWN_EVENT: type=%u priority=%s ifindex=%u\\n",
+            fprintf(ectx->output_fp, "[%s] UNKNOWN_EVENT: type=%u priority=%s ifindex=%u\n",
                     timestamp, hdr->type, priority_names[hdr->priority], hdr->ifindex);
             fflush(ectx->output_fp);
         }
@@ -431,43 +431,43 @@ static void sig_int(int signo)
 // Print usage
 static void usage(const char *prog)
 {
-    fprintf(stderr, "Usage: %s [options]\\n", prog);
-    fprintf(stderr, "\\n");
-    fprintf(stderr, "Options:\\n");
-    fprintf(stderr, "  -j, --json        Output events as JSON\\n");
-    fprintf(stderr, "  -v, --verbose     Verbose output\\n");
-    fprintf(stderr, "  -o, --output FILE Write to file instead of stdout\\n");
-    fprintf(stderr, "  -h, --help        Show this help\\n");
-    fprintf(stderr, "\\n");
-    fprintf(stderr, "Examples:\\n");
-    fprintf(stderr, "  %s                     # Stream events to stdout\\n", prog);
-    fprintf(stderr, "  %s -j                  # Stream as JSON\\n", prog);
-    fprintf(stderr, "  %s -o events.log       # Log to file\\n", prog);
-    fprintf(stderr, "  %s -j -o events.jsonl  # JSON logs to file\\n", prog);
+    fprintf(stderr, "Usage: %s [options]\n", prog);
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -j, --json        Output events as JSON\n");
+    fprintf(stderr, "  -v, --verbose     Verbose output\n");
+    fprintf(stderr, "  -o, --output FILE Write to file instead of stdout\n");
+    fprintf(stderr, "  -h, --help        Show this help\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Examples:\n");
+    fprintf(stderr, "  %s                     # Stream events to stdout\n", prog);
+    fprintf(stderr, "  %s -j                  # Stream as JSON\n", prog);
+    fprintf(stderr, "  %s -o events.log       # Log to file\n", prog);
+    fprintf(stderr, "  %s -j -o events.jsonl  # JSON logs to file\n", prog);
 }
 
 // Show statistics
 static void show_stats(struct event_ctx *ctx)
 {
-    printf("\\n=== Event Statistics ===\\n");
-    printf("Total events: %llu\\n", (unsigned long long)ctx->total_events);
+    printf("\n=== Event Statistics ===\n");
+    printf("Total events: %llu\n", (unsigned long long)ctx->total_events);
     
-    printf("\\nBy type:\\n");
+    printf("\nBy type:\n");
     for (int i = 0; i < 16; i++) {
         if (ctx->events_by_type[i] > 0) {
             const char *name = (i < sizeof(event_type_names)/sizeof(event_type_names[0])) 
                               ? event_type_names[i] : "UNKNOWN";
-            printf("  %-20s: %llu\\n", name, (unsigned long long)ctx->events_by_type[i]);
+            printf("  %-20s: %llu\n", name, (unsigned long long)ctx->events_by_type[i]);
         }
     }
     
-    printf("\\nBy priority:\\n");
+    printf("\nBy priority:\n");
     for (int i = 0; i < 4; i++) {
         if (ctx->events_by_priority[i] > 0) {
-            printf("  %-8s: %llu\\n", priority_names[i], (unsigned long long)ctx->events_by_priority[i]);
+            printf("  %-8s: %llu\n", priority_names[i], (unsigned long long)ctx->events_by_priority[i]);
         }
     }
-    printf("\\n");
+    printf("\n");
 }
 
 int main(int argc, char **argv)
@@ -522,24 +522,24 @@ int main(int argc, char **argv)
     // Open BPF ringbuf
     int ringbuf_fd = bpf_obj_get("/sys/fs/bpf/rs_event_ringbuf");
     if (ringbuf_fd < 0) {
-        fprintf(stderr, "Failed to open event ringbuf: %s\\n", strerror(errno));
-        fprintf(stderr, "Make sure rSwitch loader is running and events are enabled\\n");
+        fprintf(stderr, "Failed to open event ringbuf: %s\n", strerror(errno));
+        fprintf(stderr, "Make sure rSwitch loader is running and events are enabled\n");
         goto cleanup;
     }
     
     g_ctx.rb = ring_buffer__new(ringbuf_fd, handle_event, &g_ctx, NULL);
     if (!g_ctx.rb) {
-        fprintf(stderr, "Failed to create ring buffer\\n");
+        fprintf(stderr, "Failed to create ring buffer\n");
         close(ringbuf_fd);
         goto cleanup;
     }
     
     g_ctx.running = 1;
     
-    printf("rSwitch Event Consumer starting\\n");
-    printf("Output: %s\\n", output_file ? output_file : "stdout");
-    printf("Format: %s\\n", g_ctx.json_output ? "JSON" : "text");
-    printf("Press Ctrl+C to stop\\n\\n");
+    printf("rSwitch Event Consumer starting\n");
+    printf("Output: %s\n", output_file ? output_file : "stdout");
+    printf("Format: %s\n", g_ctx.json_output ? "JSON" : "text");
+    printf("Press Ctrl+C to stop\n\n");
     
     // Main event loop
     while (g_ctx.running) {
@@ -547,12 +547,12 @@ int main(int argc, char **argv)
         if (ret == -EINTR) {
             break;  // Interrupted by signal
         } else if (ret < 0) {
-            fprintf(stderr, "Error polling ring buffer: %d\\n", ret);
+            fprintf(stderr, "Error polling ring buffer: %d\n", ret);
             break;
         }
     }
     
-    printf("\\nShutting down...\\n");
+    printf("\nShutting down...\n");
     show_stats(&g_ctx);
     
     ring_buffer__free(g_ctx.rb);
