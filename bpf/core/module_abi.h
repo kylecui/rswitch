@@ -83,9 +83,14 @@ struct rs_module_desc {
 /* STAGE NUMBER CONVENTIONS
  * 
  * Modules are executed in ascending stage order within each hook point.
- * Use these ranges to ensure proper pipeline ordering:
+ * Stage numbers are used for ORDERING in profiles - actual slot assignment
+ * in rs_progs array is done automatically by the loader:
+ *   - Ingress modules: slots 0, 1, 2, ... (ascending from 0)
+ *   - Egress modules: slots 255, 254, 253, ... (descending from 255)
  * 
- * INGRESS PIPELINE:
+ * This separation prevents slot collision and enables independent pipelines.
+ * 
+ * INGRESS PIPELINE (Stages 10-99):
  *   10-19: Pre-processing (header validation, normalization)
  *   20-29: VLAN processing (tag manipulation, peer lookup)
  *   30-39: Access control and security policies
@@ -95,21 +100,32 @@ struct rs_module_desc {
  *   80-89: Learning and observability (MAC learning, flow tracking)
  *   90-99: Final decision (lastcall - must be at 90)
  * 
- * EGRESS PIPELINE:
- *   10-19: Pre-egress processing
- *   20-29: VLAN tag manipulation (egress tagging)
- *   30-49: QoS enforcement (rate limiting, queue selection)
- *   50-69: Policy enforcement
- *   70-89: Mirroring and telemetry
- *   90-99: Final egress (must be last)
+ * EGRESS PIPELINE (Stages 100-199):
+ *   100-119: Pre-egress processing
+ *   120-139: VLAN tag manipulation (egress tagging)
+ *   140-169: Policy enforcement
+ *   170-179: QoS enforcement (rate limiting, DSCP remarking)
+ *   180-189: Mirroring and telemetry
+ *   190-199: Final egress (egress_final - must be last, typically 190)
  * 
  * Example stage assignments:
- *   - vlan.bpf.c:       stage=20 (VLAN processing)
- *   - acl.bpf.c:        stage=30 (Access control)
- *   - route.bpf.c:      stage=40 (Routing)
- *   - mirror.bpf.c:     stage=70 (Mirroring)
- *   - l2learn.bpf.c:    stage=80 (MAC learning)
- *   - lastcall.bpf.c:   stage=90 (Final forwarding)
+ *   Ingress:
+ *     - vlan.bpf.c:       stage=20 (VLAN ingress processing)
+ *     - acl.bpf.c:        stage=30 (Access control)
+ *     - route.bpf.c:      stage=50 (IP routing)
+ *     - mirror.bpf.c:     stage=70 (Mirroring)
+ *     - l2learn.bpf.c:    stage=80 (MAC learning)
+ *     - lastcall.bpf.c:   stage=90 (Final forwarding)
+ *   Egress:
+ *     - qos.bpf.c:        stage=170 (QoS processing)
+ *     - egress_vlan.bpf.c: stage=180 (VLAN egress tagging)
+ *     - egress_final.bpf.c: stage=190 (Final egress)
+ * 
+ * Slot assignment example (2 egress modules):
+ *   Loader sorts by stage (170 < 190), assigns slots descending:
+ *     qos (stage 170) → rs_progs[255]
+ *     egress_final (stage 190) → rs_progs[254]
+ *   Chain: prog_chain[0]=255, prog_chain[255]=254, prog_chain[254]=0
  */
 
 /* Module stage ranges for reference */

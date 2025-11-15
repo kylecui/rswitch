@@ -94,6 +94,22 @@ void profile_init(struct rs_profile *profile)
     profile->settings.ringbuf_enabled = 0;
     profile->settings.debug = 0;
     
+    /* Default VOQd settings (disabled by default) */
+    profile->voqd.enabled = 0;
+    profile->voqd.mode = 0;  // BYPASS
+    profile->voqd.num_ports = 0;
+    profile->voqd.prio_mask = 0x0C;  // HIGH + CRITICAL by default
+    profile->voqd.enable_afxdp = 0;
+    profile->voqd.zero_copy = 0;
+    profile->voqd.rx_ring_size = 2048;
+    profile->voqd.tx_ring_size = 2048;
+    profile->voqd.frame_size = 2048;
+    profile->voqd.batch_size = 256;
+    profile->voqd.poll_timeout_ms = 100;
+    profile->voqd.busy_poll = 0;
+    profile->voqd.cpu_affinity = -1;  // No affinity
+    profile->voqd.enable_scheduler = 1;
+    
     profile->ports = NULL;
     profile->port_count = 0;
     profile->vlans = NULL;
@@ -471,6 +487,67 @@ static int parse_vlan_item(FILE *fp, struct rs_profile_vlan *vlan)
     return 0;
 }
 
+/* Parse voqd_config section */
+static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
+{
+    char line[MAX_LINE_LEN];
+    char key[256], value[256];
+    
+    while (fgets(line, sizeof(line), fp)) {
+        remove_comment(line);
+        char *trimmed = trim(line);
+        
+        if (strlen(trimmed) == 0) continue;
+        
+        /* Check if we're entering another section (non-indented line with ':') */
+        if (line[0] != ' ' && line[0] != '\t' && strchr(trimmed, ':')) {
+            /* Rewind to start of this line */
+            fseek(fp, -(long)strlen(line) - 1, SEEK_CUR);
+            break;
+        }
+        
+        if (parse_key_value(trimmed, key, value, sizeof(key)) != 0) {
+            continue;
+        }
+        
+        /* Parse VOQd configuration fields */
+        if (strcmp(key, "enable") == 0 || strcmp(key, "enabled") == 0 || 
+            strcmp(key, "enable_afxdp") == 0) {
+            voqd->enabled = parse_bool(value);
+            voqd->enable_afxdp = voqd->enabled;  // enable_afxdp implies enabled
+        } else if (strcmp(key, "mode") == 0) {
+            if (strcmp(value, "bypass") == 0) voqd->mode = 0;
+            else if (strcmp(value, "shadow") == 0) voqd->mode = 1;
+            else if (strcmp(value, "active") == 0) voqd->mode = 2;
+            else voqd->mode = atoi(value);
+        } else if (strcmp(key, "num_ports") == 0) {
+            voqd->num_ports = atoi(value);
+        } else if (strcmp(key, "prio_mask") == 0) {
+            voqd->prio_mask = (uint32_t)strtoul(value, NULL, 0);
+        } else if (strcmp(key, "zero_copy") == 0) {
+            voqd->zero_copy = parse_bool(value);
+        } else if (strcmp(key, "rx_ring_size") == 0) {
+            voqd->rx_ring_size = atoi(value);
+        } else if (strcmp(key, "tx_ring_size") == 0) {
+            voqd->tx_ring_size = atoi(value);
+        } else if (strcmp(key, "frame_size") == 0) {
+            voqd->frame_size = atoi(value);
+        } else if (strcmp(key, "batch_size") == 0) {
+            voqd->batch_size = atoi(value);
+        } else if (strcmp(key, "poll_timeout_ms") == 0) {
+            voqd->poll_timeout_ms = atoi(value);
+        } else if (strcmp(key, "busy_poll") == 0) {
+            voqd->busy_poll = parse_bool(value);
+        } else if (strcmp(key, "cpu_affinity") == 0) {
+            voqd->cpu_affinity = atoi(value);
+        } else if (strcmp(key, "enable_scheduler") == 0) {
+            voqd->enable_scheduler = parse_bool(value);
+        }
+    }
+    
+    return 0;
+}
+
 /* Parse vlans section */
 static int parse_vlans(FILE *fp, struct rs_profile *profile)
 {
@@ -570,6 +647,9 @@ int profile_load(const char *filename, struct rs_profile *profile)
             if (ret < 0) goto error;
         } else if (strcmp(key, "settings") == 0) {
             ret = parse_settings(fp, &profile->settings);
+            if (ret < 0) goto error;
+        } else if (strcmp(key, "voqd_config") == 0) {
+            ret = parse_voqd_config(fp, &profile->voqd);
             if (ret < 0) goto error;
         } else if (strcmp(key, "ports") == 0) {
             fprintf(stderr, "DEBUG: Parsing ports section\n");

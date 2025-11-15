@@ -74,6 +74,18 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } afxdp_cpumap SEC(".maps");
 
+/* XSKMAP for AF_XDP socket binding
+ * Required by libxdp's xsk_socket__create() to bind AF_XDP sockets.
+ * Key: queue_id, Value: AF_XDP socket fd (managed by VOQd)
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_XSKMAP);
+	__uint(max_entries, 128);  /* Support up to 128 queues */
+	__type(key, __u32);
+	__type(value, __u32);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+} xsks_map SEC(".maps");
+
 /* AF_XDP TX devmap - Queue 0 only (high-priority path)
  * 
  * Separate from rs_xdp_devmap to ensure TX queue isolation.
@@ -162,17 +174,24 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	if (rs_ctx->action == XDP_DROP)
 		return XDP_DROP;
 	
-	/* Egress port must be set by previous modules (l2learn/route) */
-	if (rs_ctx->egress_ifindex == 0)
-		goto next_module;
+	/* Note: We DO NOT check egress_ifindex here, because:
+	 * - SHADOW mode needs to observe all traffic (including flooding)
+	 * - ACTIVE mode can handle flooding by redirecting to AF_XDP
+	 * - Only skip if we really can't process (errors, etc.)
+	 */
 	
 	/* Lookup VOQd state */
 	state = bpf_map_lookup_elem(&voqd_state_map, &key);
-	if (!state)
+	if (!state) {
+		bpf_printk("[AF_XDP] No VOQd state found");
 		goto next_module;
+	}
 	
 	/* Get current time for timeout checking */
 	now_ns = bpf_ktime_get_ns();
+	
+	bpf_printk("[AF_XDP] mode=%d, running=%d, prio_mask=0x%x", 
+	           state->mode, state->running, state->prio_mask);
 	
 	/*
 	 * Automatic Failover: ACTIVE/SHADOW -> BYPASS on heartbeat timeout
@@ -201,20 +220,35 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	}
 	
 	/* BYPASS mode: Skip all processing */
-	if (state->mode == VOQD_MODE_BYPASS)
+	if (state->mode == VOQD_MODE_BYPASS) {
+		bpf_printk("[AF_XDP] BYPASS mode, skipping");
 		goto next_module;
+	}
 	
 	/* Check if VOQd is actually running */
-	if (!state->running)
+	if (!state->running) {
+		bpf_printk("[AF_XDP] VOQd not running");
 		goto next_module;
+	}
 	
 	/* Lookup QoS config */
 	qos = bpf_map_lookup_elem(&qos_config_map, &key);
 	if (!qos)
 		goto next_module;
 	
-	/* Extract priority */
-	prio = extract_priority(ctx, qos);
+	/* Extract priority from packet or use pre-classified priority
+	 * Priority can come from three sources (in order of preference):
+	 * 1. rs_ctx->prio set by ingress classifier/ACL
+	 * 2. rs_ctx->prio set by egress QoS module (via DSCP marking feedback)
+	 * 3. extract_priority() reading DSCP field directly
+	 */
+	if (rs_ctx->prio < QOS_MAX_PRIORITIES) {
+		/* Priority already classified by upstream module */
+		prio = rs_ctx->prio;
+	} else {
+		/* Extract priority from DSCP field */
+		prio = extract_priority(ctx, qos);
+	}
 	
 	/* Check if this priority should be intercepted */
 	if (!(state->prio_mask & (1 << prio)))
@@ -254,11 +288,11 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	}
 	
 	/*
-	 * ACTIVE Mode: Redirect to user-space VOQd via cpumap
+	 * ACTIVE Mode: Redirect to user-space VOQd via AF_XDP (xsks_map)
 	 */
 	if (state->mode == VOQD_MODE_ACTIVE) {
 		struct voq_meta *meta;
-		__u32 cpu = 0;  /* Target CPU for VOQd */
+		__u32 queue_id = 1;  /* Use queue 1 (queue 0 may be reserved by driver) */
 		
 		/* Submit metadata first */
 		meta = bpf_ringbuf_reserve(&voq_ringbuf, sizeof(*meta), 0);
@@ -273,8 +307,9 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 			
 			bpf_ringbuf_submit(meta, 0);
 			
-			/* Redirect packet to cpumap (VOQd handles via AF_XDP) */
-			return bpf_redirect_map(&afxdp_cpumap, cpu, 0);
+			/* Redirect packet to AF_XDP socket via xsks_map
+			 * VOQd's AF_XDP socket must be registered in xsks_map[queue_id] */
+			return bpf_redirect_map(&xsks_map, queue_id, 0);
 		} else {
 			/* Ringbuf full - track overload */
 			state->overload_drops++;
@@ -297,10 +332,9 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	
 next_module:
 	/* Call next module in chain */
-	if (rs_ctx->next_prog_id != 0) {
-		bpf_tail_call(ctx, &rs_progs, rs_ctx->next_prog_id);
-	}
+	RS_TAIL_CALL_NEXT(ctx, rs_ctx);
 	
+	/* Tail-call failed - should not happen if pipeline is properly configured */
 	return XDP_PASS;
 }
 

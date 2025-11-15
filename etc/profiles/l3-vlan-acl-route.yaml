@@ -26,7 +26,9 @@ ingress:
 
 # Egress pipeline
 egress:
-  - egress     # Devmap egress hook with VLAN tagging
+#  - egress_qos   # Sets priority
+  - egress_vlan  # Uses priority in VLAN PCP
+  - egress_final  
 
 # Global settings
 settings:
@@ -45,6 +47,13 @@ settings:
   # ACL
   acl_enabled: true  # ACL module enabled
   acl_default_action: "permit"
+  
+  # QoS
+  qos_enabled: true  # QoS module enabled
+  qos_default_priority: "normal"
+  qos_rate_limiting: true
+  qos_ecn_enabled: true
+  qos_dscp_rewrite: true
   
   # Forwarding behavior
   unknown_unicast_flood: true
@@ -77,6 +86,36 @@ acl:
   rate_limit:
     default_burst: 1000  # bytes
     default_rate: 100000  # bytes/sec
+
+# QoS configuration
+qos:
+  enabled: true
+  default_priority: "normal"  # low/normal/high/critical
+  congestion_threshold: 75     # Percentage of queue size
+  queue_size_packets: 1000     # Estimated queue size for congestion detection
+  
+  # Traffic classification rules (proto+port → priority)
+  classification:
+    - { proto: "tcp", port: 22, priority: "critical" }    # SSH
+    - { proto: "udp", port: 53, priority: "critical" }    # DNS
+    - { proto: "tcp", port: 80, priority: "high" }       # HTTP
+    - { proto: "tcp", port: 443, priority: "high" }      # HTTPS
+    - { proto: "tcp", port: 25, priority: "low" }        # SMTP
+    - { proto: "tcp", port: 20, priority: "low" }        # FTP data
+  
+  # DSCP remarking (priority → DSCP value)
+  dscp_marking:
+    critical: 46  # EF (Expedited Forwarding)
+    high: 34      # AF41 (Video)
+    normal: 18    # AF21 (Standard)
+    low: 10       # AF11 (Background)
+  
+  # Per-priority rate limiting
+  rate_limits:
+    low:      { rate: "10M", burst: "1M" }     # Background traffic
+    normal:   { rate: "100M", burst: "10M" }   # Normal traffic
+    high:     { rate: "1G", burst: "100M" }    # Interactive traffic  
+    critical: { rate: "unlimited" }            # Management/critical
 
 
 # Port configurations (same as l2-vlan-lab)

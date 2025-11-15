@@ -15,7 +15,9 @@
  */
 
 #define MAX_PORTS 64
-#define MAX_PRIORITIES 4
+#include "../../bpf/core/afxdp_common.h"
+
+// MAX_PRIORITIES now defined in afxdp_common.h
 #define MAX_QUEUE_DEPTH 8192
 #define DEFAULT_QUANTUM 1500  /* Bytes per round (MTU) */
 

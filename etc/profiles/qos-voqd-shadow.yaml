@@ -1,0 +1,50 @@
+# rSwitch QoS + VOQd SHADOW 模式配置
+# 用于测试 VOQd 基本功能，不使用 AF_XDP
+
+name: qos-voqd-shadow
+description: "QoS + VOQd in SHADOW mode (no AF_XDP) for testing"
+version: "1.0"
+
+# 处理流水线
+ingress:
+  - vlan # VLAN 处理， must be paired with egress_vlan
+  - l2learn
+  - afxdp_redirect
+  - lastcall
+
+egress:
+  - egress_qos
+  - egress_vlan
+  - egress_final
+
+# 基本设置
+settings:
+  mac_learning: true
+  mac_aging_time: 300
+  vlan_enforcement: true
+  default_vlan: 1
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  stats_enabled: true
+  ringbuf_enabled: true
+  debug: false
+
+# VOQd 配置 - SHADOW 模式（只观察，不拦截）
+voqd_config:
+  enabled: true              # 启用 VOQd 自动启动
+  mode: shadow               # SHADOW 模式：只观察流量，不使用 AF_XDP
+  num_ports: 4               # 端口数量
+  prio_mask: 0x0C            # HIGH (0x04) + CRITICAL (0x08)
+  enable_afxdp: false        # 禁用 AF_XDP（SHADOW 模式不需要）
+  enable_scheduler: true     # 启用调度器（用于测试）
+  
+  # 性能参数（对 SHADOW 模式影响较小）
+  zero_copy: false
+  rx_ring_size: 2048
+  tx_ring_size: 2048
+  frame_size: 2048
+  batch_size: 256
+  poll_timeout_ms: 100
+  busy_poll: false
+  cpu_affinity: -1

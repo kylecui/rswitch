@@ -227,14 +227,29 @@ static __always_inline int is_for_router(void *data, void *data_end,
 
 
 
-/* RFC 1624 incremental checksum update */
+/* RFC 1624 incremental checksum update for TTL change */
 static __always_inline void update_ipv4_checksum(struct iphdr *iph, __u8 old_ttl)
 {
-    __u32 sum = ~bpf_ntohs(iph->check) & 0xffff;
-    sum += (~old_ttl & 0xff) << 8;
-    sum += (iph->ttl & 0xff) << 8;
+    /* The IP checksum is over 16-bit words in network byte order.
+     * TTL is byte 8 in the IP header. When we decrement TTL, we need to
+     * update the checksum incrementally using RFC 1624:
+     *   HC' = ~(~HC + ~m + m')
+     * Where HC is old checksum, m is old data, m' is new data
+     */
+    __u32 sum = ~bpf_ntohs(iph->check) & 0xffff;  // Convert to 1's complement
+    
+    /* TTL is in the high byte of the 16-bit word (byte 8-9, TTL is byte 8)
+     * Old value: (old_ttl << 8) | proto
+     * New value: (new_ttl << 8) | proto
+     * We only changed TTL, so we update: sum += ~old_value + new_value
+     */
+    sum += (~((__u32)old_ttl << 8) & 0xffff);
+    sum += ((__u32)iph->ttl << 8);
+    
+    /* Add carry bits */
     sum = (sum & 0xffff) + (sum >> 16);
     sum = (sum & 0xffff) + (sum >> 16);
+    
     iph->check = bpf_htons(~sum & 0xffff);
 }
 
@@ -255,7 +270,8 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_PASS;
     }
     
-    rs_debug("Route: Entry on ifindex=%u, proto=0x%x", ctx->ifindex, ctx->layers.eth_proto);
+    rs_debug("Route: Entry on ifindex=%u, proto=0x%x, target=%u", 
+        ctx->ifindex, ctx->layers.eth_proto, ctx->egress_ifindex);
     
     // Check if enabled
     __u32 cfg_key = 0;

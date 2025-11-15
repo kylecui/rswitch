@@ -223,6 +223,7 @@ int rswitch_dispatcher(struct xdp_md *ctx)
                  rctx->layers.ip_proto,
                  bpf_ntohs(rctx->layers.sport), bpf_ntohs(rctx->layers.dport),
                  rctx->dscp);
+        rs_debug("IPv4: ingress=%u, egress=%u", rctx->ifindex, rctx->egress_ifindex);
     }
     
     /* Update ingress statistics */
@@ -239,8 +240,8 @@ int rswitch_dispatcher(struct xdp_md *ctx)
     }
     
     /* Execute tail-call chain */
-    rs_debug("Starting pipeline on port %u, first_prog_id=%u", 
-             ifindex, rctx->next_prog_id);
+    rs_debug("Starting pipeline on port %u, target port %u, first_prog_id=%u", 
+             ifindex, rctx->egress_ifindex, rctx->next_prog_id);
     
     /* Tail-call to first module - does not return on success */
     bpf_tail_call(ctx, &rs_progs, rctx->next_prog_id);

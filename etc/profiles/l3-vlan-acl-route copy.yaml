@@ -1,0 +1,176 @@
+# rSwitch Profile: L3 Router
+# 
+# Layer 3 routing with access control:
+# - VLAN processing for inter-VLAN routing
+# - ACL-based packet filtering (future)
+# - IP routing between VLANs (future)
+# - MAC learning for L2 fallback
+#
+# Pipeline: dispatcher → vlan → arp_learn → acl → route → l2learn → lastcall → egress
+# Use case: Gateway router, inter-VLAN routing, policy enforcement
+#
+# Note: ACL and Route modules are placeholders for future implementation
+
+name: l3
+description: "L3 router with inter-VLAN routing and ACL"
+version: "1.0"
+
+# Ingress pipeline (sorted by stage number)
+ingress:
+  - vlan       # Stage 20: VLAN ingress filtering
+  - arp_learn  # Stage 25: Passive ARP learning from network traffic
+  - acl        # Stage 30: Access control lists (future)
+  - route      # Stage 50: IP routing
+  - l2learn    # Stage 80: MAC learning fallback
+  - lastcall   # Stage 90: Forward based on route or learned MAC
+
+# Egress pipeline
+egress:
+  - egress_qos   # Sets priority
+  - egress_vlan  # Uses priority in VLAN PCP
+  - egress_final  
+
+# Global settings
+settings:
+  # MAC learning enabled (L2 fallback)
+  mac_learning: true
+  mac_aging_time: 300
+  
+  # VLAN enforcement enabled
+  vlan_enforcement: true
+  default_vlan: 1
+  
+  # Routing
+  ip_routing: true  # Routing module enabled
+  route_table_size: 1024
+  
+  # ACL
+  acl_enabled: true  # ACL module enabled
+  acl_default_action: "permit"
+  
+  # QoS
+  qos_enabled: true  # QoS module enabled
+  qos_default_priority: "normal"
+  qos_rate_limiting: true
+  qos_ecn_enabled: true
+  qos_dscp_rewrite: true
+  
+  # Forwarding behavior
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  
+  # Statistics collection
+  stats_enabled: true
+  
+  # Event notifications
+  ringbuf_enabled: true
+  notify_mac_learned: true
+  notify_mac_moved: true
+  notify_acl_drop: true
+  
+  # Debug mode
+  debug: false
+
+# ACL configuration
+acl:
+  enabled: true
+  default_action: pass  # Default action when no rules match
+  
+  # Pre-configured rules (for testing Phase 1)
+  # Format: lower priority number = higher precedence
+  # Rules will be populated by rsaclctl utility
+  rules: []
+  
+  # Rate limiting configuration
+  rate_limit:
+    default_burst: 1000  # bytes
+    default_rate: 100000  # bytes/sec
+
+# QoS configuration
+qos:
+  enabled: true
+  default_priority: "normal"  # low/normal/high/critical
+  congestion_threshold: 75     # Percentage of queue size
+  queue_size_packets: 1000     # Estimated queue size for congestion detection
+  
+  # Traffic classification rules (proto+port → priority)
+  classification:
+    - { proto: "tcp", port: 22, priority: "critical" }    # SSH
+    - { proto: "udp", port: 53, priority: "critical" }    # DNS
+    - { proto: "tcp", port: 80, priority: "high" }       # HTTP
+    - { proto: "tcp", port: 443, priority: "high" }      # HTTPS
+    - { proto: "tcp", port: 25, priority: "low" }        # SMTP
+    - { proto: "tcp", port: 20, priority: "low" }        # FTP data
+  
+  # DSCP remarking (priority → DSCP value)
+  dscp_marking:
+    critical: 46  # EF (Expedited Forwarding)
+    high: 34      # AF41 (Video)
+    normal: 18    # AF21 (Standard)
+    low: 10       # AF11 (Background)
+  
+  # Per-priority rate limiting
+  rate_limits:
+    low:      { rate: "10M", burst: "1M" }     # Background traffic
+    normal:   { rate: "100M", burst: "10M" }   # Normal traffic
+    high:     { rate: "1G", burst: "100M" }    # Interactive traffic  
+    critical: { rate: "unlimited" }            # Management/critical
+
+
+# Port configurations (same as l2-vlan-lab)
+ports:
+  - interface: ens34
+    enabled: true
+    management: managed
+    vlan_mode: trunk
+    native_vlan: 1
+    allowed_vlans: [1, 10, 20, 30]
+    mac_learning: true
+    default_priority: 0
+    
+  - interface: ens35
+    enabled: true
+    management: managed
+    vlan_mode: access
+    access_vlan: 10
+    mac_learning: true
+    default_priority: 0
+    
+  - interface: ens36
+    enabled: true
+    management: managed
+    vlan_mode: access
+    access_vlan: 1
+    mac_learning: true
+    default_priority: 0
+    
+  - interface: ens37
+    enabled: true
+    management: managed
+    vlan_mode: access
+    access_vlan: 1
+    mac_learning: true
+    default_priority: 0
+
+# VLAN database configuration (same as l2-vlan-lab)
+vlans:
+  - vlan_id: 1
+    name: "default"
+    tagged_ports: [ens34]
+    untagged_ports: [ens36, ens37]
+    
+  - vlan_id: 10
+    name: "management"
+    tagged_ports: [ens34]
+    untagged_ports: [ens35]
+    
+  - vlan_id: 20
+    name: "guest"
+    tagged_ports: [ens34]
+    untagged_ports: []
+    
+  - vlan_id: 30
+    name: "iot"
+    tagged_ports: [ens34]
+    untagged_ports: []

@@ -310,7 +310,7 @@ int acl_filter(struct xdp_md *xdp_ctx)
     __u32 cfg_key = 0;
     struct acl_config *cfg = bpf_map_lookup_elem(&acl_config_map, &cfg_key);
     if (!cfg || !cfg->enabled) {
-        rs_debug("ACL: disabled, passing through");
+        rs_debug("ACL: disabled, passing through. target=%d", ctx->egress_ifindex);
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
         return XDP_DROP;  // Tail-call failed
     }

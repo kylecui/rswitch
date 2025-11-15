@@ -30,6 +30,8 @@
 #include <linux/if_link.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <sys/types.h>
 #include <dirent.h>
 
 #include <bpf/libbpf.h>
@@ -146,14 +148,31 @@ struct loader_ctx {
     struct rs_profile profile;
     int use_profile;
     int verbose;
+    
+    /* VOQd process management */
+    pid_t voqd_pid;         /* VOQd process ID (0 = not running) */
+    int voqd_enabled;       /* VOQd should be started */
 };
 
 static volatile int keep_running = 1;
+static volatile int shutdown_in_progress = 0;
 
 /* Signal handler for graceful shutdown */
 static void sig_handler(int sig)
 {
+    if (shutdown_in_progress) {
+        /* Already shutting down, ignore duplicate signals */
+        return;
+    }
+    
+    shutdown_in_progress = 1;
     keep_running = 0;
+    
+    /* Print signal info for debugging */
+    const char *sig_name = (sig == SIGINT) ? "SIGINT" : 
+                           (sig == SIGTERM) ? "SIGTERM" : 
+                           (sig == SIGHUP) ? "SIGHUP" : "Unknown";
+    fprintf(stderr, "\n\nReceived %s, initiating shutdown...\n", sig_name);
 }
 
 /* Set RLIMIT_MEMLOCK to unlimited for BPF operations */
@@ -252,16 +271,24 @@ static int read_module_metadata(const char *path, struct rs_module_desc *desc)
     return -1;
 }
 
-/* Check if module is in profile's ingress list */
+/* Check if module is in profile's ingress or egress list */
 static int is_module_in_profile(const char *module_name, struct rs_profile *profile)
 {
-    if (!profile || profile->ingress_count == 0) {
+    if (!profile || (profile->ingress_count == 0 && profile->egress_count == 0)) {
         /* No profile - load all modules (backward compatibility) */
         return 1;
     }
     
+    /* Check ingress modules */
     for (int i = 0; i < profile->ingress_count; i++) {
         if (strcmp(module_name, profile->ingress_modules[i]) == 0) {
+            return 1;
+        }
+    }
+    
+    /* Check egress modules */
+    for (int i = 0; i < profile->egress_count; i++) {
+        if (strcmp(module_name, profile->egress_modules[i]) == 0) {
             return 1;
         }
     }
@@ -431,8 +458,12 @@ static int get_pinned_maps(struct loader_ctx *ctx)
     /* Port config map - may or may not be pinned */
     snprintf(path, sizeof(path), "%s/rs_port_config_map", BPF_PIN_PATH);
     ctx->rs_port_config_map_fd = bpf_obj_get(path);
-    
+
+#ifdef LASTCALL_MANUAL_BROADCAST
     snprintf(path, sizeof(path), "%s/rs_devmap", BPF_PIN_PATH);
+#else    
+    snprintf(path, sizeof(path), "%s/rs_xdp_devmap", BPF_PIN_PATH);    
+#endif
     ctx->rs_devmap_fd = bpf_obj_get(path);
     
     snprintf(path, sizeof(path), "%s/rs_stats_map", BPF_PIN_PATH);
@@ -467,14 +498,12 @@ static int get_pinned_maps(struct loader_ctx *ctx)
         }
     }
     
-    if (ctx->rs_devmap_fd < 0) {
-        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_devmap");
-        if (map) {
-            ctx->rs_devmap_fd = bpf_map__fd(map);
-        }
-    }
+    /* Note: rs_devmap_fd (rs_xdp_devmap) is defined in lastcall module,
+     * which hasn't been loaded yet at this point. It will be obtained later
+     * in populate_devmaps() after modules are loaded. Devmap=-1 here is expected.
+     */
     
-    printf("Map FDs: rs_progs=%d, port_config=%d, devmap=%d\n",
+    printf("Map FDs: rs_progs=%d, port_config=%d, devmap=%d (devmap loaded later from modules)\n",
            ctx->rs_progs_fd, ctx->rs_port_config_map_fd, ctx->rs_devmap_fd);
     
     return 0;
@@ -548,87 +577,152 @@ static int build_prog_array(struct loader_ctx *ctx)
     
     printf("\nBuilding tail-call pipeline:\n");
     
-    /* Build separate pipelines for ingress and egress */
+    /* Build separate pipelines for ingress and egress 
+     * 
+     * CRITICAL: Ingress and egress MUST use different prog_array slots!
+     * Following PoC pattern (attached loader lines 583-585):
+     * - Ingress: slots 0, 1, 2, ... (low slots, forward)
+     * - Egress: slots 255, 254, 253, ... (high slots, backward to avoid collision)
+     * 
+     * prog_chain map usage:
+     * - Ingress modules: chain[slot] points to next ingress slot
+     * - Egress modules: chain[slot] points to next egress slot
+     * - Devmap entry: chain[0] = first egress slot (e.g., 255)
+     * 
+     * Why this works:
+     * - rs_progs[0..N] = ingress programs
+     * - rs_progs[255..255-M] = egress programs
+     * - NO overlap between ingress and egress slots
+     */
+    int ingress_idx = 0;
+    int egress_slot = 255;  /* Start from high end, go downward */
     int ingress_count = 0, egress_count = 0;
-    int first_egress_idx = -1;
+    int first_egress_prog_idx = -1;
     
-    /* Insert modules into prog_array and build chain map */
+    /* Pass 1: Insert ingress modules */
     for (i = 0; i < ctx->num_modules; i++) {
         struct loaded_module *mod = &ctx->modules[i];
-        int target_idx;
         
         if (!mod->obj || mod->prog_fd < 0)
             continue;
         
-        /* Determine target prog_array slot */
-        if (mod->desc.hook == RS_HOOK_XDP_EGRESS) {
-            /* Egress modules: sequential slots starting after ingress */
-            target_idx = idx++;
-            if (first_egress_idx < 0) {
-                first_egress_idx = target_idx;  /* Remember first egress module */
-            }
-            egress_count++;
-        } else {
-            /* Ingress modules: sequential slots from 0 */
-            target_idx = idx++;
-            ingress_count++;
-        }
+        if (mod->desc.hook != RS_HOOK_XDP_INGRESS)
+            continue;  /* Skip egress modules in this pass */
         
-        /* Insert into prog_array */
-        err = bpf_map_update_elem(ctx->rs_progs_fd, &target_idx, &mod->prog_fd, BPF_ANY);
+        /* Insert into prog_array at ingress_idx */
+        err = bpf_map_update_elem(ctx->rs_progs_fd, &ingress_idx, &mod->prog_fd, BPF_ANY);
         if (err) {
             fprintf(stderr, "Failed to insert %s into prog_array[%u]: %s\n",
-                    mod->name, target_idx, strerror(errno));
+                    mod->name, ingress_idx, strerror(errno));
             return -1;
         }
         
-        /* Build chain: current module's slot points to next module's slot */
-        if (i + 1 < ctx->num_modules) {
-            struct loaded_module *next_mod = &ctx->modules[i + 1];
-            
-            /* Only chain within same hook type (ingress→ingress, egress→egress) */
-            if (next_mod->desc.hook == mod->desc.hook && next_mod->prog_fd >= 0) {
-                int next_idx = (mod->desc.hook == RS_HOOK_XDP_EGRESS) ? 
-                               (target_idx + 1) : (target_idx + 1);
-                
-                err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &target_idx, &next_idx, BPF_ANY);
-                if (err) {
-                    fprintf(stderr, "Failed to set prog_chain[%u]=%u: %s\n",
-                            target_idx, next_idx, strerror(errno));
-                    return -1;
-                }
-                
-                printf("  [%3u] stage=%3u hook=%-7s: %s (fd=%d) → next=%u\n", 
-                       target_idx, mod->stage, 
-                       mod->desc.hook == RS_HOOK_XDP_EGRESS ? "egress" : "ingress",
-                       mod->name, mod->prog_fd, next_idx);
-            } else {
-                /* Last module in this hook type */
-                printf("  [%3u] stage=%3u hook=%-7s: %s (fd=%d) [LAST]\n", 
-                       target_idx, mod->stage,
-                       mod->desc.hook == RS_HOOK_XDP_EGRESS ? "egress" : "ingress",
-                       mod->name, mod->prog_fd);
+        /* Build chain: find next ingress module */
+        int next_ingress_idx = -1;
+        for (int j = i + 1; j < ctx->num_modules; j++) {
+            if (ctx->modules[j].desc.hook == RS_HOOK_XDP_INGRESS && 
+                ctx->modules[j].prog_fd >= 0) {
+                next_ingress_idx = ingress_idx + 1;
+                break;
             }
-        } else {
-            /* Very last module overall */
-            printf("  [%3u] stage=%3u hook=%-7s: %s (fd=%d) [LAST]\n", 
-                   target_idx, mod->stage,
-                   mod->desc.hook == RS_HOOK_XDP_EGRESS ? "egress" : "ingress",
-                   mod->name, mod->prog_fd);
         }
+        
+        if (next_ingress_idx >= 0) {
+            /* Not last ingress module */
+            err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &ingress_idx, &next_ingress_idx, BPF_ANY);
+            if (err) {
+                fprintf(stderr, "Failed to set prog_chain[%u]=%u: %s\n",
+                        ingress_idx, next_ingress_idx, strerror(errno));
+                return -1;
+            }
+            printf("  [%3u] stage=%3u hook=ingress: %s (fd=%d) → next=%u\n", 
+                   ingress_idx, mod->stage, mod->name, mod->prog_fd, next_ingress_idx);
+        } else {
+            /* Last ingress module */
+            printf("  [%3u] stage=%3u hook=ingress: %s (fd=%d) [LAST]\n", 
+                   ingress_idx, mod->stage, mod->name, mod->prog_fd);
+        }
+        
+        ingress_idx++;
+        ingress_count++;
     }
     
-    /* Set devmap egress entry point (prog_chain[0] = first egress module) */
-    if (first_egress_idx >= 0) {
+    /* Pass 2: Insert egress modules (from high slots downward) */
+    for (i = 0; i < ctx->num_modules; i++) {
+        struct loaded_module *mod = &ctx->modules[i];
+        
+        if (!mod->obj || mod->prog_fd < 0)
+            continue;
+        
+        if (mod->desc.hook != RS_HOOK_XDP_EGRESS)
+            continue;  /* Skip ingress modules in this pass */
+        
+        /* Insert into prog_array at egress_slot (255, 254, 253, ...) */
+        err = bpf_map_update_elem(ctx->rs_progs_fd, &egress_slot, &mod->prog_fd, BPF_ANY);
+        if (err) {
+            fprintf(stderr, "Failed to insert %s into prog_array[%u]: %s\n",
+                    mod->name, egress_slot, strerror(errno));
+            return -1;
+        }
+        
+        /* Remember first egress module's slot for devmap hook entry point */
+        if (first_egress_prog_idx < 0) {
+            first_egress_prog_idx = egress_slot;  /* 255 for first egress module */
+        }
+        
+        /* Build chain: find next egress module and calculate its slot
+         * Next module will be at (current_slot - 1) because we're counting down
+         */
+        int next_egress_slot = -1;
+        int next_egress_count = 0;
+        
+        for (int j = i + 1; j < ctx->num_modules; j++) {
+            if (ctx->modules[j].desc.hook == RS_HOOK_XDP_EGRESS && 
+                ctx->modules[j].prog_fd >= 0) {
+                next_egress_count++;
+                if (next_egress_count == 1) {
+                    /* Found immediate next egress module - it will be at slot-1 */
+                    next_egress_slot = egress_slot - 1;
+                    break;
+                }
+            }
+        }
+        
+        if (next_egress_slot >= 0) {
+            /* Not last egress module - link to next */
+            err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &egress_slot, &next_egress_slot, BPF_ANY);
+            if (err) {
+                fprintf(stderr, "Failed to set prog_chain[%u]=%u: %s\n",
+                        egress_slot, next_egress_slot, strerror(errno));
+                return -1;
+            }
+            printf("  [%3u] stage=%3u hook=egress : %s (fd=%d) → next=%u\n", 
+                   egress_slot, mod->stage, mod->name, mod->prog_fd, next_egress_slot);
+        } else {
+            /* Last egress module */
+            printf("  [%3u] stage=%3u hook=egress : %s (fd=%d) [LAST]\n", 
+                   egress_slot, mod->stage, mod->name, mod->prog_fd);
+        }
+        
+        egress_slot--;  /* Move to next lower slot for next module */
+        egress_count++;
+    }
+    
+    /* Set devmap egress entry point (prog_chain[0] = first egress module)
+     * 
+     * CRITICAL: Devmap egress hook (egress.bpf.c) reads prog_chain[RS_ONLYKEY=0]
+     * to get the first egress module FD for tail-calling.
+     */
+    if (first_egress_prog_idx >= 0) {
         int key = 0;  /* RS_ONLYKEY - devmap egress uses key 0 */
-        err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &key, &first_egress_idx, BPF_ANY);
+        err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &key, &first_egress_prog_idx, BPF_ANY);
         if (err) {
             fprintf(stderr, "Failed to set egress entry point prog_chain[0]=%u: %s\n",
-                    first_egress_idx, strerror(errno));
+                    first_egress_prog_idx, strerror(errno));
             return -1;
         }
         printf("\nEgress entry point: prog_chain[0] = %u (devmap→first egress module)\n",
-               first_egress_idx);
+               first_egress_prog_idx);
     }
     
     printf("\nPipeline built: %u ingress + %u egress modules\n", 
@@ -891,6 +985,129 @@ static int initialize_vlan_map(struct loader_ctx *ctx)
     return 0;
 }
 
+/* Initialize QoS configuration maps
+ * 
+ * CRITICAL: QoS module checks QOS_FLAG_ENABLED in qos_config_ext_map.
+ * Without this initialization, QoS will be disabled and all packets pass through.
+ */
+static int initialize_qos_config(struct loader_ctx *ctx)
+{
+    int err;
+    char path[256];
+    int qos_config_ext_fd = -1;
+    int qos_config_fd = -1;
+    
+    /* Try to open qos_config_ext_map (pinned by egress_qos module) */
+    snprintf(path, sizeof(path), "%s/qos_config_ext_map", BPF_PIN_PATH);
+    qos_config_ext_fd = bpf_obj_get(path);
+    
+    if (qos_config_ext_fd < 0) {
+        /* QoS module not loaded, skip initialization */
+        if (ctx->verbose) {
+            printf("QoS config: egress_qos module not loaded, skipping\n");
+        }
+        return 0;
+    }
+    
+    /* Try to open qos_config_map (shared with afxdp_redirect) */
+    snprintf(path, sizeof(path), "%s/qos_config_map", BPF_PIN_PATH);
+    qos_config_fd = bpf_obj_get(path);
+    
+    printf("Initializing QoS configuration:\n");
+    
+    /* Initialize qos_config_ext (local to egress_qos) */
+    struct qos_config_ext {
+        __u32 flags;
+        __u8  default_priority;
+        __u8  pad[3];
+        __u8  dscp_map[4];  /* QOS_MAX_PRIORITIES = 4 */
+    } __attribute__((aligned(8)));
+    
+    struct qos_config_ext cfg_ext = {
+        .flags = (1 << 0),  /* QOS_FLAG_ENABLED */
+        .default_priority = 1,  /* NORMAL priority for unclassified */
+        .dscp_map = {10, 18, 34, 46},  /* LOW=AF11, NORMAL=AF21, HIGH=AF41, CRITICAL=EF */
+    };
+    
+    /* Check if profile overrides QoS settings */
+    if (ctx->use_profile) {
+        /* Enable rate limiting if configured */
+        if (ctx->profile.settings.stats_enabled) {
+            cfg_ext.flags |= (1 << 1);  /* QOS_FLAG_RATE_LIMIT_ENABLED */
+        }
+        /* Enable ECN marking (recommended for production) */
+        cfg_ext.flags |= (1 << 2);  /* QOS_FLAG_ECN_ENABLED */
+        /* Enable DSCP rewriting (standard behavior) */
+        cfg_ext.flags |= (1 << 3);  /* QOS_FLAG_DSCP_REWRITE */
+    }
+    
+    __u32 key = 0;
+    err = bpf_map_update_elem(qos_config_ext_fd, &key, &cfg_ext, BPF_ANY);
+    if (err) {
+        fprintf(stderr, "  Failed to initialize qos_config_ext_map: %s\n", strerror(errno));
+        close(qos_config_ext_fd);
+        if (qos_config_fd >= 0) close(qos_config_fd);
+        return -1;
+    }
+    
+    printf("  ✓ QoS enabled (flags=0x%x)\n", cfg_ext.flags);
+    printf("  ✓ Default priority: NORMAL\n");
+    printf("  ✓ DSCP marking: LOW=%u, NORMAL=%u, HIGH=%u, CRITICAL=%u\n",
+           cfg_ext.dscp_map[0], cfg_ext.dscp_map[1], cfg_ext.dscp_map[2], cfg_ext.dscp_map[3]);
+    
+    /* Initialize qos_config (shared with afxdp_redirect) */
+    if (qos_config_fd >= 0) {
+        struct qos_config {
+            __u32 dscp2prio[64];
+            __u32 default_port;
+            __u32 ecn_threshold;
+            __u32 drop_threshold;
+        } __attribute__((aligned(8)));
+        
+        struct qos_config cfg = {
+            .default_port = 0,
+            .ecn_threshold = 100,   /* ECN marking at 100 packets queue depth */
+            .drop_threshold = 200,  /* Drop low-priority at 200 packets */
+        };
+        
+        /* Initialize DSCP->priority mapping (default: DSCP value >> 3 maps to priority) */
+        for (int i = 0; i < 64; i++) {
+            /* Standard DiffServ mapping:
+             * EF (46) -> CRITICAL (3)
+             * AF4x (32-38) -> HIGH (2)
+             * AF2x (16-22) -> NORMAL (1)
+             * AF1x (8-14) -> LOW (0)
+             * Default (0) -> NORMAL (1)
+             */
+            if (i == 46) {  /* EF */
+                cfg.dscp2prio[i] = 3;  /* CRITICAL */
+            } else if (i >= 32 && i <= 38) {  /* AF4x */
+                cfg.dscp2prio[i] = 2;  /* HIGH */
+            } else if (i >= 16 && i <= 22) {  /* AF2x */
+                cfg.dscp2prio[i] = 1;  /* NORMAL */
+            } else if (i >= 8 && i <= 14) {  /* AF1x */
+                cfg.dscp2prio[i] = 0;  /* LOW */
+            } else {
+                cfg.dscp2prio[i] = 1;  /* NORMAL (default) */
+            }
+        }
+        
+        err = bpf_map_update_elem(qos_config_fd, &key, &cfg, BPF_ANY);
+        if (err) {
+            fprintf(stderr, "  Warning: Failed to initialize qos_config_map: %s\n", strerror(errno));
+        } else {
+            printf("  ✓ DSCP->priority mapping initialized\n");
+            printf("  ✓ ECN threshold: %u packets\n", cfg.ecn_threshold);
+            printf("  ✓ Drop threshold: %u packets\n", cfg.drop_threshold);
+        }
+        
+        close(qos_config_fd);
+    }
+    
+    close(qos_config_ext_fd);
+    return 0;
+}
+
 /* Populate devmaps with queue isolation
  * 
  * Following PoC pattern: find rs_xdp_devmap from lastcall module object
@@ -915,9 +1132,9 @@ static int populate_devmaps(struct loader_ctx *ctx)
             struct bpf_map *map = bpf_object__find_map_by_name(ctx->modules[i].obj, "rs_xdp_devmap");
             if (map) {
                 xdp_devmap_fd = bpf_map__fd(map);
-                if (ctx->verbose) {
-                    printf("Found rs_xdp_devmap in lastcall module: fd=%d\n", xdp_devmap_fd);
-                }
+                printf("Found rs_xdp_devmap in lastcall module: fd=%d\n", xdp_devmap_fd);
+                /* Update context for consistency */
+                ctx->rs_devmap_fd = xdp_devmap_fd;
                 break;
             }
         }
@@ -1049,6 +1266,97 @@ static int attach_xdp(struct loader_ctx *ctx)
     return 0;
 }
 
+/* Start VOQd user-space scheduler */
+static int start_voqd(struct loader_ctx *ctx)
+{
+    char cmd[1024];
+    char iface_list[512] = "";
+    int i;
+    
+    printf("\nStarting VOQd (user-space scheduler)...\n");
+    
+    /* Check if rswitch-voqd binary exists */
+    if (access("./build/rswitch-voqd", X_OK) != 0) {
+        fprintf(stderr, "VOQd binary not found: ./build/rswitch-voqd\n");
+        fprintf(stderr, "Build VOQd first or disable voqd_config in profile\n");
+        return -1;
+    }
+    
+    /* Build interface list */
+    for (i = 0; i < ctx->num_interfaces; i++) {
+        char ifname[IF_NAMESIZE];
+        if_indextoname(ctx->interfaces[i], ifname);
+        
+        if (i > 0) strcat(iface_list, ",");
+        strcat(iface_list, ifname);
+    }
+    
+    /* Build VOQd command from profile configuration */
+    struct rs_profile_voqd *voqd = &ctx->profile.voqd;
+    
+    snprintf(cmd, sizeof(cmd),
+             "./build/rswitch-voqd -i %s -p %d -m %s -P 0x%x %s%s%s &",
+             iface_list,
+             voqd->num_ports > 0 ? voqd->num_ports : ctx->num_interfaces,
+             voqd->mode == 2 ? "active" : (voqd->mode == 1 ? "shadow" : "bypass"),
+             voqd->prio_mask,
+             voqd->enable_scheduler ? "-s " : "",     /* Enable scheduler thread */
+             voqd->enable_scheduler ? "-S 10 " : "",  /* Stats interval 10s */
+             voqd->zero_copy ? "-z" : "");            /* Zero-copy mode */
+    
+    printf("  Command: %s\n", cmd);
+    printf("  Mode: %s\n", voqd->mode == 2 ? "ACTIVE" : (voqd->mode == 1 ? "SHADOW" : "BYPASS"));
+    printf("  Priority Mask: 0x%02x\n", voqd->prio_mask);
+    printf("  Ports: %d\n", voqd->num_ports > 0 ? voqd->num_ports : ctx->num_interfaces);
+    
+    /* Fork and exec VOQd */
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "Failed to fork VOQd process: %s\n", strerror(errno));
+        return -1;
+    }
+    
+    if (pid == 0) {
+        /* Child process - exec VOQd */
+        /* Redirect stdout/stderr to log file */
+        FILE *log = fopen("/tmp/rswitch-voqd.log", "w");
+        if (log) {
+            dup2(fileno(log), STDOUT_FILENO);
+            dup2(fileno(log), STDERR_FILENO);
+            fclose(log);
+        }
+        
+        /* Execute VOQd via shell (for background &) */
+        execl("/bin/sh", "sh", "-c", cmd, NULL);
+        
+        /* If exec fails */
+        fprintf(stderr, "Failed to exec VOQd: %s\n", strerror(errno));
+        exit(1);
+    }
+    
+    /* Parent process - store PID */
+    ctx->voqd_pid = pid;
+    ctx->voqd_enabled = 1;
+    
+    /* Give VOQd time to initialize */
+    sleep(2);
+    
+    /* Check if VOQd is still running */
+    int status;
+    if (waitpid(pid, &status, WNOHANG) != 0) {
+        fprintf(stderr, "VOQd process exited prematurely\n");
+        fprintf(stderr, "Check /tmp/rswitch-voqd.log for errors\n");
+        ctx->voqd_pid = 0;
+        ctx->voqd_enabled = 0;
+        return -1;
+    }
+    
+    printf("  ✓ VOQd started (PID: %d)\n", pid);
+    printf("  ✓ Log: /tmp/rswitch-voqd.log\n");
+    
+    return 0;
+}
+
 /* Detach XDP programs from interfaces */
 static void detach_xdp(struct loader_ctx *ctx)
 {
@@ -1059,14 +1367,28 @@ static void detach_xdp(struct loader_ctx *ctx)
     for (i = 0; i < ctx->num_interfaces; i++) {
         __u32 ifindex = ctx->interfaces[i];
         char ifname[IF_NAMESIZE];
+        char cmd[256];
         
         if_indextoname(ifindex, ifname);
+        
+        /* Detach XDP program */
         if (bpf_xdp_detach(ifindex, ctx->xdp_flags, NULL) < 0) {
             fprintf(stderr, "  Warning: Failed to detach from %s (ifindex=%u): %s\n",
                     ifname, ifindex, strerror(errno));
+            
+            /* Try force detach as fallback */
+            snprintf(cmd, sizeof(cmd), "ip link set %s xdp off 2>/dev/null", ifname);
+            if (system(cmd) == 0) {
+                printf("  Force detached from %s using ip command\n", ifname);
+            }
         } else {
-            printf("  Detached from %s (ifindex=%u)\n", ifname, ifindex);
+            printf("  ✓ Detached from %s (ifindex=%u)\n", ifname, ifindex);
         }
+        
+        /* Bring interface back up */
+        snprintf(cmd, sizeof(cmd), "ip link set %s up 2>/dev/null", ifname);
+        system(cmd);
+        printf("  ✓ Restored %s to UP state\n", ifname);
     }
 }
 
@@ -1127,9 +1449,22 @@ static void unpin_maps(void)
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
         
-        /* Only unpin rSwitch-related maps (rs_* and acl_*) */
+        /* Only unpin rSwitch-related maps (rs_*, acl_*, afxdp_*, qos_*, voq_*, voqd_*, 
+         * arp_*, route_*, mirror_*, iface_*, egress_*, ingress_*, xsks_map, qdepth_map) */
         if (strncmp(entry->d_name, "rs_", 3) != 0 && 
-            strncmp(entry->d_name, "acl_", 4) != 0)
+            strncmp(entry->d_name, "acl_", 4) != 0 &&
+            strncmp(entry->d_name, "afxdp_", 6) != 0 &&
+            strncmp(entry->d_name, "qos_", 4) != 0 &&
+            strncmp(entry->d_name, "voq_", 4) != 0 &&
+            strncmp(entry->d_name, "voqd_", 5) != 0 &&
+            strncmp(entry->d_name, "arp_", 4) != 0 &&
+            strncmp(entry->d_name, "route_", 6) != 0 &&
+            strncmp(entry->d_name, "mirror_", 7) != 0 &&
+            strncmp(entry->d_name, "iface_", 6) != 0 &&
+            strncmp(entry->d_name, "egress_", 7) != 0 &&
+            strncmp(entry->d_name, "ingress_", 8) != 0 &&
+            strcmp(entry->d_name, "xsks_map") != 0 &&
+            strcmp(entry->d_name, "qdepth_map") != 0)
             continue;
         
         snprintf(path, sizeof(path), "/sys/fs/bpf/%s", entry->d_name);
@@ -1160,10 +1495,64 @@ static void cleanup(struct loader_ctx *ctx)
     
     printf("\n========== Cleanup Started ==========\n");
     
-    /* Step 1: Detach XDP programs from all interfaces */
+    /* Step 0: Stop VOQd if running */
+    if (ctx->voqd_enabled && ctx->voqd_pid > 0) {
+        printf("\nStopping VOQd (PID: %d)...\n", ctx->voqd_pid);
+        
+        /* Send SIGTERM for graceful shutdown */
+        if (kill(ctx->voqd_pid, SIGTERM) == 0) {
+            /* Wait up to 2 seconds for graceful shutdown (reduced from 5s) */
+            int timeout = 20;  /* 20 * 100ms = 2 seconds */
+            while (timeout > 0) {
+                int status;
+                if (waitpid(ctx->voqd_pid, &status, WNOHANG) != 0) {
+                    printf("  ✓ VOQd stopped gracefully\n");
+                    break;
+                }
+                usleep(100000);  /* 100ms */
+                timeout--;
+            }
+            
+            /* Force kill if still running */
+            if (timeout == 0) {
+                printf("  VOQd did not stop gracefully, forcing...\n");
+                kill(ctx->voqd_pid, SIGKILL);
+                waitpid(ctx->voqd_pid, NULL, 0);
+                printf("  ✓ VOQd killed\n");
+            }
+        } else {
+            fprintf(stderr, "  Warning: Failed to stop VOQd: %s\n", strerror(errno));
+        }
+        
+        ctx->voqd_pid = 0;
+        ctx->voqd_enabled = 0;
+    }
+    
+    /* Step 1: Flush TX queues to prevent netdev watchdog timeout
+     * CRITICAL: Do this BEFORE detaching XDP to allow pending packets to drain */
+    printf("\nFlushing TX queues...\n");
+    for (i = 0; i < ctx->num_interfaces; i++) {
+        char ifname[IF_NAMESIZE];
+        if_indextoname(ctx->interfaces[i], ifname);
+        
+        /* Bring interface down briefly to flush queues */
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "ip link set %s down 2>/dev/null", ifname);
+        system(cmd);
+        printf("  Flushed %s\n", ifname);
+    }
+    
+    /* Small delay to allow kernel to process queue flush */
+    usleep(100000);  /* 100ms */
+    
+    /* Step 2: Detach XDP programs from all interfaces
+     * IMPORTANT: Do this while maps are still valid, so XDP programs can clean up */
     detach_xdp(ctx);
     
-    /* Step 2: Close map file descriptors */
+    /* Step 3: Brief delay to ensure XDP fully detached before closing maps */
+    usleep(50000);  /* 50ms */
+    
+    /* Step 4: Close map file descriptors */
     close_map_fds(ctx);
     
     /* Step 3: Close module BPF objects */
@@ -1365,9 +1754,10 @@ int main(int argc, char **argv)
     printf("Interfaces: %d\n", ctx.num_interfaces);
     printf("\n");
     
-    /* Setup */
+    /* Setup signal handlers for graceful shutdown */
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
+    signal(SIGHUP, sig_handler);
     
     if (bump_memlock_rlimit()) {
         return 1;
@@ -1437,6 +1827,9 @@ int main(int argc, char **argv)
     /* Initialize VLAN map with default configuration */
     initialize_vlan_map(&ctx);
     
+    /* Initialize QoS configuration */
+    initialize_qos_config(&ctx);
+    
     /* Populate devmaps with queue isolation */
     populate_devmaps(&ctx);
     
@@ -1446,11 +1839,40 @@ int main(int argc, char **argv)
         return 1;
     }
     
-    printf("\nrSwitch running. Press Ctrl+C to exit.\n");
+    /* Start VOQd if configured in profile */
+    if (ctx.use_profile && ctx.profile.voqd.enabled) {
+        if (start_voqd(&ctx) < 0) {
+            fprintf(stderr, "Warning: Failed to start VOQd, continuing with fast-path only\n");
+        }
+    }
     
-    /* Main loop */
+    printf("\nrSwitch running. Press Ctrl+C to exit.\n");
+    printf("Attached to %d interface%s\n", ctx.num_interfaces, ctx.num_interfaces > 1 ? "s" : "");
+    if (ctx.voqd_enabled) {
+        printf("VOQd enabled (PID: %d)\n", ctx.voqd_pid);
+    }
+    printf("\n");
+    
+    /* Main loop - use shorter sleep for faster shutdown response */
+    int loop_count = 0;
     while (keep_running) {
-        sleep(1);
+        usleep(100000);  /* 100ms - much faster response than sleep(1) */
+        
+        /* Periodic health check every 10 seconds */
+        if (++loop_count >= 100) {  /* 100 * 100ms = 10 seconds */
+            loop_count = 0;
+            
+            /* Check if VOQd is still alive */
+            if (ctx.voqd_enabled && ctx.voqd_pid > 0) {
+                int status;
+                pid_t result = waitpid(ctx.voqd_pid, &status, WNOHANG);
+                if (result != 0) {
+                    fprintf(stderr, "Warning: VOQd process died unexpectedly\n");
+                    ctx.voqd_pid = 0;
+                    ctx.voqd_enabled = 0;
+                }
+            }
+        }
     }
     
     /* Cleanup */

@@ -111,6 +111,8 @@ static __always_inline int learn_source_mac(struct rs_ctx *ctx,
     existing = bpf_map_lookup_elem(&rs_mac_table, &key);
     
     if (existing) {
+        
+        rs_debug("L2learn: learn source mac, key existing, egress port: %u", existing->ifindex);
         // Entry exists - check if port changed (MAC moved)
         if (existing->ifindex != ctx->ifindex) {
             rs_debug("MAC %02x:%02x:%02x:%02x:%02x:%02x moved: port %d → %d",
@@ -210,6 +212,8 @@ int l2learn_ingress(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
     
+    rs_debug("target port: %u", ctx->egress_ifindex);
+
     /* Skip L2 forwarding lookup if routing already made decision
      * 
      * If Route module (or any other L3 module) has already set egress_ifindex,
@@ -275,6 +279,8 @@ do_learning_only:
              eth->h_source[0], eth->h_source[1], eth->h_source[2], 
              eth->h_source[3], eth->h_source[4], eth->h_source[5]);
     
+    rs_debug("L2Learn: ingress_ifindex=%d, egress_ifindex=%d",
+             ctx->ifindex, ctx->egress_ifindex);             
     if (!routing_decision_made) {
         rs_debug("L2Learn: lookup dst=%02x:%02x:%02x:%02x:%02x:%02x → egress=%d",
                  eth->h_dest[0], eth->h_dest[1], eth->h_dest[2],

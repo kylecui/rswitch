@@ -20,7 +20,8 @@ ingress:
 
 # Egress pipeline
 egress:
-  - egress     # Devmap egress hook with VLAN tagging
+  - egress_vlan  # VLAN tagging and isolation
+  - egress_final  # Final egress processing
 
 # Global settings
 settings:

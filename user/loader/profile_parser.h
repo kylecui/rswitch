@@ -37,6 +37,24 @@ struct rs_profile_vlan {
     int untagged_count;
 };
 
+/* VOQd configuration structure */
+struct rs_profile_voqd {
+    int enabled;           // Enable VOQd (AF_XDP user-space scheduler)
+    int mode;              // 0=BYPASS, 1=SHADOW, 2=ACTIVE
+    int num_ports;         // Number of ports for VOQd
+    uint32_t prio_mask;    // Priority bitmask for interception
+    int enable_afxdp;      // Enable AF_XDP sockets
+    int zero_copy;         // Use zero-copy mode (if supported)
+    int rx_ring_size;      // AF_XDP RX ring size
+    int tx_ring_size;      // AF_XDP TX ring size
+    int frame_size;        // Frame size (typically 2048)
+    int batch_size;        // Batch processing size
+    int poll_timeout_ms;   // Poll timeout in milliseconds
+    int busy_poll;         // Enable busy polling
+    int cpu_affinity;      // CPU core for VOQd threads
+    int enable_scheduler;  // Enable DRR/WFQ scheduler
+};
+
 /* Profile settings structure */
 struct rs_profile_settings {
     /* MAC learning */
@@ -76,6 +94,9 @@ struct rs_profile {
     
     /* Settings */
     struct rs_profile_settings settings;
+    
+    /* VOQd configuration */
+    struct rs_profile_voqd voqd;
     
     /* Port configurations */
     struct rs_profile_port *ports;

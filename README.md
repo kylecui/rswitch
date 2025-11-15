@@ -2,6 +2,11 @@
 
 Production implementation of the modular, programmable XDP-based switch.
 
+## Build Environment Prerequisites
+```bash
+sudo apt install build-essential cmake llvm clang pkg-config make open-vm-tools libxdp-dev libbpf-dev linux-headers-$(uname -r)
+```
+
 ## Recent Updates
 
 ### ✅ Phase 1 Complete: Multi-Level ACL Architecture (2024-01)

@@ -21,10 +21,37 @@ char _license[] SEC("license") = "GPL";
 RS_DECLARE_MODULE(
     "egress_vlan",
     RS_HOOK_XDP_EGRESS,
-    10,  // Early in egress pipeline
+    180,  // Stage 180: VLAN tagging in egress pipeline
     RS_FLAG_MODIFIES_PACKET,
-    "VLAN tag manipulation on egress (devmap egress program)"
+    "VLAN tag manipulation on egress"
 );
+
+/* Check if egress port is member of packet's VLAN
+ * 
+ * This enforces VLAN isolation during flooding:
+ * - Ingress uses BPF_F_BROADCAST to send to all ports
+ * - Egress VLAN module filters out ports not in the VLAN
+ * 
+ * Returns:
+ *   1 if port is member (allow forwarding)
+ *   0 if port is not member (drop packet)
+ */
+static __always_inline int is_vlan_member(__u16 vlan_id, __u32 ifindex)
+{
+    struct rs_vlan_members *members = bpf_map_lookup_elem(&rs_vlan_map, &vlan_id);
+    if (!members) {
+        /* VLAN not configured - allow by default (permissive mode) */
+        return 1;
+    }
+    
+    /* Calculate bitmask position (must match loader and vlan.bpf.c) */
+    __u32 word_idx = ((ifindex - 1) / 64) & 3;  // Max 4 words
+    __u64 bit_mask = 1ULL << ((ifindex - 1) % 64);
+    
+    /* Check if port is member (either tagged or untagged) */
+    return (members->tagged_members[word_idx] & bit_mask) ||
+           (members->untagged_members[word_idx] & bit_mask);
+}
 
 // Helper: Check if VLAN should be sent tagged on this port
 static __always_inline int should_send_tagged(struct rs_port_config *port, __u16 vlan_id)
@@ -68,7 +95,7 @@ static __always_inline int should_send_tagged(struct rs_port_config *port, __u16
     }
 }
 
-// Helper: Add VLAN tag to packet with PCP
+// Helper: Add VLAN tag to packet with PCP (using parsing_helpers)
 static __always_inline int egress_add_vlan_tag(struct xdp_md *ctx, __u16 vlan_id, __u8 pcp)
 {
     void *data = (void *)(long)ctx->data;
@@ -79,49 +106,16 @@ static __always_inline int egress_add_vlan_tag(struct xdp_md *ctx, __u16 vlan_id
     if ((void *)(eth + 1) > data_end)
         return -1;
     
-    // Make room for VLAN header (4 bytes) after Ethernet header
-    // bpf_xdp_adjust_head moves data pointer, but we need to insert in the middle
-    // Use bpf_xdp_adjust_meta and manual copy instead
-    
-    // Expand packet by 4 bytes
-    if (bpf_xdp_adjust_tail(ctx, 4) < 0)
-        return -1;
-    
-    // Reload pointers after adjustment
-    data = (void *)(long)ctx->data;
-    data_end = (void *)(long)ctx->data_end;
-    eth = data;
-    
-    if ((void *)(eth + 1) > data_end)
-        return -1;
-    
-    // Move Ethernet header forward to make room for VLAN tag
-    // Structure: [ETH][VLAN][Payload] -> [ETH][____][Payload]
-    //            Need to shift: [ETH][VLAN][Old_Payload]
-    
-    // Alternative approach: Use packet clone or manual shift
-    // For XDP, we need to manually shift data
-    // Limitation: XDP doesn't support bpf_skb_change_head, so we need workaround
-    
-    // Simplified implementation: Set VLAN tag in existing packet
-    // Assumes packet already has space (e.g., from ingress processing)
-    
-    // Build VLAN TCI: [PCP:3][DEI:1][VID:12]
+    // Build TCI: [PCP:3][DEI:1][VID:12]
     __u16 tci = ((__u16)pcp << 13) | (vlan_id & 0x0FFF);
     
-    // Store VLAN header
-    struct vlan_hdr *vhdr = (void *)(eth + 1);
-    if ((void *)(vhdr + 1) > data_end)
+    // Use parsing_helpers vlan_tag_push
+    if (vlan_tag_push(ctx, eth, tci) < 0) {
+        rs_debug("Failed to push VLAN tag: VID=%u, PCP=%u", vlan_id, pcp);
         return -1;
-    
-    vhdr->h_vlan_TCI = bpf_htons(tci);
-    vhdr->h_vlan_encapsulated_proto = eth->h_proto;
-    
-    // Update Ethernet protocol to 802.1Q
-    eth->h_proto = bpf_htons(ETH_P_8021Q);
+    }
     
     rs_debug("Added VLAN tag: VID=%u, PCP=%u", vlan_id, pcp);
-    
     return 0;
 }
 
@@ -140,71 +134,87 @@ static __always_inline int egress_remove_vlan_tag(struct xdp_md *ctx)
         bpf_ntohs(eth->h_proto) != ETH_P_8021AD)
         return 0;  // Not tagged, nothing to remove
     
-    struct vlan_hdr *vhdr = (void *)(eth + 1);
-    if ((void *)(vhdr + 1) > data_end)
+    // Use parsing_helpers vlan_tag_pop
+    if (vlan_tag_pop(ctx, eth) < 0) {
+        rs_debug("Failed to pop VLAN tag");
         return -1;
-    
-    // Get encapsulated protocol
-    __u16 inner_proto = vhdr->h_vlan_encapsulated_proto;
-    
-    // Remove VLAN header by shifting packet data
-    // XDP limitation: Can't easily remove bytes from middle of packet
-    // Workaround: Use bpf_xdp_adjust_head to move data pointer
-    
-    // Move data pointer forward by VLAN header size (4 bytes)
-    // This effectively "removes" the Ethernet header
-    // Then we need to rebuild Ethernet header
-    
-    if (bpf_xdp_adjust_head(ctx, (int)sizeof(struct vlan_hdr)) < 0)
-        return -1;
-    
-    // Reload pointers
-    data = (void *)(long)ctx->data;
-    data_end = (void *)(long)ctx->data_end;
-    eth = data;
-    
-    if ((void *)(eth + 1) > data_end)
-        return -1;
-    
-    // Rebuild Ethernet header (copy MAC addresses, set protocol)
-    // Note: Original Ethernet header is now lost, we need to restore it
-    // Limitation: This approach loses MAC addresses
-    
-    // Better approach: Don't use adjust_head, use manual memmove
-    // But BPF doesn't allow arbitrary memory operations
-    
-    // Simplified: Just update protocol field (keep VLAN tag but mark as IP)
-    eth->h_proto = inner_proto;
+    }
     
     rs_debug("Removed VLAN tag");
-    
     return 0;
 }
 
-// Main egress VLAN processing (devmap egress program)
-SEC("xdp_devmap")
+// Main egress VLAN processing (XDP tail-call module)
+SEC("xdp/devmap")
 int egress_vlan_xdp(struct xdp_md *ctx)
 {
     // Get per-CPU context
     struct rs_ctx *rs_ctx = RS_GET_CTX();
     if (!rs_ctx) {
-        // No context, can't process
+        rs_debug("egress_vlan: No context, dropping");
+        return XDP_DROP;
+    }
+    
+    /* Get egress port from XDP context (devmap sets this)
+     * 
+     * IMPORTANT: During flooding (BPF_F_BROADCAST), devmap calls this egress
+     * program once per destination port. The actual egress port is in
+     * ctx->egress_ifindex (set by devmap), NOT in rs_ctx->egress_ifindex
+     * (which is 0 for broadcast).
+     * 
+     * For unicast: rs_ctx->egress_ifindex == ctx->egress_ifindex (both set)
+     * For flooding: rs_ctx->egress_ifindex == 0, ctx->egress_ifindex = actual port
+     */
+    __u32 egress_ifindex = ctx->egress_ifindex;
+    if (egress_ifindex == 0) {
+        rs_debug("egress_vlan: No egress port set in ctx");
+        // Continue to next module
+        RS_TAIL_CALL_EGRESS(ctx, rs_ctx);
         return XDP_PASS;
     }
     
-    // Get egress port configuration
-    // Note: In devmap egress, we don't have direct access to egress ifindex
-    // We rely on rs_ctx->egress_ifindex set by forwarding module
-    __u32 egress_ifindex = rs_ctx->egress_ifindex;
-    if (egress_ifindex == 0) {
-        // No egress port set, pass through
-        return XDP_PASS;
+    /* VLAN isolation check - critical for L2 security!
+     * 
+     * During flooding (egress_ifindex=0 in ctx), ingress uses BPF_F_BROADCAST
+     * which sends to ALL ports. We must filter out ports not in the packet's VLAN.
+     * 
+     * EXCEPTION: Routed packets (L3 forwarding)
+     * - Route module modifies packet (rewrites L2 header, decrements TTL)
+     * - Sets ctx->modified = 1
+     * - These packets are INTENTIONALLY crossing VLAN boundaries
+     * - Should NOT be subject to L2 VLAN isolation
+     * 
+     * Check: Skip VLAN isolation for routed traffic
+     */
+    if (!rs_ctx->modified) {
+        __u16 vlan_id = rs_ctx->ingress_vlan;
+        if (vlan_id == 0) vlan_id = 1;  // Default VLAN
+        
+        rs_debug("egress_vlan: Isolation check - port %u, VLAN %u", egress_ifindex, vlan_id);
+        
+        if (!is_vlan_member(vlan_id, egress_ifindex)) {
+            rs_debug("egress_vlan: Port %u not in VLAN %u, dropping (isolation)", 
+                     egress_ifindex, vlan_id);
+            
+            /* Update drop statistics */
+            __u32 stats_key = egress_ifindex;
+            struct rs_stats *stats = bpf_map_lookup_elem(&rs_stats_map, &stats_key);
+            if (stats) {
+                __sync_fetch_and_add(&stats->tx_drops, 1);
+            }
+            
+            return XDP_DROP;
+        }
+        
+        rs_debug("egress_vlan: Port %u is member of VLAN %u, allowing", egress_ifindex, vlan_id);
+    } else {
+        rs_debug("egress_vlan: Routed packet (modified=1), skipping VLAN isolation");
     }
     
     struct rs_port_config *port = rs_get_port_config(egress_ifindex);
     if (!port) {
-        // No port config, pass through
-        rs_debug("No port config for egress ifindex %u", egress_ifindex);
+        rs_debug("egress_vlan: No port config for ifindex %u", egress_ifindex);
+        RS_TAIL_CALL_EGRESS(ctx, rs_ctx);
         return XDP_PASS;
     }
     
@@ -214,8 +224,10 @@ int egress_vlan_xdp(struct xdp_md *ctx)
         egress_vlan = rs_ctx->ingress_vlan;  // Use ingress VLAN as default
     }
     
-    if (egress_vlan == 0) {
-        // No VLAN information, pass through
+    if (egress_vlan == 0 || port->vlan_mode == RS_VLAN_MODE_OFF) {
+        // No VLAN processing needed
+        rs_debug("egress_vlan: No VLAN info or mode OFF, skipping");
+        RS_TAIL_CALL_EGRESS(ctx, rs_ctx);
         return XDP_PASS;
     }
     
@@ -224,25 +236,57 @@ int egress_vlan_xdp(struct xdp_md *ctx)
                             rs_ctx->layers.vlan_ids[0] > 0);
     int should_tag = should_send_tagged(port, egress_vlan);
     
-    rs_debug("Egress VLAN processing: port=%u, vlan=%u, tagged=%d, should_tag=%d, mode=%d",
+    rs_debug("egress_vlan: port=%u, vlan=%u, tagged=%d, should_tag=%d, mode=%d",
              egress_ifindex, egress_vlan, packet_is_tagged, should_tag, port->vlan_mode);
     
     if (should_tag && !packet_is_tagged) {
         // Need to add VLAN tag
-        __u8 pcp = rs_ctx->prio;  // Use priority from ingress (or QoS module)
+        __u8 pcp = rs_ctx->prio;  // Use priority from QoS module
         if (egress_add_vlan_tag(ctx, egress_vlan, pcp) < 0) {
-            rs_debug("Failed to add VLAN tag on egress");
+            rs_debug("egress_vlan: Failed to add VLAN tag");
             // Continue anyway, packet will be sent untagged
+        } else {
+            // Update context to reflect added tag
+            rs_ctx->layers.vlan_depth = 1;
+            rs_ctx->layers.vlan_ids[0] = egress_vlan;
+            
+            /* CRITICAL: Update L3 offset after adding VLAN tag
+             * VLAN tag is 4 bytes (TPID + TCI), inserted between Ethernet header and payload
+             * All layer offsets after L2 must be shifted by 4 bytes */
+            if (rs_ctx->layers.l3_offset != 0) {
+                rs_ctx->layers.l3_offset += 4;
+                rs_debug("egress_vlan: Updated L3 offset after tag add: +4 bytes");
+            }
+            if (rs_ctx->layers.l4_offset != 0) {
+                rs_ctx->layers.l4_offset += 4;
+            }
         }
     } else if (!should_tag && packet_is_tagged) {
         // Need to remove VLAN tag
         if (egress_remove_vlan_tag(ctx) < 0) {
-            rs_debug("Failed to remove VLAN tag on egress");
+            rs_debug("egress_vlan: Failed to remove VLAN tag");
             // Continue anyway, packet will be sent tagged
+        } else {
+            // Update context to reflect removed tag
+            rs_ctx->layers.vlan_depth = 0;
+            rs_ctx->layers.vlan_ids[0] = 0;
+            
+            /* CRITICAL: Update L3 offset after removing VLAN tag
+             * VLAN tag removal shifts all layers 4 bytes earlier */
+            if (rs_ctx->layers.l3_offset >= 4) {
+                rs_ctx->layers.l3_offset -= 4;
+                rs_debug("egress_vlan: Updated L3 offset after tag remove: -4 bytes");
+            }
+            if (rs_ctx->layers.l4_offset >= 4) {
+                rs_ctx->layers.l4_offset -= 4;
+            }
         }
     }
     
-    // Packet ready for transmission
+    // Tail-call to next egress module
+    RS_TAIL_CALL_EGRESS(ctx, rs_ctx);
+    
+    // Fallback if tail-call fails
     return XDP_PASS;
 }
 

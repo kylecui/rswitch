@@ -25,10 +25,11 @@ char _license[] SEC("license") = "GPL";
  * - Defined ONLY in lastcall (single user)
  * - Loader populates it via lastcall object
  * - NO pinning needed (not shared across modules)
- * - Uses bpf_devmap_val for potential egress hook attachment
+ * - Uses bpf_devmap_val for egress hook attachment
  */
 struct {
-    __uint(type, BPF_MAP_TYPE_DEVMAP_HASH);
+    // __uint(type, BPF_MAP_TYPE_DEVMAP_HASH);
+    __uint(type, BPF_MAP_TYPE_DEVMAP);
     __uint(max_entries, RS_MAX_INTERFACES);
     __type(key, __u32);         /* ifindex */
     __type(value, struct bpf_devmap_val);
@@ -72,6 +73,7 @@ static __always_inline int should_forward(struct rs_ctx *ctx)
 SEC("xdp")
 int lastcall_forward(struct xdp_md *xdp_ctx)
 {
+    long ret = XDP_DROP;
     void *data_end = (void *)(long)xdp_ctx->data_end;
     void *data = (void *)(long)xdp_ctx->data;
     __u32 pkt_len = data_end - data;
@@ -111,7 +113,11 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
         // - Handle VLAN tag manipulation
         // - Update TX statistics
         // - Clear parsed flag after processing completes
-        return bpf_redirect_map(&rs_xdp_devmap, egress_ifindex, 0);
+        // return bpf_redirect_map(&rs_xdp_devmap, egress_ifindex, 0);
+        ret = bpf_redirect_map(&rs_xdp_devmap, egress_ifindex, 0);
+        rs_debug("Lastcall: Redirected to port %d, ret=%ld", egress_ifindex, ret);
+
+        return ret;
     }
     
     // Case 2: Flood - broadcast to all ports, egress hook will filter VLAN members
@@ -119,10 +125,9 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
     // Strategy: Use BPF_F_BROADCAST to send to all ports, then rely on
     // egress devmap hook (egress.bpf.c) to DROP packets for ports not in VLAN.
     //
-    // Why not filter here?
-    // - Cannot do multiple bpf_redirect() in loop (only last one takes effect)
-    // - bpf_clone_redirect() is expensive and has clone limit
-    // - Egress hook is the proper place for per-port filtering
+    // CRITICAL: BPF_F_BROADCAST with DEVMAP_HASH may not trigger egress in all kernels.
+    // We use key=0 with BPF_F_BROADCAST which should work if egress program is attached
+    // correctly via bpf_devmap_val in populate_devmaps().
     //
     // Egress hook responsibilities:
     // - Check if egress port is member of packet's VLAN (via rs_vlan_map)
@@ -138,7 +143,15 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
     
     // Broadcast to all ports (egress hook does VLAN filtering)
     // Egress hook will clear parsed flag after processing completes
-    return bpf_redirect_map(&rs_xdp_devmap, 0, BPF_F_BROADCAST | BPF_F_EXCLUDE_INGRESS);
+    // 
+    // NOTE: If egress hook is not being called, check:
+    // 1. bpf_devmap_val.bpf_prog.fd is set correctly in populate_devmaps()
+    // 2. Kernel version supports devmap egress with DEVMAP_HASH type
+    // 3. Try using regular DEVMAP instead of DEVMAP_HASH
+    // return bpf_redirect_map(&rs_xdp_devmap, 0, BPF_F_BROADCAST | BPF_F_EXCLUDE_INGRESS);
+    ret = bpf_redirect_map(&rs_xdp_devmap, 0, BPF_F_BROADCAST | BPF_F_EXCLUDE_INGRESS);
+    rs_debug("Lastcall: Broadcasted packet, ret=%ld", ret);
+    return ret;
     
     // Note: We cannot update individual TX stats for broadcast here
     // as we don't know which ports will actually receive the packet.

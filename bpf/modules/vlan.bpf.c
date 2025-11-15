@@ -327,8 +327,8 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
     }
     
     // Packet passed VLAN checks, proceed to next module
-    rs_debug("VLAN check passed: port %d, VLAN %d, tagged=%d, mode=%d",
-             ctx->ifindex, effective_vlan, is_tagged, port->vlan_mode);
+    rs_debug("VLAN check passed: port %d, VLAN %d, tagged=%d, mode=%d, target=%d",
+             ctx->ifindex, effective_vlan, is_tagged, port->vlan_mode, ctx->egress_ifindex);
     
     RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
     
