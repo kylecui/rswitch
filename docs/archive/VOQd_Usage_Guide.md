@@ -623,6 +623,6 @@ sudo ./build/rswitch-voqd -p 4 -m active ...
 
 ## See Also
 
-- [VOQd Data Plane Implementation](../docs/VOQd_DataPlane_Implementation.md)
-- [Data Plane Design](../../docs/data_plane_desgin_with_af_XDP.md)
-- [Milestone 1 Plan](../../docs/Milestone1_plan.md)
+- [VOQd Data Plane Implementation](./VOQd_DataPlane_Implementation.md)
+- [Data Plane Design](../../../docs/data_plane_desgin_with_af_XDP.md)
+- [Milestone 1 Plan](../../../docs/Milestone1_plan.md)

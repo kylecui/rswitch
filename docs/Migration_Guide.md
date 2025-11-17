@@ -801,15 +801,16 @@ rswitch/
 │   │   ├── rswitch-voqd.c      # ✅ DRR/WFQ
 │   │   └── afxdp.c             # ✅ Zero-copy
 │   │
-│   ├── control/                # 控制工具
+│   ├── ctl/                # 控制工具
 │   │   ├── rswitchctl.c        # ✅ CLI 接口
 │   │   └── hot_reload.c        # ✅ 热重载
 │   │
 │   ├── telemetry/              # 遥测导出
 │   │   └── rswitch-telemetry.c # ✅ Prometheus/Kafka
 │   │
-│   └── events/                 # 事件消费
-│       └── rswitch-events.c    # ✅ Ringbuf 处理
+│   ├── events/                 # 事件消费
+│   │   └── rswitch-events.c    # ✅ Ringbuf 处理
+│   └── tools/          # 其它的一些控制工具
 │
 └── etc/
     └── profiles/               # ✅ YAML 配置

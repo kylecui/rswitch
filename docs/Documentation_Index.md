@@ -63,6 +63,14 @@
   - **何时阅读**: 深入理解数据平面实现时
 
 - **[discussions.md](../../docs/discussions.md)**
+
+### Release-ready Docs (rSwitch)
+
+- **[Quick Start](Quick_Start.md)** - Minimal steps to build and run with a profile
+- **[Design Philosophy](Design_Philosophy.md)** - High-level architecture and design goals
+- **[How To Use](How_To_Use.md)** - Practical usage examples and scripts
+- **[Module Developer Guide](Module_Developer_Guide.md)** - How to author, test, and integrate modules
+- **[Scenario Profiles](Scenario_Profiles.md)** - Common YAML profiles and best practices for deployment
   - **目标读者**: 开发者、架构师
   - **内容**:
     - 设计决策的 Q&A
@@ -81,7 +89,7 @@
     - 模块化重构路线图
   - **何时阅读**: 规划开发任务时
 
-- **[CO-RE_Guide.md](CO-RE_Guide.md)** (71KB)
+- **[CO-RE_Guide.md](archive/CO-RE_Guide.md)** (71KB)
   - **目标读者**: BPF 模块开发者
   - **内容**:
     - CO-RE 技术详解
@@ -90,7 +98,7 @@
     - 常见陷阱和解决方案
   - **何时阅读**: 开发新模块或解决兼容性问题时
 
-- **[Module_Portability_Report.md](Module_Portability_Report.md)** (12KB)
+- **[Module_Portability_Report.md](archive/Module_Portability_Report.md)** (12KB)
   - **目标读者**: 模块分发者、客户
   - **内容**:
     - 模块分类和分发策略
@@ -98,7 +106,7 @@
     - 部署场景示例
   - **何时阅读**: 计划模块分发或自定义部署时
 
-- **[CO-RE_Migration_Complete.md](CO-RE_Migration_Complete.md)** (20KB)
+- **[CO-RE_Migration_Complete.md](archive/CO-RE_Migration_Complete.md)** (20KB)
   - **目标读者**: 维护者、迁移执行者
   - **内容**:
     - 完整的 CO-RE 迁移过程记录
@@ -108,7 +116,7 @@
 
 ### 5. 评估与就绪性
 
-- **[Phase5_Readiness_Assessment.md](Phase5_Readiness_Assessment.md)**
+- **[Phase5_Readiness_Assessment.md](archive/Phase5_Readiness_Assessment.md)**
   - **目标读者**: 项目经理、测试团队
   - **内容**:
     - Phase 1-4 完成情况验证
@@ -203,7 +211,7 @@
 
 ## 📦 Archived Documents
 
-部分历史/过程性文档已转移至 `docs/archive/`，详情请参见 `ARCHIVED_FILES.md`。
+部分历史/过程性文档已转移至 `docs/archive/`，详情请参见 `archive/ARCHIVED_FILES.md`。
 
 
 4. tools/perf-tests/

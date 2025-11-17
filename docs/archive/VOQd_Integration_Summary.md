@@ -347,8 +347,8 @@ sudo ./build/rsvoqctl set-port-rate --port 0 --rate 100000000
 
 - [VOQd 数据平面实现](./VOQd_DataPlane_Implementation.md) - 技术细节
 - [VOQd 使用指南](./VOQd_Usage_Guide.md) - 用户手册
-- [数据平面设计](../../docs/data_plane_desgin_with_af_XDP.md) - 架构设计
-- [Milestone 1 计划](../../docs/Milestone1_plan.md) - 开发路线图
+- [数据平面设计](../../../docs/data_plane_desgin_with_af_XDP.md) - 架构设计
+- [Milestone 1 计划](../../../docs/Milestone1_plan.md) - 开发路线图
 
 ## 🚀 准备就绪
 
