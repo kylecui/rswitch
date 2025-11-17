@@ -32,7 +32,7 @@
 
 ### 2. 概念与设计
 
-- **[rSwitch_Definition.md](rSwitch_Definition.md)**
+- **[rSwitch_Definition.md](../../docs/rSwitch_Definition.md)**
   - **目标读者**: 架构师、技术决策者
   - **内容**:
     - rSwitch 的核心定义
@@ -41,7 +41,7 @@
     - 应用场景
   - **何时阅读**: 了解"rSwitch 是什么"时
 
-- **[Reconfigurable_Switch_Overview.md](Reconfigurable_Switch_Overview.md)**
+- **[Reconfigurable_Switch_Overview.md](../../docs/Reconfigurable_Switch_Overview.md)**
   - **目标读者**: 网络工程师、系统架构师
   - **内容**:
     - 可重配置交换机概述
@@ -51,7 +51,7 @@
 
 ### 3. 详细设计
 
-- **[data_plane_desgin_with_af_XDP.md](data_plane_desgin_with_af_XDP.md)**
+- **[data_plane_desgin_with_af_XDP.md](../../docs/data_plane_desgin_with_af_XDP.md)**
   - **目标读者**: 数据平面开发者、性能工程师
   - **内容**:
     - 完整的 XDP + AF_XDP 混合数据平面设计
@@ -62,7 +62,7 @@
     - 性能基准测试方法
   - **何时阅读**: 深入理解数据平面实现时
 
-- **[discussions.md](discussions.md)**
+- **[discussions.md](../../docs/discussions.md)**
   - **目标读者**: 开发者、架构师
   - **内容**:
     - 设计决策的 Q&A
@@ -73,7 +73,7 @@
 
 ### 4. 开发与迁移
 
-- **[Milestone1_plan.md](Milestone1_plan.md)**
+- **[Milestone1_plan.md](../../docs/Milestone1_plan.md)**
   - **目标读者**: 项目团队、贡献者
   - **内容**:
     - PoC → Production 迁移的分步计划
@@ -132,7 +132,7 @@
 
 ### Scaffold 原型
 
-- **[demos/rswitch_scaffold/](demos/rswitch_scaffold/)**
+- **[demos/rswitch_scaffold/](../../docs/demos/rswitch_scaffold/)**
   - **rswitch-xdp/**: XDP 层原型（ringbuf, devmap, state_map）
   - **rswitch-voqd/**: VOQd 用户空间调度器原型
 
@@ -198,6 +198,13 @@
 
 3. Migration_Guide.md (Appendix D: 性能基准参考)
    └─ 了解预期性能
+
+---
+
+## 📦 Archived Documents
+
+部分历史/过程性文档已转移至 `docs/archive/`，详情请参见 `ARCHIVED_FILES.md`。
+
 
 4. tools/perf-tests/
    └─ 运行基准测试
@@ -290,6 +297,9 @@
 - ✅ Module_Portability_Report.md (模块分发策略)
 
 ### 2024-11-02
+### 2025-11-17
+- ✅ **在 docs 中加入“最近实现修复与注意事项”摘要**（`Migration_Guide.md`, `Troubleshooting_and_Fixes_Summary.md`, `Module_Status_Report.md`），便于运维与开发者快速定位近期 bug 修复和验证步骤。
+
 - ✅ CO-RE_Guide.md (71KB, CO-RE 技术指南)
 - ✅ CO-RE_Migration_Complete.md (迁移记录)
 

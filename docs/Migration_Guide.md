@@ -2695,6 +2695,21 @@ rswitchctl voqd latency [--port <id>] [--prio <num>]
 ```c
 #include <rswitch/rswitch.h>
 
+
+### 最近的实现修复与注意事项
+
+以下是最近集成到代码库中的关键实现修复（便于排查近期问题）：
+
+- **QoS Map Pinning**: `qos_stats_map` 等关键统计 map 已添加 `LIBBPF_PIN_BY_NAME`，确保用户态工具（如 `rsqosctl stats`）可以打开 `/sys/fs/bpf` 中的 map。在早期版本中未 pin 导致 "No such file" 错误。
+- **DSCP/ECN 校验和修正**: 在 `egress_qos` 中修正了增量校验和算法（使用 RFC 1624 对 16-bit word 更新），并在 `egress_final` 添加 IP 校验和验证/自动修正，防止 DSCP 修改导致的无效数据包。
+- **VLAN Tag Offsets**: 添加/移除 VLAN tag 后，`rs_ctx.layers.l3_offset`/`l4_offset` 得到更新，避免随后模块（如 `egress_final`）读取错误的 IP 头。
+- **Startup Race Fixes**: `rswitch_start.sh` 中加入延迟和 VOQd 启动等待逻辑来避免 `No such file` / `map not available` 竞态，并使用安全的 CPU affinity 计算（`$(( (i + 1) % NUM_CPUS ))`）。
+- **VOQd Stats / AF_XDP Safe Access**: 修复了因访问 libxdp 非公开字段导致的统计异常（超大随机值），`xsk_manager_get_stats()` 现在安全地报告套接字计数或通过 `libxdp` API 获取统计信息。
+- **Map cleanup & unpinning**: Loader cleanup 和 `unpin_maps()` 已增强，确保 loader 退出/重启时可选地清理 `qdepth_map`, `xsks_map`, `voqd_state_map` 等常用地图，避免留下 stale maps。
+- **BPF Verifier 改进**: 增加了 offset mask（`&0x3F`）和边界检查，使用了合适的循环展开策略来通过 verifier 验证（某些 ip header 访问改为固定访问 + 条件检查）。
+
+这些修复可在 `rswitch/docs/Troubleshooting_and_Fixes_Summary.md` 中找到更详细的说明和测试步骤。
+
 // 初始化 rSwitch 实例
 struct rswitch_ctx *ctx = rswitch_init();
 if (!ctx) {
