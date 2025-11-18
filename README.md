@@ -83,14 +83,31 @@ ps aux | grep rswitch-voqd
 
 ## 🏗️ Architecture
 
-rSwitch follows a **modular pipeline architecture** with clear separation between data plane and control plane:
+rSwitch follows a **dual-pipeline architecture** with separate ingress and egress processing paths, providing comprehensive packet processing from network entry to exit:
 
 ### Data Plane Components
 
-#### XDP Pipeline
+#### XDP Pipelines
+rSwitch implements **two separate pipelines** for comprehensive packet processing:
+
+**📥 Ingress Pipeline** (Stages 10-99):
 ```
-Packet → Dispatcher → VLAN → ACL → Route → L2Learn → LastCall → Egress
+Packet → Dispatcher → VLAN → ACL → Route → L2Learn → LastCall
 ```
+
+**📤 Egress Pipeline** (Stages 100-199):
+```
+Devmap → QoS → Egress VLAN → Egress Final
+```
+
+#### Pipeline Design
+rSwitch's pipeline architecture enables flexible, modular packet processing:
+
+- **🎯 Stage-Based Execution**: Modules execute in deterministic order using numbered stages (10-99 for ingress, 100-199 for egress)
+- **🔗 Tail-Call Slots**: Stages map to BPF program array slots for efficient jumps between modules
+- **🔍 Auto-Discovery**: Modules self-register via ELF metadata - no manual registration required
+- **📋 Profile-Driven**: YAML profiles specify which modules to load and their execution order
+- **🔄 Hot-Reload**: Runtime module updates without service interruption
 
 #### Key Modules
 - **dispatcher**: Ingress packet classification and routing
@@ -100,6 +117,8 @@ Packet → Dispatcher → VLAN → ACL → Route → L2Learn → LastCall → Eg
 - **l2learn**: MAC address learning and aging
 - **qos**: Traffic classification and marking
 - **mirror**: SPAN port mirroring for network analysis
+- **egress_vlan**: Egress VLAN tag manipulation
+- **egress_final**: Final egress processing and transmission
 
 #### VOQd Scheduler
 User-space QoS scheduler with three operational modes:
