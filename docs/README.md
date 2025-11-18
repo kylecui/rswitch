@@ -40,23 +40,23 @@ sudo rswitch_loader --profile etc/profiles/dumb.yaml
 | 角色 | 推荐阅读 | 时间估计 |
 |------|---------|---------|
 | **快速部署用户** | [Migration Guide](Migration_Guide.md) (第 2, 6, 7 节) | 30 分钟 |
-| **模块开发者** | [CO-RE Guide](CO-RE_Guide.md) + [Migration Guide](Migration_Guide.md) (第 5 节) | 2 小时 |
-| **性能工程师** | [Migration Guide](Migration_Guide.md) (第 8 节) + [Data Plane Design](data_plane_desgin_with_af_XDP.md) | 1 小时 |
-| **架构师/决策者** | [rSwitch Definition](rSwitch_Definition.md) + [Overview](Reconfigurable_Switch_Overview.md) | 45 分钟 |
-| **从 PoC 迁移** | [Migration Guide](Migration_Guide.md) (第 4 节) + [Milestone1 Plan](Milestone1_plan.md) | 1 小时 |
+| **模块开发者** | [CO-RE Guide](archive/CO-RE_Guide.md) + [Migration Guide](Migration_Guide.md) (第 5 节) | 2 小时 |
+| **性能工程师** | [Migration Guide](Migration_Guide.md) (第 8 节) + [Data Plane Design](../../docs/data_plane_desgin_with_af_XDP.md) | 1 小时 |
+| **架构师/决策者** | [rSwitch Definition](../../docs/rSwitch_Definition.md) + [Overview](../../docs/Reconfigurable_Switch_Overview.md) | 45 分钟 |
+| **从 PoC 迁移** | [Migration Guide](Migration_Guide.md) (第 4 节) + [Milestone1 Plan](../../docs/Milestone1_plan.md) | 1 小时 |
 
 ### 核心文档（按优先级）
 
 1. **⭐⭐⭐ [Migration Guide](Migration_Guide.md)** (118KB)
    - **适合所有人** - 完整的使用和开发指南
    
-2. **⭐⭐ [CO-RE Guide](CO-RE_Guide.md)** (71KB)
+2. **⭐⭐ [CO-RE Guide](archive/CO-RE_Guide.md)** (71KB)
    - **模块开发者必读** - CO-RE 技术详解
    
-3. **⭐⭐ [Data Plane Design](data_plane_desgin_with_af_XDP.md)**
+3. **⭐⭐ [Data Plane Design](../../docs/data_plane_desgin_with_af_XDP.md)**
    - **深入理解** - XDP + AF_XDP 混合数据平面设计
 
-4. **⭐ [rSwitch Definition](rSwitch_Definition.md)**
+4. **⭐ [rSwitch Definition](../../docs/rSwitch_Definition.md)**
    - **了解价值** - rSwitch 核心定义和工程价值
 
 5. **📊 [Documentation Index](Documentation_Index.md)**
@@ -85,21 +85,21 @@ sudo rswitch_loader --profile etc/profiles/dumb.yaml
 
 ### 指南和教程
 - **[Migration_Guide.md](Migration_Guide.md)** - 完整迁移和使用指南 ⭐⭐⭐
-- **[CO-RE_Guide.md](CO-RE_Guide.md)** - CO-RE 技术和模块可移植性指南 ⭐⭐
+- **[CO-RE_Guide.md](archive/CO-RE_Guide.md)** - CO-RE 技术和模块可移植性指南 ⭐⭐
 
 ### 设计文档
-- **[rSwitch_Definition.md](rSwitch_Definition.md)** - rSwitch 核心定义
-- **[Reconfigurable_Switch_Overview.md](Reconfigurable_Switch_Overview.md)** - 可重配置交换机概述
-- **[data_plane_desgin_with_af_XDP.md](data_plane_desgin_with_af_XDP.md)** - 数据平面详细设计
-- **[discussions.md](discussions.md)** - 设计决策 Q&A
+- **[rSwitch_Definition.md](../../docs/rSwitch_Definition.md)** - rSwitch 核心定义
+- **[Reconfigurable_Switch_Overview.md](../../docs/Reconfigurable_Switch_Overview.md)** - 可重配置交换机概述
+- **[data_plane_desgin_with_af_XDP.md](../../docs/data_plane_desgin_with_af_XDP.md)** - 数据平面详细设计
+- **[discussions.md](../../docs/discussions.md)** - 设计决策 Q&A
 
 ### 开发和迁移
-- **[Milestone1_plan.md](Milestone1_plan.md)** - PoC → Production 迁移计划
-- **[Module_Portability_Report.md](Module_Portability_Report.md)** - 模块分发策略
-- **[CO-RE_Migration_Complete.md](CO-RE_Migration_Complete.md)** - CO-RE 迁移记录
+- **[Milestone1_plan.md](../../docs/Milestone1_plan.md)** - PoC → Production 迁移计划
+- **[Module_Portability_Report.md](archive/Module_Portability_Report.md)** - 模块分发策略
+- **[CO-RE_Migration_Complete.md](archive/CO-RE_Migration_Complete.md)** - CO-RE 迁移记录
 
 ### 项目状态
-- **[Phase5_Readiness_Assessment.md](Phase5_Readiness_Assessment.md)** - Phase 5 就绪性评估
+- **[Phase5_Readiness_Assessment.md](archive/Phase5_Readiness_Assessment.md)** - Phase 5 就绪性评估
 
 ### 索引
 - **[Documentation_Index.md](Documentation_Index.md)** - 完整文档索引和查找指南
@@ -114,10 +114,10 @@ sudo rswitch_loader --profile etc/profiles/dumb.yaml
 | **如何配置 VLAN？** | [Migration Guide 第 7.2 节](Migration_Guide.md#端口配置详解) |
 | **性能不达预期** | [Migration Guide 第 8 节](Migration_Guide.md#性能调优) |
 | **模块加载失败** | [Migration Guide 第 9 节](Migration_Guide.md#故障排查) |
-| **CO-RE 兼容性问题** | [CO-RE Guide 第 3-5 节](CO-RE_Guide.md) |
+| **CO-RE 兼容性问题** | [CO-RE Guide 第 3-5 节](archive/CO-RE_Guide.md) |
 | **如何使用 rswitchctl？** | [Migration Guide 第 10 节](Migration_Guide.md#api-参考) |
-| **什么是 VOQd？** | [Data Plane Design 第 2-3 节](data_plane_desgin_with_af_XDP.md) |
-| **如何热重载模块？** | [Migration Guide 第 3.2 节](Migration_Guide.md#模块化组件) |
+| **什么是 VOQd？** | [Data Plane Design 第 2-3 节](../../docs/data_plane_desgin_with_af_XDP.md) |
+| **如何热重载模块？** | [Migration Guide 第 3.2 节](Migration_Guide.md#模块化插件系统) |
 
 ---
 
@@ -133,7 +133,7 @@ ports:
   - {id: 2, mode: access, access_vlan: 10}  # Office
   - {id: 3, mode: access, access_vlan: 20}  # Guest
 ```
-**详见**: [Migration Guide - 示例 1](Migration_Guide.md#示例-1-小型办公室网络)
+**详见**: [Migration Guide - 示例 1](Migration_Guide.md#示例 1: 小型办公室网络)
 
 ### 场景 2: 数据中心 ToR 交换机（QoS）
 ```yaml
@@ -144,7 +144,7 @@ voqd:
   scheduler: drr
   priorities: [{prio: 3, weight: 50, rate_limit_mbps: 10000}]
 ```
-**详见**: [Migration Guide - 示例 2](Migration_Guide.md#示例-2-数据中心-tor)
+**详见**: [Migration Guide - 示例 2](Migration_Guide.md#示例 2: 数据中心 ToR（Top-of-Rack）)
 
 ### 场景 3: DMZ 防火墙
 ```yaml
@@ -154,7 +154,7 @@ acl_rules:
   - {name: "deny-inbound", action: drop, ...}
   - {name: "allow-web", protocol: tcp, dst_port: [80,443], ...}
 ```
-**详见**: [Migration Guide - 示例 3](Migration_Guide.md#示例-3-dmz-防火墙)
+**详见**: [Migration Guide - 示例 3](Migration_Guide.md#示例 3: DMZ 防火墙)
 
 ---
 
@@ -208,7 +208,7 @@ acl_rules:
 
 ## 📮 获取帮助
 
-1. **查看 FAQ**: [Migration Guide - FAQ](Migration_Guide.md#faq)
+1. **查看 FAQ**: [Migration Guide - FAQ](Migration_Guide.md#FAQ)
 2. **故障排查指南**: [Migration Guide - 故障排查](Migration_Guide.md#故障排查)
 3. **提交 Issue**: GitHub Issues（如果可用）
 4. **查看示例**: `bpf/modules/` 和 `demos/rswitch_scaffold/`

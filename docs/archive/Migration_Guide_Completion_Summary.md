@@ -1,4 +1,6 @@
-# Migration Guide 编写完成总结
+# [ARCHIVED] Migration Guide Completion Summary
+
+This document has been archived and moved to `docs/archive`. The Migration Guide has been updated and merged into `Migration_Guide.md` and related reference docs.
 
 ## 📋 任务完成情况
 

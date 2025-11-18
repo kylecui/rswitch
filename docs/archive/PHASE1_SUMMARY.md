@@ -1,4 +1,6 @@
-# Phase 1: Core Infrastructure - COMPLETED ✅
+# [ARCHIVED] Phase 1 Summary: moved to docs/archive/PHASE1_SUMMARY.md
+
+Note: This process summary has been archived. Please refer to the archived copy in `docs/archive/` for historical reference. Active documentation maintained in README and Module_Status_Report.md.
 
 ## Summary
 Successfully implemented the complete modular foundation for rSwitch, replacing the monolithic PoC architecture with a plugin-based system.

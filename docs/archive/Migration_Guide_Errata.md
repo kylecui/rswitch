@@ -1,4 +1,6 @@
-# Migration Guide 紧急勘误和更新说明
+# [ARCHIVED] Migration Guide Errata
+
+This file has been archived; relevant updates have been folded into `Migration_Guide.md`.
 
 **日期**: 2024-11-04  
 **问题**: Migration Guide 描述的部分功能尚未实现  

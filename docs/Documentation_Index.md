@@ -32,7 +32,7 @@
 
 ### 2. 概念与设计
 
-- **[rSwitch_Definition.md](rSwitch_Definition.md)**
+- **[rSwitch_Definition.md](../../docs/rSwitch_Definition.md)**
   - **目标读者**: 架构师、技术决策者
   - **内容**:
     - rSwitch 的核心定义
@@ -41,7 +41,7 @@
     - 应用场景
   - **何时阅读**: 了解"rSwitch 是什么"时
 
-- **[Reconfigurable_Switch_Overview.md](Reconfigurable_Switch_Overview.md)**
+- **[Reconfigurable_Switch_Overview.md](../../docs/Reconfigurable_Switch_Overview.md)**
   - **目标读者**: 网络工程师、系统架构师
   - **内容**:
     - 可重配置交换机概述
@@ -51,7 +51,7 @@
 
 ### 3. 详细设计
 
-- **[data_plane_desgin_with_af_XDP.md](data_plane_desgin_with_af_XDP.md)**
+- **[data_plane_desgin_with_af_XDP.md](../../docs/data_plane_desgin_with_af_XDP.md)**
   - **目标读者**: 数据平面开发者、性能工程师
   - **内容**:
     - 完整的 XDP + AF_XDP 混合数据平面设计
@@ -62,7 +62,15 @@
     - 性能基准测试方法
   - **何时阅读**: 深入理解数据平面实现时
 
-- **[discussions.md](discussions.md)**
+- **[discussions.md](../../docs/discussions.md)**
+
+### Release-ready Docs (rSwitch)
+
+- **[Quick Start](Quick_Start.md)** - Minimal steps to build and run with a profile
+- **[Design Philosophy](Design_Philosophy.md)** - High-level architecture and design goals
+- **[How To Use](How_To_Use.md)** - Practical usage examples and scripts
+- **[Module Developer Guide](Module_Developer_Guide.md)** - How to author, test, and integrate modules
+- **[Scenario Profiles](Scenario_Profiles.md)** - Common YAML profiles and best practices for deployment
   - **目标读者**: 开发者、架构师
   - **内容**:
     - 设计决策的 Q&A
@@ -73,7 +81,7 @@
 
 ### 4. 开发与迁移
 
-- **[Milestone1_plan.md](Milestone1_plan.md)**
+- **[Milestone1_plan.md](../../docs/Milestone1_plan.md)**
   - **目标读者**: 项目团队、贡献者
   - **内容**:
     - PoC → Production 迁移的分步计划
@@ -81,7 +89,7 @@
     - 模块化重构路线图
   - **何时阅读**: 规划开发任务时
 
-- **[CO-RE_Guide.md](CO-RE_Guide.md)** (71KB)
+- **[CO-RE_Guide.md](archive/CO-RE_Guide.md)** (71KB)
   - **目标读者**: BPF 模块开发者
   - **内容**:
     - CO-RE 技术详解
@@ -90,7 +98,7 @@
     - 常见陷阱和解决方案
   - **何时阅读**: 开发新模块或解决兼容性问题时
 
-- **[Module_Portability_Report.md](Module_Portability_Report.md)** (12KB)
+- **[Module_Portability_Report.md](archive/Module_Portability_Report.md)** (12KB)
   - **目标读者**: 模块分发者、客户
   - **内容**:
     - 模块分类和分发策略
@@ -98,7 +106,7 @@
     - 部署场景示例
   - **何时阅读**: 计划模块分发或自定义部署时
 
-- **[CO-RE_Migration_Complete.md](CO-RE_Migration_Complete.md)** (20KB)
+- **[CO-RE_Migration_Complete.md](archive/CO-RE_Migration_Complete.md)** (20KB)
   - **目标读者**: 维护者、迁移执行者
   - **内容**:
     - 完整的 CO-RE 迁移过程记录
@@ -108,7 +116,7 @@
 
 ### 5. 评估与就绪性
 
-- **[Phase5_Readiness_Assessment.md](Phase5_Readiness_Assessment.md)**
+- **[Phase5_Readiness_Assessment.md](archive/Phase5_Readiness_Assessment.md)**
   - **目标读者**: 项目经理、测试团队
   - **内容**:
     - Phase 1-4 完成情况验证
@@ -117,9 +125,16 @@
     - 行动建议
   - **何时阅读**: 评估项目状态和下一步计划时
 
----
+### 6. Development Roadmap & Status
 
-## 🛠️ 工具文档
+- **[Development Guide](Development_Guide.md)** - Consolidated development guide with roadmap, status, and best practices
+- **[Development Roadmap](archive/DEVELOPMENT_ROADMAP.md)** - Complete development plan and timeline
+- **[Remaining Modules Roadmap](archive/REMAINING_MODULES_ROADMAP.md)** - Detailed roadmap for remaining modules
+- **[Module Status Report](archive/Module_Status_Report.md)** - Current implementation status of all modules
+- **[Outstanding Tasks](archive/Outstanding_Tasks_and_Recommendations.md)** - Current tasks and recommendations
+- **[Development Log](archive/Development_Log_Summary.md)** - Development progress and fixes summary
+- **[Module Quick Reference](archive/MODULES_QUICK_REFERENCE.md)** - Quick reference for remaining modules
+- **[eBPF Best Practices](archive/EBPF_BEST_PRACTICES.md)** - eBPF programming guidelines
 
 - **[tools/README_inspect_module.md](../tools/README_inspect_module.md)**
   - inspect_module.py 工具使用指南
@@ -132,7 +147,7 @@
 
 ### Scaffold 原型
 
-- **[demos/rswitch_scaffold/](demos/rswitch_scaffold/)**
+- **[demos/rswitch_scaffold/](../../docs/demos/rswitch_scaffold/)**
   - **rswitch-xdp/**: XDP 层原型（ringbuf, devmap, state_map）
   - **rswitch-voqd/**: VOQd 用户空间调度器原型
 
@@ -143,11 +158,18 @@
 | 文档 | 大小 | 主题 | 优先级 |
 |------|------|------|--------|
 | Migration_Guide.md | 118 KB | 完整指南 | ⭐⭐⭐ 必读 |
+| Development_Guide.md | ~45 KB | 开发指南 | ⭐⭐⭐ 开发必读 |
 | CO-RE_Guide.md | 71 KB | CO-RE 技术 | ⭐⭐ 开发必读 |
 | data_plane_desgin_with_af_XDP.md | ~30 KB | 数据平面设计 | ⭐⭐ 深入理解 |
+| DEVELOPMENT_ROADMAP.md | ~15 KB | 开发路线图 | ⭐⭐⭐ 规划必读 |
+| REMAINING_MODULES_ROADMAP.md | ~25 KB | 模块路线图 | ⭐⭐ 开发必读 |
+| Module_Status_Report.md | ~8 KB | 模块状态 | ⭐⭐ 状态必读 |
 | CO-RE_Migration_Complete.md | 20 KB | 迁移记录 | ⭐ 参考 |
 | Module_Portability_Report.md | 12 KB | 模块分发 | ⭐⭐ 分发必读 |
 | Phase5_Readiness_Assessment.md | ~10 KB | 项目状态 | ⭐⭐ 管理必读 |
+| Outstanding_Tasks_and_Recommendations.md | ~6 KB | 待完成任务 | ⭐⭐ 任务必读 |
+| Development_Log_Summary.md | ~12 KB | 开发日志 | ⭐ 参考 |
+| EBPF_BEST_PRACTICES.md | ~18 KB | eBPF 最佳实践 | ⭐⭐ 开发必读 |
 
 ---
 
@@ -174,16 +196,22 @@
 1. Migration_Guide.md (第 1 节：概述)
    └─ 了解框架整体架构
 
-2. CO-RE_Guide.md
+2. Development_Guide.md (第 1-3 节：项目状态、路线图、开发最佳实践)
+   └─ 掌握当前状态和开发计划
+
+3. CO-RE_Guide.md
    └─ 掌握 CO-RE 编程模式
 
-3. Migration_Guide.md (第 5 节：模块开发)
+4. Migration_Guide.md (第 5 节：模块开发)
    └─ 学习模块开发流程
 
-4. bpf/modules/core_example.bpf.c
+5. Development_Guide.md (第 4-5 节：架构概述、测试验证)
+   └─ 深入理解模块架构和测试方法
+
+6. bpf/modules/core_example.bpf.c
    └─ 参考示例模块
 
-5. tools/inspect_module.py
+7. tools/inspect_module.py
    └─ 验证自己的模块
 ```
 
@@ -198,6 +226,13 @@
 
 3. Migration_Guide.md (Appendix D: 性能基准参考)
    └─ 了解预期性能
+
+---
+
+## 📦 Archived Documents
+
+部分历史/过程性文档已转移至 `docs/archive/`，详情请参见 `archive/ARCHIVED_FILES.md`。
+
 
 4. tools/perf-tests/
    └─ 运行基准测试
@@ -247,7 +282,9 @@
 | 问题类型 | 推荐文档 | 章节 |
 |---------|---------|------|
 | **如何部署？** | Migration_Guide.md | 第 2, 6 节 |
-| **如何开发模块？** | Migration_Guide.md | 第 5 节 |
+| **如何开发模块？** | Development_Guide.md | 第 4-5 节 |
+| **当前开发状态？** | Development_Guide.md | 第 1-2 节 |
+| **开发路线图？** | Development_Guide.md | 第 2 节 |
 | **性能不达标** | Migration_Guide.md | 第 8 节 |
 | **遇到错误** | Migration_Guide.md | 第 9 节 |
 | **CO-RE 兼容性问题** | CO-RE_Guide.md | 第 3-5 节 |
@@ -255,6 +292,10 @@
 | **API 使用** | Migration_Guide.md | 第 10 节 |
 | **设计理由** | discussions.md | 全文 |
 | **数据平面细节** | data_plane_desgin_with_af_XDP.md | 第 2-4 节 |
+| **开发路线图** | DEVELOPMENT_ROADMAP.md | 全文档 |
+| **模块状态** | Module_Status_Report.md | 全文档 |
+| **待完成任务** | Outstanding_Tasks_and_Recommendations.md | 全文档 |
+| **eBPF 最佳实践** | EBPF_BEST_PRACTICES.md | 全文档 |
 
 ### 按组件查找
 
@@ -290,8 +331,21 @@
 - ✅ Module_Portability_Report.md (模块分发策略)
 
 ### 2024-11-02
-- ✅ CO-RE_Guide.md (71KB, CO-RE 技术指南)
-- ✅ CO-RE_Migration_Complete.md (迁移记录)
+### 2025-11-18
+- ✅ **Documentation Consolidation**: Merged key development documents from `docs/archive/` into main documentation index
+  - Added Development Roadmap & Status section with 7 key documents
+  - Updated document statistics and reading paths
+  - Enhanced quick lookup table with development resources
+  - Consolidated profile system enhancements into development roadmap
+- ✅ **Created Development_Guide.md** (~45KB): Comprehensive consolidated development guide
+  - Current project status and module overview
+  - Complete development roadmap (Q4 2024 - Q4 2025)
+  - eBPF programming best practices and CO-RE guidelines
+  - Architecture overview with module pipeline details
+  - Testing and validation procedures
+  - Deployment and configuration examples
+  - Troubleshooting guide with common issues
+  - Key references and next steps
 
 ---
 

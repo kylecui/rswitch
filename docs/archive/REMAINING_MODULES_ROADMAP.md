@@ -1022,6 +1022,15 @@ qinq:
 | Week 5 | Route 模块测试 | 功能测试, 性能测试, 文档 |
 | Week 6-8 | Week 1 成果集成测试 | ACL + Mirror + VLAN 完整测试 |
 
+### Profile System Enhancements (2025-01 ~ 2025-04, 4 个月)
+
+| 月份 | 任务 | 交付物 |
+|------|------|--------|
+| 01 月 | Advanced YAML parsing | stage overrides, optional modules |
+| 02 月 | Module configuration parameters | 模块特定配置支持 |
+| 03 月 | Profile inheritance | 模板系统, 参数化配置 |
+| 04 月 | 集成测试和文档 | 完整测试, 文档更新 |
+
 ### v1.2 (2025-02 ~ 2025-04, 3 个月)
 
 | 月份 | 任务 | 交付物 |
@@ -1051,11 +1060,16 @@ qinq:
    - 完成 ACL + Mirror + VLAN 完整测试
    - 修复 Mirror redirect vs clone 问题
 
-3. **v1.2 规划** (P1):
+3. **Profile System Enhancements** (P1):
+   - Advanced YAML profile support（stage overrides, optional modules）
+   - Module configuration parameters
+   - Profile inheritance and templates
+
+4. **v1.2 规划** (P1):
    - QoS 模块（依赖 VLAN PCP）
    - Stateful ACL（依赖 ACL 模块）
 
-4. **v2.0 长期** (P2-P3):
+5. **v2.0 长期** (P2-P3):
    - STP/LACP/LLDP（企业级特性）
 
 ### 技术风险
@@ -1091,9 +1105,10 @@ qinq:
 | 版本 | 模块数量 | 预计工作量 |
 |------|---------|-----------|
 | v1.1 | 1 (route) | 2-3 周 |
+| Profile Enhancements | 3 (yaml, config, templates) | 4-5 周 |
 | v1.2 | 3 (qos, stateful acl, qinq) | 4-6 周 |
 | v2.0 | 3 (stp, lacp, lldp) | 8-12 周 |
-| **总计** | **7** | **14-21 周（3.5-5 个月）** |
+| **总计** | **10** | **18-26 周（4.5-6.5 个月）** |
 
 ### 下一步行动
 
@@ -1106,7 +1121,12 @@ qinq:
 
 3. **Week 6-8**:
    - v1.1 集成测试和性能优化
-   - v1.2 设计规划
+   - Profile System Enhancements 设计规划
+
+4. **2025 Q1**:
+   - 实现 Advanced YAML profile support
+   - 添加 module configuration parameters
+   - 实现 profile inheritance and templates
 
 ---
 

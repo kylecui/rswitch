@@ -57,7 +57,43 @@
 
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ 📋 v1.2 (2025 Q2 - 计划中)                                                   │
+│ � Profile System Enhancements (2025 Q1-Q2 - 计划中)                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+  🚧 Advanced YAML Profile Support
+     │
+     ├─ 功能: YAML stage overrides, optional modules, module sub-fields
+     ├─ 当前状态: 仅支持简单 module lists, stages from ELF only
+     ├─ 目标: 允许 YAML 覆盖 ELF stages, 支持可选模块, 模块配置参数
+     ├─ 难度: 中
+     ├─ 工作量: 2-3 周
+     └─ 优先级: P1 - 中
+  
+  🚧 Module Configuration Parameters
+     │
+     ├─ 功能: 模块特定配置 (ACL 规则数, QoS 队列深度, etc.)
+     ├─ Maps: 扩展 rs_module_desc 结构体
+     ├─ 命令: rswitchctl module-config <module> <param> <value>
+     ├─ 难度: 低
+     ├─ 工作量: 1 周
+     └─ 优先级: P1 - 中
+  
+  🚧 Profile Inheritance and Templates
+     │
+     ├─ 功能: 配置文件继承, 模板系统, 参数化配置
+     ├─ 语法: inherits, templates, parameters
+     ├─ 难度: 中
+     ├─ 工作量: 2 周
+     └─ 优先级: P2 - 低
+  
+  📅 时间线:
+     01 月: Advanced YAML parsing (stage overrides, optional modules)
+     02 月: Module configuration parameters
+     03 月: Profile inheritance and templates
+     04 月: 集成测试和文档更新
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ �📋 v1.2 (2025 Q2 - 计划中)                                                   │
 └─────────────────────────────────────────────────────────────────────────────┘
   🚧 qos.bpf.c             - 流量分类和标记
      │
@@ -205,11 +241,12 @@
   v1.0-alpha     6        8 周         2 周         10 周    ✅
   v1.1-dev       4        3 周         1 周          4 周    ✅
   v1.1           1        2 周         1 周          3 周    📋
+  Profile Enh.   3        3 周         1 周          4 周    📋
   v1.2           3        4 周         2 周          6 周    📋
   v2.0           3        7 周         3 周         10 周    📋
   ────────────────────────────────────────────────────────────
-  总计          17       24 周         9 周         33 周
-                      (6 个月)     (2 个月)     (8 个月)
+  总计          20       27 周         10 周        37 周
+                      (6.75 个月)  (2.5 个月)   (9.25 个月)
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
