@@ -125,9 +125,16 @@
     - 行动建议
   - **何时阅读**: 评估项目状态和下一步计划时
 
----
+### 6. Development Roadmap & Status
 
-## 🛠️ 工具文档
+- **[Development Guide](Development_Guide.md)** - Consolidated development guide with roadmap, status, and best practices
+- **[Development Roadmap](archive/DEVELOPMENT_ROADMAP.md)** - Complete development plan and timeline
+- **[Remaining Modules Roadmap](archive/REMAINING_MODULES_ROADMAP.md)** - Detailed roadmap for remaining modules
+- **[Module Status Report](archive/Module_Status_Report.md)** - Current implementation status of all modules
+- **[Outstanding Tasks](archive/Outstanding_Tasks_and_Recommendations.md)** - Current tasks and recommendations
+- **[Development Log](archive/Development_Log_Summary.md)** - Development progress and fixes summary
+- **[Module Quick Reference](archive/MODULES_QUICK_REFERENCE.md)** - Quick reference for remaining modules
+- **[eBPF Best Practices](archive/EBPF_BEST_PRACTICES.md)** - eBPF programming guidelines
 
 - **[tools/README_inspect_module.md](../tools/README_inspect_module.md)**
   - inspect_module.py 工具使用指南
@@ -151,11 +158,18 @@
 | 文档 | 大小 | 主题 | 优先级 |
 |------|------|------|--------|
 | Migration_Guide.md | 118 KB | 完整指南 | ⭐⭐⭐ 必读 |
+| Development_Guide.md | ~45 KB | 开发指南 | ⭐⭐⭐ 开发必读 |
 | CO-RE_Guide.md | 71 KB | CO-RE 技术 | ⭐⭐ 开发必读 |
 | data_plane_desgin_with_af_XDP.md | ~30 KB | 数据平面设计 | ⭐⭐ 深入理解 |
+| DEVELOPMENT_ROADMAP.md | ~15 KB | 开发路线图 | ⭐⭐⭐ 规划必读 |
+| REMAINING_MODULES_ROADMAP.md | ~25 KB | 模块路线图 | ⭐⭐ 开发必读 |
+| Module_Status_Report.md | ~8 KB | 模块状态 | ⭐⭐ 状态必读 |
 | CO-RE_Migration_Complete.md | 20 KB | 迁移记录 | ⭐ 参考 |
 | Module_Portability_Report.md | 12 KB | 模块分发 | ⭐⭐ 分发必读 |
 | Phase5_Readiness_Assessment.md | ~10 KB | 项目状态 | ⭐⭐ 管理必读 |
+| Outstanding_Tasks_and_Recommendations.md | ~6 KB | 待完成任务 | ⭐⭐ 任务必读 |
+| Development_Log_Summary.md | ~12 KB | 开发日志 | ⭐ 参考 |
+| EBPF_BEST_PRACTICES.md | ~18 KB | eBPF 最佳实践 | ⭐⭐ 开发必读 |
 
 ---
 
@@ -182,16 +196,22 @@
 1. Migration_Guide.md (第 1 节：概述)
    └─ 了解框架整体架构
 
-2. CO-RE_Guide.md
+2. Development_Guide.md (第 1-3 节：项目状态、路线图、开发最佳实践)
+   └─ 掌握当前状态和开发计划
+
+3. CO-RE_Guide.md
    └─ 掌握 CO-RE 编程模式
 
-3. Migration_Guide.md (第 5 节：模块开发)
+4. Migration_Guide.md (第 5 节：模块开发)
    └─ 学习模块开发流程
 
-4. bpf/modules/core_example.bpf.c
+5. Development_Guide.md (第 4-5 节：架构概述、测试验证)
+   └─ 深入理解模块架构和测试方法
+
+6. bpf/modules/core_example.bpf.c
    └─ 参考示例模块
 
-5. tools/inspect_module.py
+7. tools/inspect_module.py
    └─ 验证自己的模块
 ```
 
@@ -262,7 +282,9 @@
 | 问题类型 | 推荐文档 | 章节 |
 |---------|---------|------|
 | **如何部署？** | Migration_Guide.md | 第 2, 6 节 |
-| **如何开发模块？** | Migration_Guide.md | 第 5 节 |
+| **如何开发模块？** | Development_Guide.md | 第 4-5 节 |
+| **当前开发状态？** | Development_Guide.md | 第 1-2 节 |
+| **开发路线图？** | Development_Guide.md | 第 2 节 |
 | **性能不达标** | Migration_Guide.md | 第 8 节 |
 | **遇到错误** | Migration_Guide.md | 第 9 节 |
 | **CO-RE 兼容性问题** | CO-RE_Guide.md | 第 3-5 节 |
@@ -270,6 +292,10 @@
 | **API 使用** | Migration_Guide.md | 第 10 节 |
 | **设计理由** | discussions.md | 全文 |
 | **数据平面细节** | data_plane_desgin_with_af_XDP.md | 第 2-4 节 |
+| **开发路线图** | DEVELOPMENT_ROADMAP.md | 全文档 |
+| **模块状态** | Module_Status_Report.md | 全文档 |
+| **待完成任务** | Outstanding_Tasks_and_Recommendations.md | 全文档 |
+| **eBPF 最佳实践** | EBPF_BEST_PRACTICES.md | 全文档 |
 
 ### 按组件查找
 
@@ -305,11 +331,21 @@
 - ✅ Module_Portability_Report.md (模块分发策略)
 
 ### 2024-11-02
-### 2025-11-17
-- ✅ **在 docs 中加入“最近实现修复与注意事项”摘要**（`Migration_Guide.md`, `Troubleshooting_and_Fixes_Summary.md`, `Module_Status_Report.md`），便于运维与开发者快速定位近期 bug 修复和验证步骤。
-
-- ✅ CO-RE_Guide.md (71KB, CO-RE 技术指南)
-- ✅ CO-RE_Migration_Complete.md (迁移记录)
+### 2025-11-18
+- ✅ **Documentation Consolidation**: Merged key development documents from `docs/archive/` into main documentation index
+  - Added Development Roadmap & Status section with 7 key documents
+  - Updated document statistics and reading paths
+  - Enhanced quick lookup table with development resources
+  - Consolidated profile system enhancements into development roadmap
+- ✅ **Created Development_Guide.md** (~45KB): Comprehensive consolidated development guide
+  - Current project status and module overview
+  - Complete development roadmap (Q4 2024 - Q4 2025)
+  - eBPF programming best practices and CO-RE guidelines
+  - Architecture overview with module pipeline details
+  - Testing and validation procedures
+  - Deployment and configuration examples
+  - Troubleshooting guide with common issues
+  - Key references and next steps
 
 ---
 

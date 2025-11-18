@@ -32,14 +32,9 @@ egress:
   - voqd
   - egress_final
 
-config:
-  qos:
-    enable: true
-    rates:
-      high: 10mbps
-      normal: 100mbps
-
-```
+# NOTE: Advanced YAML features like module sub-fields (required, stage overrides)
+# and optional_modules are planned but not yet implemented.
+# The config section shown above is supported and used in production.
 
 Best practices
 - Keep module ordering intentional; avoid duplicate stage numbers that conflict
