@@ -1,8 +1,7 @@
 # rSwitch 🔄
 
-[![License: LGPL-2.1 OR BSD-2-Clause](https://img.shields.io/badge/License-LGPL--2.1%20OR%20BSD--2--Clause-blue.svg)](https://opensource.org/licenses/LGPL-2.1)
-[![C/C++ CI](https://github.com/kylecui/rswitch/workflows/C/C++%20CI/badge.svg)](https://github.com/kylecui/rswitch/actions)
-[![Kernel](https://img.shields.io/badge/Kernel-5.8+-brightgreen.svg)](https://www.kernel.org/)
+[![License: LGPL-2.1 OR BSD-2-Clause](https://img.shields.io/badge/License-LGPL--2.1%20OR%20BSD--2--Clause-blue)](https://opensource.org/licenses/LGPL-2.1)
+[![Kernel](https://img.shields.io/badge/Kernel-5.8+-brightgreen)](https://www.kernel.org/)
 
 **A production-grade, modular XDP switch with CO-RE compatibility and advanced QoS capabilities**
 
