@@ -39,6 +39,8 @@ struct voqd_ctx {
 	/* AF_XDP/Data plane configuration */
 	bool enable_afxdp;
 	bool zero_copy;
+	bool enable_sw_queues;     /* Enable software queue simulation */
+	uint32_t sw_queue_depth;   /* Software queue depth per port/priority */
 	char *ifnames[MAX_PORTS];  /* Interface names per port */
 	
 	/* Runtime flags */
@@ -127,7 +129,7 @@ static void print_stats(struct voqd_ctx *ctx)
 	voq_print_stats(&ctx->voq);
 	
 	/* Data plane stats (if enabled) */
-	if (ctx->enable_afxdp) {
+	if (ctx->enable_afxdp || ctx->enable_sw_queues) {
 		voqd_dataplane_print_stats(&ctx->dataplane);
 	}
 	
@@ -200,23 +202,27 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 	/* AF_XDP/Data plane defaults */
 	ctx->enable_afxdp = false;  /* Will be enabled in ACTIVE mode */
 	ctx->zero_copy = false;
+	ctx->enable_sw_queues = false;
+	ctx->sw_queue_depth = 1024;  /* Default software queue depth */
 	memset(ctx->ifnames, 0, sizeof(ctx->ifnames));
 	
 	/* Parse command-line options */
 	static struct option long_options[] = {
-		{"ports",      required_argument, 0, 'p'},
-		{"mode",       required_argument, 0, 'm'},
-		{"prio-mask",  required_argument, 0, 'P'},
-		{"interfaces", required_argument, 0, 'i'},
-		{"zero-copy",  no_argument,       0, 'z'},
-		{"scheduler",  no_argument,       0, 's'},
-		{"stats",      required_argument, 0, 'S'},
-		{"help",       no_argument,       0, 'h'},
+		{"ports",         required_argument, 0, 'p'},
+		{"mode",          required_argument, 0, 'm'},
+		{"prio-mask",     required_argument, 0, 'P'},
+		{"interfaces",    required_argument, 0, 'i'},
+		{"zero-copy",     no_argument,       0, 'z'},
+		{"sw-queues",     no_argument,       0, 'q'},
+		{"queue-depth",   required_argument, 0, 'Q'},
+		{"scheduler",     no_argument,       0, 's'},
+		{"stats",         required_argument, 0, 'S'},
+		{"help",          no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 	
 	int opt;
-	while ((opt = getopt_long(argc, argv, "p:m:P:i:zsS:h", long_options, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "p:m:P:i:zqQ:sS:h", long_options, NULL)) != -1) {
 		switch (opt) {
 		case 'p':
 			ctx->num_ports = atoi(optarg);
@@ -256,6 +262,16 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 		case 'z':
 			ctx->zero_copy = true;
 			break;
+		case 'q':
+			ctx->enable_sw_queues = true;
+			break;
+		case 'Q':
+			ctx->sw_queue_depth = atoi(optarg);
+			if (ctx->sw_queue_depth == 0) {
+				fprintf(stderr, "Invalid queue depth: %s\n", optarg);
+				return -EINVAL;
+			}
+			break;
 		case 's':
 			ctx->scheduler_enabled = true;
 			break;
@@ -271,6 +287,8 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 			printf("  -P, --prio-mask MASK     Priority interception mask (default: 0x00)\n");
 			printf("  -i, --interfaces IFLIST  Comma-separated interface names (e.g., ens33,ens34)\n");
 			printf("  -z, --zero-copy          Enable AF_XDP zero-copy mode\n");
+			printf("  -q, --sw-queues          Enable software queue simulation (for NICs without hardware queues)\n");
+			printf("  -Q, --queue-depth DEPTH  Software queue depth per port/priority (default: 1024)\n");
 			printf("  -s, --scheduler          Enable VOQ scheduler thread\n");
 			printf("  -S, --stats INTERVAL     Stats print interval in seconds (default: 10)\n");
 			printf("  -h, --help               Show this help\n");
@@ -311,9 +329,12 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 		return ret;
 	}
 	
-	/* Initialize data plane (enable AF_XDP in ACTIVE mode) */
+	/* Initialize data plane (enable AF_XDP in ACTIVE mode, software queues as needed) */
 	if (ctx->mode == VOQD_MODE_ACTIVE) {
 		ctx->enable_afxdp = true;
+	} else if (ctx->enable_sw_queues) {
+		/* Software queues can work in any mode */
+		ctx->enable_afxdp = false;
 	}
 	
 	struct voqd_dataplane_config dp_config = {
@@ -322,6 +343,8 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 		.rx_ring_size = 2048,
 		.tx_ring_size = 2048,
 		.frame_size = 2048,
+		.enable_sw_queues = ctx->enable_sw_queues,
+		.sw_queue_depth = ctx->sw_queue_depth,
 		.enable_scheduler = ctx->scheduler_enabled,
 		.batch_size = 256,
 		.poll_timeout_ms = 100,
@@ -393,8 +416,8 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 		return ret;
 	}
 	
-	/* Start data plane (if AF_XDP enabled) */
-	if (ctx->enable_afxdp) {
+	/* Start data plane (if AF_XDP or software queues enabled) */
+	if (ctx->enable_afxdp || ctx->enable_sw_queues) {
 		ret = voqd_dataplane_start(&ctx->dataplane);
 		if (ret < 0) {
 			fprintf(stderr, "Failed to start data plane: %s\n", strerror(-ret));
@@ -435,6 +458,9 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 				printf("  Port %u: %s\n", p, ctx->ifnames[p]);
 			}
 		}
+	} else if (ctx->enable_sw_queues) {
+		printf("Data plane: Software queue simulation enabled (depth=%u)\n",
+		       ctx->sw_queue_depth);
 	} else {
 		printf("Data plane: Metadata-only mode (ringbuf consumer)\n");
 	}
@@ -451,7 +477,7 @@ static void voqd_cleanup(struct voqd_ctx *ctx)
 	printf("Cleaning up...\n");
 	
 	/* Stop data plane */
-	if (ctx->enable_afxdp) {
+	if (ctx->enable_afxdp || ctx->enable_sw_queues) {
 		voqd_dataplane_stop(&ctx->dataplane);
 	}
 	

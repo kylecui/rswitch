@@ -126,6 +126,41 @@ User-space QoS scheduler with three operational modes:
 - **SHADOW**: Observation mode for testing (zero impact)
 - **ACTIVE**: Full QoS processing with AF_XDP redirection
 
+#### QoS Architecture Notes
+
+**Hardware Queue Limitations**: Traditional QoS implementation requires AF_XDP sockets bound to hardware queues. For NICs without multiple queues, rSwitch now provides two solutions:
+
+**1. Software Queue Simulation** (`-q` / `--sw-queues`)
+- Creates virtual output queues in user space using shared memory buffers
+- Eliminates dependency on hardware queue count
+- Supports any NIC with basic AF_XDP support
+- Configurable queue depth per port/priority combination
+- Maintains full QoS scheduling capabilities
+
+**2. Queue-Independent Shadow Mode**
+- Pure metadata observation without packet redirection
+- Works with any NIC configuration
+- No AF_XDP socket requirements
+- Ideal for monitoring and statistics collection
+
+**Usage Examples**:
+```bash
+# Software queues for queue-constrained NICs
+sudo ./build/rswitch-voqd -m active -q -Q 2048 -i eth0
+
+# Shadow mode without hardware queue dependency  
+sudo ./build/rswitch-voqd -m shadow -q -i eth0
+
+# Combined: software queues + shadow mode
+sudo ./build/rswitch-voqd -m shadow -q -Q 1024
+```
+
+**Benefits**:
+- **Broader Hardware Support**: Works with inexpensive NICs lacking multiple queues
+- **Flexible Deployment**: Choose between full QoS processing or metadata-only observation
+- **Performance Scaling**: Software queues provide consistent performance regardless of hardware
+- **Operational Flexibility**: Mix and match modes based on use case requirements
+
 ### Control Plane
 - **YAML Profiles**: Declarative configuration for different scenarios
 - **Hot-Reload**: Runtime module updates without downtime
@@ -193,13 +228,16 @@ sudo ./build/rswitchctl show-pipeline
 sudo ./build/rswitchctl show-stats
 ```
 
-#### QoS Control
+#### VOQd QoS Enhancements
 ```bash
-# Show QoS statistics
-sudo ./build/rsqosctl stats
+# Enable software queue simulation for NICs without hardware queues
+sudo ./build/rswitch-voqd -m active -q -Q 2048 -i eth0,eth1
 
-# Monitor VOQd status
-sudo ./tools/qos_monitor.sh
+# Queue-independent shadow mode (no AF_XDP dependency)
+sudo ./build/rswitch-voqd -m shadow -q -i eth0
+
+# Monitor software queue statistics
+sudo ./build/rswitch-voqd -m active -q -S 5
 ```
 
 #### VLAN Management
@@ -271,6 +309,18 @@ voqd_config:
   enabled: true
   mode: active
   prio_mask: 0x0C  # HIGH + CRITICAL priorities
+  
+  # Software queue simulation (for NICs without hardware queues)
+  software_queues:
+    enabled: true
+    queue_depth: 2048  # Per port/priority queue depth
+    num_priorities: 8   # Number of priority levels
+  
+  # AF_XDP configuration
+  afxdp_config:
+    enabled: true
+    zero_copy: false
+    frame_size: 2048
 ```
 
 ### Available Profiles

@@ -54,9 +54,6 @@ struct sw_queue_mgr {
 	uint32_t buffer_size;           /* Size of each buffer */
 	uint32_t buffers_used;          /* Used buffers */
 };
-
-/* Data plane configuration */
-struct voqd_dataplane_config {
 	/* AF_XDP configuration */
 	bool enable_afxdp;         /* Enable AF_XDP sockets */
 	bool zero_copy;            /* Use zero-copy mode */
@@ -82,8 +79,6 @@ struct voqd_dataplane_config {
 	uint8_t dscp_to_prio[64];  /* DSCP value (0-63) to priority mapping */
 	uint8_t default_prio;      /* Default priority for unmapped DSCP */
 };
-
-/* Data plane runtime state */
 struct voqd_dataplane {
 	/* Components */
 	struct voq_mgr *voq;              /* VOQ manager */

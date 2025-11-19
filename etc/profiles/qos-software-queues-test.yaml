@@ -1,0 +1,191 @@
+# rSwitch QoS Software Queues Test Configuration
+#
+# 测试软件队列模拟功能，支持没有多个硬件队列的NIC
+# 支持两种模式：
+# 1. ACTIVE + 软件队列：完整的QoS处理，使用软件模拟的队列
+# 2. SHADOW + 软件队列：纯元数据观察，无需硬件队列
+#
+# Pipeline: dispatcher → vlan → qos → afxdp_redirect → lastcall → egress
+
+name: qos-software-queues-test
+description: "QoS Software Queues Test - Hardware Queue Independent"
+version: "1.0"
+
+# Ingress pipeline
+ingress:
+  - vlan            # Stage 20: VLAN ingress filtering
+  - l2learn         # Stage 80: MAC learning fallback
+  - afxdp_redirect  # Stage 85: AF_XDP redirect for high-priority (optional)
+  - lastcall        # Stage 90: Forward based on learned MAC
+
+# Egress pipeline
+egress:
+  - egress_qos      # Stage 170: QoS classification and rate limiting
+  - egress_vlan     # Stage 180: VLAN tagging and isolation
+  - egress_final    # Stage 190: Final egress processing
+
+# Global settings
+settings:
+  # MAC learning
+  mac_learning: true
+  mac_aging_time: 300
+
+  # VLAN enforcement
+  vlan_enforcement: true
+  default_vlan: 1
+
+  # QoS settings
+  qos_enabled: true
+  qos_default_prio: 1  # NORMAL priority
+
+  # AF_XDP redirect (optional for software queues)
+  afxdp_redirect_enabled: false  # Disabled for software queue testing
+  afxdp_prio_mask: 0x00          # No AF_XDP redirect
+
+  # Forwarding behavior
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+
+  # Statistics and monitoring
+  stats_enabled: true
+  ringbuf_enabled: true
+  notify_mac_learned: true
+  notify_mac_moved: true
+  notify_qos_drop: true
+
+  # Debug mode
+  debug: true
+
+# Interface configuration (use loopback or dummy interfaces for testing)
+interfaces:
+  - name: lo
+    port_idx: 0
+    mode: access
+    access_vlan: 1
+    qos_config:
+      enable_afxdp: false  # Software queues don't need AF_XDP
+
+  - name: dummy0
+    port_idx: 1
+    mode: access
+    access_vlan: 1
+    qos_config:
+      enable_afxdp: false
+
+# VOQd configuration with software queues
+voqd_config:
+  # Basic settings
+  enabled: true
+  mode: shadow               # Start with shadow mode (no hardware queues needed)
+  num_ports: 2
+  prio_mask: 0x0F            # All priorities for testing
+
+  # Software queue simulation (NEW FEATURE)
+  enable_sw_queues: true     # Enable software queue simulation
+  sw_queue_depth: 2048       # Queue depth per port/priority
+
+  # AF_XDP settings (disabled for software queue testing)
+  enable_afxdp: false        # Disable AF_XDP to test software queues
+  zero_copy: false
+  rx_ring_size: 2048
+  tx_ring_size: 2048
+  frame_size: 2048
+
+  # Scheduler settings
+  enable_scheduler: true
+  batch_size: 256
+  poll_timeout_ms: 100
+  busy_poll: false
+  cpu_affinity: 0            # No specific CPU affinity
+
+  # QoS classification
+  dscp_to_prio:
+    46: 3  # EF -> CRITICAL
+    32: 2  # AF41 -> HIGH
+    16: 1  # AF21 -> NORMAL
+    0: 0   # BE -> LOW
+  default_prio: 1
+
+  # Per-priority queue parameters
+  queue_params:
+    - prio: 3  # CRITICAL
+      quantum: 2048
+      max_depth: 4096
+    - prio: 2  # HIGH
+      quantum: 1536
+      max_depth: 2048
+    - prio: 1  # NORMAL
+      quantum: 1024
+      max_depth: 1024
+    - prio: 0  # LOW
+      quantum: 512
+      max_depth: 512
+
+# Test scenarios for software queues
+test_scenarios:
+  - name: "software_queue_basic"
+    description: "Basic software queue functionality test"
+    mode: "shadow"
+    traffic:
+      - description: "Generate test traffic with different DSCP values"
+        commands:
+          - "ping -Q 0xb8 192.168.1.1"    # DSCP 46 (EF)
+          - "ping -Q 0x80 192.168.1.1"    # DSCP 32 (AF41)
+          - "ping -Q 0x40 192.168.1.1"    # DSCP 16 (AF21)
+          - "ping 192.168.1.1"            # DSCP 0 (BE)
+
+  - name: "software_queue_active"
+    description: "Test ACTIVE mode with software queues"
+    mode: "active"
+    requirements: "Requires AF_XDP capable interface"
+    traffic:
+      - description: "Same traffic patterns as shadow mode"
+
+# Monitoring and validation
+monitoring:
+  stats_interval_sec: 5
+  log_level: "debug"
+
+# Deployment commands for testing
+deployment:
+  # 1. Load rSwitch with basic configuration
+  loader_cmd: "sudo ./build/rswitch_loader -p qos-software-queues-test"
+
+  # 2. Start VOQd in shadow mode with software queues
+  voqd_shadow_cmd: "sudo ./build/rswitch-voqd -m shadow -q -Q 2048 -p 2 -P 0x0F -s -S 5"
+
+  # 3. Alternative: Start VOQd in active mode (requires AF_XDP capable interface)
+  voqd_active_cmd: "sudo ./build/rswitch-voqd -m active -q -Q 2048 -p 2 -P 0x0F -i lo,dummy0 -s -S 5"
+
+  # 4. Monitor software queue statistics
+  monitor_cmd: "watch -n 2 'sudo ./build/rsvoqctl show-stats'"
+
+# Validation checks
+validation:
+  # Check software queue initialization
+  checks:
+    - name: "software_queues_enabled"
+      command: "grep 'Software queue simulation enabled' /var/log/rswitch.log"
+      expected: "Software queue simulation enabled: depth=2048 per queue"
+
+    - name: "voqd_running"
+      command: "pgrep rswitch-voqd"
+      expected: "process running"
+
+    - name: "ringbuf_consumer"
+      command: "sudo bpftool map dump name voq_ringbuf | head -5"
+      expected: "non-empty ringbuf"
+
+  # Performance expectations (software queues)
+  performance_targets:
+    setup_latency_ms: 500      # Software queue initialization time
+    memory_usage_mb: 50        # Memory usage with software queues
+    cpu_usage_percent: 15      # CPU usage in shadow mode
+
+# Cleanup commands
+cleanup:
+  - "sudo pkill rswitch-voqd"
+  - "sudo ./scripts/unpin_maps.sh"
+  - "sudo ip link set dummy0 down 2>/dev/null || true"
+  - "sudo rmmod dummy 2>/dev/null || true"

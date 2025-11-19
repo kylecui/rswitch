@@ -40,6 +40,199 @@ static int pin_thread_to_cpu(int cpu)
 	
 	return pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
 }
+int sw_queue_mgr_init(struct sw_queue_mgr *mgr, uint32_t num_ports, 
+                      uint32_t num_priorities, uint32_t queue_depth,
+                      uint32_t max_frame_size)
+{
+	if (!mgr || num_ports == 0 || num_priorities == 0)
+		return -EINVAL;
+	
+	memset(mgr, 0, sizeof(*mgr));
+	mgr->num_ports = num_ports;
+	mgr->num_priorities = num_priorities;
+	
+	/* Calculate memory requirements */
+	uint32_t total_queues = num_ports * num_priorities;
+	uint32_t pool_size = total_queues * queue_depth * 2;  /* 2x for safety */
+	uint32_t buffer_pool_size = pool_size;
+	
+	/* Allocate queue array */
+	mgr->queues = calloc(num_ports, sizeof(struct sw_queue *));
+	if (!mgr->queues)
+		return -ENOMEM;
+	
+	for (uint32_t p = 0; p < num_ports; p++) {
+		mgr->queues[p] = calloc(num_priorities, sizeof(struct sw_queue));
+		if (!mgr->queues[p]) {
+			sw_queue_mgr_destroy(mgr);
+			return -ENOMEM;
+		}
+		
+		for (uint32_t prio = 0; prio < num_priorities; prio++) {
+			mgr->queues[p][prio].max_depth = queue_depth;
+		}
+	}
+	
+	/* Allocate entry pool */
+	mgr->pool = calloc(pool_size, sizeof(struct sw_queue_entry));
+	if (!mgr->pool) {
+		sw_queue_mgr_destroy(mgr);
+		return -ENOMEM;
+	}
+	mgr->pool_size = pool_size;
+	
+	/* Allocate buffer pool */
+	mgr->buffer_pool = calloc(buffer_pool_size, max_frame_size);
+	if (!mgr->buffer_pool) {
+		sw_queue_mgr_destroy(mgr);
+		return -ENOMEM;
+	}
+	mgr->buffer_size = max_frame_size;
+	mgr->max_total_depth = total_queues * queue_depth;
+	
+	printf("Software queue manager initialized: %u ports, %u priorities, depth=%u, pool=%u\n",
+	       num_ports, num_priorities, queue_depth, pool_size);
+	
+	return 0;
+}
+
+/* Destroy software queue manager */
+void sw_queue_mgr_destroy(struct sw_queue_mgr *mgr)
+{
+	if (!mgr)
+		return;
+	
+	/* Free queues */
+	if (mgr->queues) {
+		for (uint32_t p = 0; p < mgr->num_ports; p++) {
+			free(mgr->queues[p]);
+		}
+		free(mgr->queues);
+	}
+	
+	/* Free pools */
+	free(mgr->pool);
+	free(mgr->buffer_pool);
+	
+	memset(mgr, 0, sizeof(*mgr));
+}
+
+/* Enqueue packet into software queue */
+int sw_queue_enqueue(struct sw_queue_mgr *mgr, uint32_t port_idx, uint8_t priority,
+                     const uint8_t *data, uint32_t len, uint64_t ts_ns, uint32_t flow_hash)
+{
+	if (!mgr || port_idx >= mgr->num_ports || priority >= mgr->num_priorities)
+		return -EINVAL;
+	
+	struct sw_queue *queue = &mgr->queues[port_idx][priority];
+	
+	/* Check if queue is full */
+	if (queue->depth >= queue->max_depth) {
+		queue->dropped++;
+		return -ENOSPC;
+	}
+	
+	/* Check if we have free entries */
+	if (mgr->pool_used >= mgr->pool_size) {
+		queue->dropped++;
+		return -ENOSPC;
+	}
+	
+	/* Check if we have free buffers */
+	if (mgr->buffers_used >= mgr->pool_size) {
+		queue->dropped++;
+		return -ENOSPC;
+	}
+	
+	/* Get free entry */
+	struct sw_queue_entry *entry = &mgr->pool[mgr->pool_used++];
+	
+	/* Get free buffer */
+	uint8_t *buffer = mgr->buffer_pool + (mgr->buffers_used++ * mgr->buffer_size);
+	
+	/* Copy packet data */
+	if (len > mgr->buffer_size)
+		len = mgr->buffer_size;  /* Truncate if too large */
+	memcpy(buffer, data, len);
+	
+	/* Initialize entry */
+	entry->data = buffer;
+	entry->len = len;
+	entry->ts_ns = ts_ns;
+	entry->flow_hash = flow_hash;
+	entry->priority = priority;
+	entry->next = NULL;
+	
+	/* Add to queue */
+	if (queue->tail) {
+		queue->tail->next = entry;
+		queue->tail = entry;
+	} else {
+		queue->head = queue->tail = entry;
+	}
+	
+	queue->depth++;
+	mgr->total_depth++;
+	queue->enqueued++;
+	
+	return 0;
+}
+
+/* Dequeue packet from software queue (priority-based) */
+struct sw_queue_entry *sw_queue_dequeue(struct sw_queue_mgr *mgr, uint32_t *port_idx)
+{
+	if (!mgr || !port_idx)
+		return NULL;
+	
+	/* Priority-based dequeue: check all ports for highest priority packets */
+	for (uint8_t prio = 0; prio < mgr->num_priorities; prio++) {
+		for (uint32_t port = 0; port < mgr->num_ports; port++) {
+			struct sw_queue *queue = &mgr->queues[port][prio];
+			
+			if (queue->head) {
+				/* Found packet */
+				struct sw_queue_entry *entry = queue->head;
+				queue->head = entry->next;
+				if (!queue->head)
+					queue->tail = NULL;
+				
+				queue->depth--;
+				mgr->total_depth--;
+				queue->dequeued++;
+				
+				*port_idx = port;
+				return entry;
+			}
+		}
+	}
+	
+	return NULL;  /* No packets available */
+}
+
+/* Free software queue entry */
+void sw_queue_free_entry(struct sw_queue_mgr *mgr, struct sw_queue_entry *entry)
+{
+	if (!mgr || !entry)
+		return;
+	
+	/* Mark entry as free (simple pool management) */
+	mgr->pool_used--;
+	mgr->buffers_used--;
+}
+
+/* Get software queue statistics */
+void sw_queue_get_stats(struct sw_queue_mgr *mgr, uint32_t port_idx, uint8_t priority,
+                        uint64_t *enqueued, uint64_t *dequeued, uint64_t *dropped)
+{
+	if (!mgr || port_idx >= mgr->num_ports || priority >= mgr->num_priorities)
+		return;
+	
+	struct sw_queue *queue = &mgr->queues[port_idx][priority];
+	
+	if (enqueued) *enqueued = queue->enqueued;
+	if (dequeued) *dequeued = queue->dequeued;
+	if (dropped) *dropped = queue->dropped;
+}
 
 /* Initialize data plane */
 int voqd_dataplane_init(struct voqd_dataplane *dp, struct voq_mgr *voq,
@@ -70,6 +263,22 @@ int voqd_dataplane_init(struct voqd_dataplane *dp, struct voq_mgr *voq,
 		printf("Data plane initialized: AF_XDP disabled (metadata-only mode)\n");
 	}
 	
+	/* Initialize software queue manager if enabled */
+	if (config->enable_sw_queues) {
+		uint32_t num_priorities = 8;  /* Default: 8 priority levels */
+		ret = sw_queue_mgr_init(&dp->sw_mgr, voq->num_ports, num_priorities,
+		                        config->sw_queue_depth, config->frame_size);
+		if (ret < 0) {
+			fprintf(stderr, "Failed to initialize software queue manager: %s\n", strerror(-ret));
+			if (config->enable_afxdp)
+				xsk_manager_destroy(&dp->xsk_mgr);
+			return ret;
+		}
+		
+		printf("Software queue simulation enabled: depth=%u per queue\n",
+		       config->sw_queue_depth);
+	}
+	
 	return 0;
 }
 
@@ -86,6 +295,10 @@ void voqd_dataplane_destroy(struct voqd_dataplane *dp)
 	/* Destroy AF_XDP manager */
 	if (dp->config.enable_afxdp)
 		xsk_manager_destroy(&dp->xsk_mgr);
+	
+	/* Destroy software queue manager */
+	if (dp->config.enable_sw_queues)
+		sw_queue_mgr_destroy(&dp->sw_mgr);
 	
 	printf("Data plane destroyed\n");
 }
@@ -161,20 +374,40 @@ int voqd_dataplane_rx_process(struct voqd_dataplane *dp, uint32_t port_idx)
 		                                                 dp->config.dscp_to_prio,
 		                                                 dp->config.default_prio);
 		
-		/* Enqueue into VOQ with frame reference */
-		uint64_t ts_ns = 0;  /* TODO: Get timestamp from packet or use current time */
-		uint32_t flow_hash = 0;  /* TODO: Extract from packet header */
-		
-		int ret = voq_enqueue(dp->voq, port_idx, prio, ts_ns, len,
-		                      flow_hash, 0, 0, frame_addr);
-		
-		if (ret < 0) {
-			dp->enqueue_errors++;
-			/* Return frame to pool on error */
+		if (dp->config.enable_sw_queues) {
+			/* Software queue mode: copy packet data */
+			uint64_t ts_ns = 0;  /* TODO: Get current timestamp */
+			uint32_t flow_hash = 0;  /* TODO: Extract from packet header */
+			
+			int ret = sw_queue_enqueue(&dp->sw_mgr, port_idx, prio, pkt_data, len,
+			                           ts_ns, flow_hash);
+			
+			if (ret < 0) {
+				dp->enqueue_errors++;
+			} else {
+				dp->rx_packets++;
+				dp->rx_bytes += len;
+			}
+			
+			/* Always return frame to AF_XDP pool */
 			xsk_free_frame(xsk, frame_addr);
+			
 		} else {
-			dp->rx_packets++;
-			dp->rx_bytes += len;
+			/* Traditional AF_XDP mode: enqueue frame reference */
+			uint64_t ts_ns = 0;  /* TODO: Get timestamp from packet or use current time */
+			uint32_t flow_hash = 0;  /* TODO: Extract from packet header */
+			
+			int ret = voq_enqueue(dp->voq, port_idx, prio, ts_ns, len,
+			                      flow_hash, 0, 0, frame_addr);
+			
+			if (ret < 0) {
+				dp->enqueue_errors++;
+				/* Return frame to pool on error */
+				xsk_free_frame(xsk, frame_addr);
+			} else {
+				dp->rx_packets++;
+				dp->rx_bytes += len;
+			}
 		}
 	}
 	
@@ -191,41 +424,99 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 	uint32_t tx_count = 0;
 	uint32_t max_batch = dp->config.batch_size;
 	
-	/* Dequeue packets from VOQ scheduler */
-	for (uint32_t i = 0; i < max_batch; i++) {
-		uint32_t port_idx;
-		struct voq_entry *entry = voq_dequeue(dp->voq, &port_idx);
-		
-		if (!entry)
-			break;  /* No more packets */
-		
-		/* Check if we have AF_XDP socket for this port */
-		if (!dp->config.enable_afxdp || port_idx >= dp->num_ports) {
-			/* No AF_XDP: just track metadata and free */
-			dp->tx_packets++;
-			dp->tx_bytes += entry->len;
-			voq_free_entry(dp->voq, entry);
+	if (dp->config.enable_sw_queues) {
+		/* Software queue mode: dequeue from software queues */
+		for (uint32_t i = 0; i < max_batch; i++) {
+			uint32_t port_idx;
+			struct sw_queue_entry *entry = sw_queue_dequeue(&dp->sw_mgr, &port_idx);
+			
+			if (!entry)
+				break;  /* No more packets */
+			
+			/* Check if we have AF_XDP socket for this port */
+			if (!dp->config.enable_afxdp) {
+				/* No AF_XDP: just track metadata and free */
+				dp->tx_packets++;
+				dp->tx_bytes += entry->len;
+				sw_queue_free_entry(&dp->sw_mgr, entry);
+				tx_count++;
+				continue;
+			}
+			
+			/* Get socket for egress port */
+			struct xsk_socket *xsk = xsk_manager_get_socket(&dp->xsk_mgr, port_idx);
+			if (!xsk) {
+				/* No socket: drop and free */
+				dp->tx_errors++;
+				sw_queue_free_entry(&dp->sw_mgr, entry);
+				continue;
+			}
+			
+			/* Get AF_XDP frame for transmission */
+			uint64_t frame_addr = xsk_alloc_frame(xsk);
+			if (frame_addr == 0) {
+				dp->tx_errors++;
+				sw_queue_free_entry(&dp->sw_mgr, entry);
+				continue;
+			}
+			
+			/* Copy packet data to AF_XDP frame */
+			uint8_t *frame_data = xsk_get_frame_data(xsk, frame_addr);
+			if (!frame_data) {
+				dp->tx_errors++;
+				xsk_free_frame(xsk, frame_addr);
+				sw_queue_free_entry(&dp->sw_mgr, entry);
+				continue;
+			}
+			
+			memcpy(frame_data, entry->data, entry->len);
+			
+			/* Prepare for transmission */
+			dp->tx_frames[tx_count] = frame_addr;
+			dp->tx_lengths[tx_count] = entry->len;
+			
+			/* Free software queue entry */
+			sw_queue_free_entry(&dp->sw_mgr, entry);
+			
 			tx_count++;
-			continue;
 		}
-		
-		/* Get socket for egress port */
-		struct xsk_socket *xsk = xsk_manager_get_socket(&dp->xsk_mgr, port_idx);
-		if (!xsk) {
-			/* No socket: drop and free */
-			dp->tx_errors++;
+	} else {
+		/* Traditional AF_XDP mode: dequeue from VOQ */
+		for (uint32_t i = 0; i < max_batch; i++) {
+			uint32_t port_idx;
+			struct voq_entry *entry = voq_dequeue(dp->voq, &port_idx);
+			
+			if (!entry)
+				break;  /* No more packets */
+			
+			/* Check if we have AF_XDP socket for this port */
+			if (!dp->config.enable_afxdp || port_idx >= dp->num_ports) {
+				/* No AF_XDP: just track metadata and free */
+				dp->tx_packets++;
+				dp->tx_bytes += entry->len;
+				voq_free_entry(dp->voq, entry);
+				tx_count++;
+				continue;
+			}
+			
+			/* Get socket for egress port */
+			struct xsk_socket *xsk = xsk_manager_get_socket(&dp->xsk_mgr, port_idx);
+			if (!xsk) {
+				/* No socket: drop and free */
+				dp->tx_errors++;
+				voq_free_entry(dp->voq, entry);
+				continue;
+			}
+			
+			/* Prepare for transmission */
+			dp->tx_frames[tx_count] = entry->xdp_frame_addr;
+			dp->tx_lengths[tx_count] = entry->len;
+			
+			/* Free VOQ entry (frame will be freed after TX complete) */
 			voq_free_entry(dp->voq, entry);
-			continue;
+			
+			tx_count++;
 		}
-		
-		/* Prepare for transmission */
-		dp->tx_frames[tx_count] = entry->xdp_frame_addr;
-		dp->tx_lengths[tx_count] = entry->len;
-		
-		/* Free VOQ entry (frame will be freed after TX complete) */
-		voq_free_entry(dp->voq, entry);
-		
-		tx_count++;
 	}
 	
 	if (tx_count == 0)
