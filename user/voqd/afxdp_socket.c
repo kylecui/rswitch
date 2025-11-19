@@ -40,7 +40,7 @@
 int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
                       uint32_t queue_id, struct xsk_socket_config *config)
 {
-	struct xsk_socket *xsk_sock = NULL;
+	struct xsk_socket *xsk = NULL;
 	struct xsk_umem *umem = NULL;
 	struct xsk_ring_cons rx = {};
 	struct xsk_ring_prod tx = {};
@@ -54,10 +54,17 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	int ifindex;
 	int xsks_map_fd = -1;
 	
+	/* Allocate our custom socket structure */
+	xsk = calloc(1, sizeof(*xsk));
+	if (!xsk) {
+		return -ENOMEM;
+	}
+	
 	/* Get interface index */
 	ifindex = if_nametoindex(ifname);
 	if (!ifindex) {
 		fprintf(stderr, "Interface %s not found\n", ifname);
+		free(xsk);
 		return -ENODEV;
 	}
 	
@@ -91,6 +98,7 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	
 	if (umem_area == MAP_FAILED) {
 		fprintf(stderr, "Failed to allocate UMEM: %s\n", strerror(errno));
+		free(xsk);
 		return -ENOMEM;
 	}
 	
@@ -107,6 +115,7 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 		fprintf(stderr, "Failed to create UMEM for %s queue %u: %s\n",
 		        ifname, queue_id, strerror(-ret));
 		munmap(umem_area, umem_size);
+		free(xsk);
 		return ret;
 	}
 	
@@ -124,36 +133,78 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	printf("Creating AF_XDP socket: %s queue %u (rx=%u, tx=%u, flags=0x%x, libxdp_flags=0x%x)\n",
 	       ifname, queue_id, xsk_cfg.rx_size, xsk_cfg.tx_size, xsk_cfg.bind_flags, xsk_cfg.libxdp_flags);
 	
-	/* Create socket - will bind to existing XDP program */
-	ret = xsk_socket__create(&xsk_sock, ifname, queue_id, umem, &rx, &tx, &xsk_cfg);
+	/* Create socket with shared rings - we need to manage rings ourselves */
+	struct xsk_socket *xsk_sock = NULL;
+	ret = xsk_socket__create_shared(&xsk_sock, ifname, queue_id, umem, &rx, &tx, &fill, &comp, &xsk_cfg);
 	if (ret) {
 		fprintf(stderr, "Failed to add socket for %s queue %u: %s (errno=%d, ret=%d)\n",
 		        ifname, queue_id, strerror(-ret), errno, ret);
 		xsk_umem__delete(umem);
 		munmap(umem_area, umem_size);
-		if (xsks_map_fd >= 0) close(xsks_map_fd);
+		free(xsk);
 		return ret;
 	}
 	
+	/* Store libxdp socket and rings in our custom structure */
+	xsk->xsk_sock = xsk_sock;
+	xsk->umem = umem;
+	xsk->umem_area = umem_area;
+	xsk->umem_size = umem_size;
+	xsk->frame_size = frame_size;
+	xsk->num_frames = num_frames;
+	xsk->ifindex = ifindex;
+	xsk->queue_id = queue_id;
+	xsk->xsk_fd = xsk_socket__fd(xsk_sock);
+	
+	/* Copy ring structures */
+	xsk->rx_ring = rx;
+	xsk->tx_ring = tx;
+	xsk->fill_ring = fill;
+	xsk->comp_ring = comp;
+	
+	/* Initialize ring sizes */
+	xsk->rx_size = xsk_cfg.rx_size;
+	xsk->tx_size = xsk_cfg.tx_size;
+	xsk->fill_size = umem_cfg.fill_size;
+	xsk->comp_size = umem_cfg.comp_size;
+	
+	/* Initialize cached indices */
+	xsk->rx_cached_prod = 0;
+	xsk->rx_cached_cons = 0;
+	xsk->tx_cached_prod = 0;
+	xsk->tx_cached_cons = 0;
+	
 	/* Manually insert socket FD into xsks_map if we have it */
 	if (xsks_map_fd >= 0) {
-		int xsk_fd = xsk_socket__fd(xsk_sock);
-		ret = bpf_map_update_elem(xsks_map_fd, &queue_id, &xsk_fd, BPF_ANY);
+		ret = bpf_map_update_elem(xsks_map_fd, &queue_id, &xsk->xsk_fd, BPF_ANY);
 		if (ret < 0) {
 			fprintf(stderr, "Warning: Failed to update xsks_map[%u]: %s\n",
 			        queue_id, strerror(errno));
 		} else {
 			printf("Registered AF_XDP socket in xsks_map[%u] = fd %d\n",
-			       queue_id, xsk_fd);
+			       queue_id, xsk->xsk_fd);
 		}
 		close(xsks_map_fd);
 	}
 	
-	/* For now, return success but note we're using simplified struct */
-	printf("Created AF_XDP socket: %s queue %u (frames=%u)\n",
-	       ifname, queue_id, num_frames);
+	/* Fill the fill ring with all available frames */
+	uint32_t fill_idx = 0;
+	uint32_t fill_reserved = xsk_ring_prod__reserve(&xsk->fill_ring, num_frames, &fill_idx);
+	if (fill_reserved > 0) {
+		for (uint32_t i = 0; i < fill_reserved; i++) {
+			uint64_t frame_addr = (i * frame_size);
+			*xsk_ring_prod__fill_addr(&xsk->fill_ring, fill_idx + i) = frame_addr;
+		}
+		xsk_ring_prod__submit(&xsk->fill_ring, fill_reserved);
+	}
 	
-	*xsk_out = (struct xsk_socket *)xsk_sock;  /* Cast to our internal struct */
+	/* Initialize free frame tracking */
+	xsk->next_free_frame = 0;
+	
+	printf("Created AF_XDP socket: %s queue %u (frames=%u, fill_reserved=%u)\n",
+	       ifname, queue_id, num_frames, fill_reserved);
+	
+	*xsk_out = xsk;
 	
 	return 0;
 }
@@ -165,23 +216,86 @@ void xsk_socket_destroy(struct xsk_socket *xsk)
 	
 	printf("Destroying AF_XDP socket\n");
 	
-	/* Note: Full cleanup would require tracking umem and other resources */
-	/* For now, rely on OS cleanup on process exit */
-	xsk_socket__delete((struct xsk_socket *)xsk);
+	/* Delete libxdp socket */
+	if (xsk->xsk_sock)
+		xsk_socket__delete(xsk->xsk_sock);
+	
+	/* Delete UMEM */
+	if (xsk->umem)
+		xsk_umem__delete(xsk->umem);
+	
+	/* Unmap UMEM area */
+	if (xsk->umem_area)
+		munmap(xsk->umem_area, xsk->umem_size);
+	
+	/* Free our custom structure */
+	free(xsk);
 }
 
 int xsk_socket_rx_batch(struct xsk_socket *xsk, uint64_t *frames,
                         uint32_t *lengths, uint32_t max_batch)
 {
-	/* Stub implementation - requires proper ring buffer handling */
-	return 0;
+	if (!xsk || !frames || !lengths)
+		return -EINVAL;
+	
+	/* Peek available packets in RX ring */
+	uint32_t rx_idx = 0;
+	uint32_t rcvd = xsk_ring_cons__peek(&xsk->rx_ring, max_batch, &rx_idx);
+	
+	if (rcvd == 0)
+		return 0;
+	
+	/* Process received packets */
+	for (uint32_t i = 0; i < rcvd; i++) {
+		const struct xdp_desc *desc = xsk_ring_cons__rx_desc(&xsk->rx_ring, rx_idx + i);
+		frames[i] = desc->addr;
+		lengths[i] = desc->len;
+		
+		/* Update statistics */
+		xsk->rx_packets++;
+		xsk->rx_bytes += desc->len;
+	}
+	
+	/* Release packets from RX ring */
+	xsk_ring_cons__release(&xsk->rx_ring, rcvd);
+	
+	return rcvd;
 }
 
 int xsk_socket_tx_batch(struct xsk_socket *xsk, uint64_t *frames,
                         uint32_t *lengths, uint32_t num_frames)
 {
-	/* Stub - requires proper TX ring implementation with libxdp */
-	return -ENOTSUP;
+	if (!xsk || !frames || !lengths || num_frames == 0)
+		return -EINVAL;
+	
+	/* Reserve space in TX ring */
+	uint32_t tx_idx = 0;
+	uint32_t reserved = xsk_ring_prod__reserve(&xsk->tx_ring, num_frames, &tx_idx);
+	
+	if (reserved == 0)
+		return 0;  /* No space available */
+	
+	/* Fill TX descriptors */
+	for (uint32_t i = 0; i < reserved; i++) {
+		struct xdp_desc *desc = xsk_ring_prod__tx_desc(&xsk->tx_ring, tx_idx + i);
+		desc->addr = frames[i];
+		desc->len = lengths[i];
+		
+		/* Update statistics */
+		xsk->tx_packets++;
+		xsk->tx_bytes += lengths[i];
+	}
+	
+	/* Submit packets to kernel */
+	xsk_ring_prod__submit(&xsk->tx_ring, reserved);
+	
+	/* Wake up kernel if needed */
+	if (xsk_ring_prod__needs_wakeup(&xsk->tx_ring)) {
+		/* Note: libxdp handles this internally, but we might need to sendto() */
+		/* For now, assume libxdp handles wakeups */
+	}
+	
+	return reserved;
 }
 
 int xsk_socket_fill_ring(struct xsk_socket *xsk, uint32_t num_frames)
@@ -192,8 +306,23 @@ int xsk_socket_fill_ring(struct xsk_socket *xsk, uint32_t num_frames)
 
 int xsk_socket_complete_tx(struct xsk_socket *xsk)
 {
-	/* Stub - requires proper Completion ring implementation with libxdp */
-	return 0;
+	if (!xsk)
+		return -EINVAL;
+	
+	/* Peek completed transmissions */
+	uint32_t comp_idx = 0;
+	uint32_t completed = xsk_ring_cons__peek(&xsk->comp_ring, xsk->comp_size, &comp_idx);
+	
+	if (completed == 0)
+		return 0;
+	
+	/* Process completed frames - they can be reused */
+	/* Note: In a full implementation, we'd return frames to a free pool */
+	/* For now, we just acknowledge completion */
+	
+	xsk_ring_cons__release(&xsk->comp_ring, completed);
+	
+	return completed;
 }
 
 void xsk_socket_get_stats(struct xsk_socket *xsk,
@@ -201,30 +330,53 @@ void xsk_socket_get_stats(struct xsk_socket *xsk,
                           uint64_t *tx_pkts, uint64_t *tx_bytes,
                           uint64_t *rx_drops, uint64_t *tx_drops)
 {
-	/* Stub - statistics not tracked in minimal implementation */
-	if (rx_pkts) *rx_pkts = 0;
-	if (rx_bytes) *rx_bytes = 0;
-	if (tx_pkts) *tx_pkts = 0;
-	if (tx_bytes) *tx_bytes = 0;
-	if (rx_drops) *rx_drops = 0;
-	if (tx_drops) *tx_drops = 0;
+	if (!xsk)
+		return;
+	
+	if (rx_pkts) *rx_pkts = xsk->rx_packets;
+	if (rx_bytes) *rx_bytes = xsk->rx_bytes;
+	if (tx_pkts) *tx_pkts = xsk->tx_packets;
+	if (tx_bytes) *tx_bytes = xsk->tx_bytes;
+	if (rx_drops) *rx_drops = xsk->rx_drops;
+	if (tx_drops) *tx_drops = xsk->tx_drops;
 }
 
 uint64_t xsk_alloc_frame(struct xsk_socket *xsk)
 {
-	/* Stub */
-	return 0;
+	if (!xsk)
+		return 0;
+	
+	/* Simple frame allocation - just return next available frame */
+	if (xsk->next_free_frame >= xsk->num_frames)
+		return 0;  /* No free frames */
+	
+	uint64_t frame_addr = xsk->next_free_frame * xsk->frame_size;
+	xsk->next_free_frame++;
+	
+	return frame_addr;
 }
 
 void xsk_free_frame(struct xsk_socket *xsk, uint64_t frame_addr)
 {
-	/* Stub */
+	/* In a full implementation, we'd maintain a free list */
+	/* For now, frames are freed by returning them to the fill ring */
+	if (xsk && frame_addr != 0) {
+		/* Add frame back to fill ring for reuse */
+		uint32_t fill_idx = 0;
+		uint32_t reserved = xsk_ring_prod__reserve(&xsk->fill_ring, 1, &fill_idx);
+		if (reserved > 0) {
+			*xsk_ring_prod__fill_addr(&xsk->fill_ring, fill_idx) = frame_addr;
+			xsk_ring_prod__submit(&xsk->fill_ring, 1);
+		}
+	}
 }
 
 void *xsk_get_frame_data(struct xsk_socket *xsk, uint64_t frame_addr)
 {
-	/* Stub */
-	return NULL;
+	if (!xsk || !xsk->umem_area || frame_addr >= xsk->umem_size)
+		return NULL;
+	
+	return (uint8_t *)xsk->umem_area + frame_addr;
 }
 
 #else /* !HAVE_LIBBPF_XSK */

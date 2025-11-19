@@ -14,11 +14,10 @@
  *   - Runs AFTER ingress pipeline completes
  *   - Accesses rs_ctx set by ingress modules
  *   - Modifies packet headers based on egress port config
- *   - Cannot tail-call (devmap programs have restrictions)
+ 
  * 
  * Key Difference from Ingress:
- *   - No tail-call chain (single-stage processing)
- *   - Must complete quickly (affects forwarding latency)
+  *   - Must complete quickly (affects forwarding latency)
  *   - Can call bpf_xdp_adjust_head/tail for packet modification
  */
 

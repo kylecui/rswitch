@@ -21,6 +21,7 @@
 #include "module_abi.h"
 #include "uapi.h"
 #include "afxdp_common.h"
+#include "../core/map_defs.h"
 
 /* Module declaration */
 RS_DECLARE_MODULE(
@@ -34,7 +35,7 @@ RS_DECLARE_MODULE(
 /* VOQ metadata ringbuf */
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 16 << 20);  /* 16 MB */
+	__uint(max_entries, 64 << 20);  /* 64 MB - increased for high traffic */
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } voq_ringbuf SEC(".maps");
 
@@ -245,14 +246,20 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	if (rs_ctx->prio < QOS_MAX_PRIORITIES) {
 		/* Priority already classified by upstream module */
 		prio = rs_ctx->prio;
+		bpf_printk("[AF_XDP] Using pre-classified prio=%u", prio);
 	} else {
 		/* Extract priority from DSCP field */
 		prio = extract_priority(ctx, qos);
+		bpf_printk("[AF_XDP] Extracted prio=%u from DSCP", prio);
 	}
 	
 	/* Check if this priority should be intercepted */
-	if (!(state->prio_mask & (1 << prio)))
+	if (!(state->prio_mask & (1 << prio))) {
+		bpf_printk("[AF_XDP] Priority %u not in mask 0x%x, skipping", prio, state->prio_mask);
 		goto next_module;
+	}
+	
+	bpf_printk("[AF_XDP] Processing priority %u in mode %d", prio, state->mode);
 	
 	/*
 	 * SHADOW Mode: Submit metadata to ringbuf (observation only)
@@ -262,8 +269,10 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 		
 		meta = bpf_ringbuf_reserve(&voq_ringbuf, sizeof(*meta), 0);
 		if (meta) {
+			/* Convert ifindex to port_idx for VOQd compatibility */
+			__u32 *port_idx = bpf_map_lookup_elem(&rs_ifindex_to_port_map, &rs_ctx->egress_ifindex);
 			meta->ts_ns = now_ns;
-			meta->eg_port = rs_ctx->egress_ifindex;
+			meta->eg_port = port_idx ? *port_idx : rs_ctx->egress_ifindex;  /* Fallback to ifindex if mapping fails */
 			meta->prio = prio;
 			meta->len = ctx->data_end - ctx->data;
 			meta->flow_hash = compute_flow_hash(ctx);
@@ -292,13 +301,15 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	 */
 	if (state->mode == VOQD_MODE_ACTIVE) {
 		struct voq_meta *meta;
-		__u32 queue_id = 1;  /* Use queue 1 (queue 0 may be reserved by driver) */
+		__u32 queue_id = 0;  /* Use queue 0 (single queue NICs like ens34) */
 		
 		/* Submit metadata first */
 		meta = bpf_ringbuf_reserve(&voq_ringbuf, sizeof(*meta), 0);
 		if (meta) {
+			/* Convert ifindex to port_idx for VOQd compatibility */
+			__u32 *port_idx = bpf_map_lookup_elem(&rs_ifindex_to_port_map, &rs_ctx->egress_ifindex);
 			meta->ts_ns = now_ns;
-			meta->eg_port = rs_ctx->egress_ifindex;
+			meta->eg_port = port_idx ? *port_idx : rs_ctx->egress_ifindex;  /* Fallback to ifindex if mapping fails */
 			meta->prio = prio;
 			meta->len = ctx->data_end - ctx->data;
 			meta->flow_hash = compute_flow_hash(ctx);
@@ -306,13 +317,25 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 			meta->drop_hint = 0;
 			
 			bpf_ringbuf_submit(meta, 0);
+			bpf_printk("[AF_XDP] Submitted metadata for prio %u", prio);
 			
-			/* Redirect packet to AF_XDP socket via xsks_map
-			 * VOQd's AF_XDP socket must be registered in xsks_map[queue_id] */
-			return bpf_redirect_map(&xsks_map, queue_id, 0);
+			/* Check if AF_XDP socket is available for this queue */
+			__u32 *socket_fd = bpf_map_lookup_elem(&xsks_map, &queue_id);
+			if (socket_fd && *socket_fd > 0) {
+				/* AF_XDP socket available - redirect packet */
+				bpf_printk("[AF_XDP] Redirecting to AF_XDP socket fd=%u", *socket_fd);
+				return bpf_redirect_map(&xsks_map, queue_id, 0);
+			} else {
+				/* No AF_XDP socket available - continue with fast-path
+				 * User-space VOQd will process metadata from ringbuf
+				 */
+				bpf_printk("[AF_XDP] No AF_XDP socket, continuing with fast-path");
+				goto next_module;
+			}
 		} else {
 			/* Ringbuf full - track overload */
 			state->overload_drops++;
+			bpf_printk("[AF_XDP] Ringbuf full, dropping packet");
 			
 			/* Graceful degradation: fall back to fast-path for this packet */
 			if (state->flags & VOQD_FLAG_DEGRADE_ON_OVERLOAD) {

@@ -119,6 +119,10 @@ struct voqd_dataplane {
 	uint64_t rx_batch_count;
 	uint64_t tx_batch_sum;
 	uint64_t tx_batch_count;
+	
+	/* Debug counters */
+	uint32_t rx_debug_count;
+	uint32_t tx_debug_count;
 };
 
 /*

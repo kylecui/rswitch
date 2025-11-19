@@ -77,16 +77,61 @@ static int handle_voq_meta(void *ctx, const struct voq_meta *meta)
 		return -EINVAL;
 	}
 	
-	/* Enqueue into VOQ */
-	int ret = voq_enqueue(&daemon->voq, meta->eg_port, meta->prio,
-	                      meta->ts_ns, meta->len, meta->flow_hash,
-	                      meta->ecn_hint, meta->drop_hint, 0);
-	
-	if (ret < 0 && ret != -ENOSPC) {
-		fprintf(stderr, "VOQ enqueue failed: %s\n", strerror(-ret));
+	/* Handle based on current operating mode */
+	switch (daemon->mode) {
+	case VOQD_MODE_BYPASS:
+		/* BYPASS mode: Should not receive meta events, but handle gracefully */
+		fprintf(stderr, "WARNING: Received voq_meta in BYPASS mode (eg_port=%u prio=%u)\n",
+		        meta->eg_port, meta->prio);
+		return 0;  /* Don't enqueue */
+		
+	case VOQD_MODE_SHADOW:
+		/* SHADOW mode: Enqueue then immediately dequeue
+		 * This maintains qdepth=0 since packets are not truly in user-space
+		 */
+		{
+			int ret = voq_enqueue(&daemon->voq, meta->eg_port, meta->prio,
+			                      meta->ts_ns, meta->len, meta->flow_hash,
+			                      meta->ecn_hint, meta->drop_hint, 0);
+			
+			if (ret == 0) {
+				/* Successfully enqueued, now dequeue immediately */
+				uint32_t deq_port;
+				struct voq_entry *entry = voq_dequeue(&daemon->voq, &deq_port);
+				if (entry) {
+					voq_free_entry(&daemon->voq, entry);
+					/* Packet "processed" - just metadata tracking */
+				}
+			}
+			
+			return ret;  /* Return enqueue result */
+		}
+		
+	case VOQD_MODE_ACTIVE:
+		/* ACTIVE mode: Normal enqueue for user-space processing */
+		{
+			int ret = voq_enqueue(&daemon->voq, meta->eg_port, meta->prio,
+			                      meta->ts_ns, meta->len, meta->flow_hash,
+			                      meta->ecn_hint, meta->drop_hint, 0);
+			
+			if (ret < 0) {
+				if (ret == -ENOSPC) {
+					/* Queue full - drop packet */
+					fprintf(stderr, "VOQ enqueue dropped: port=%u prio=%u (queue full)\n", 
+					        meta->eg_port, meta->prio);
+					/* Note: Drop statistics are tracked in VOQ manager */
+				} else {
+					fprintf(stderr, "VOQ enqueue failed: %s\n", strerror(-ret));
+				}
+			}
+			
+			return ret;
+		}
+		
+	default:
+		fprintf(stderr, "Invalid mode: %u\n", daemon->mode);
+		return -EINVAL;
 	}
-	
-	return ret;
 }
 
 /* Print statistics */
@@ -385,14 +430,12 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 				return -EINVAL;
 			}
 			
-			ret = voqd_dataplane_add_port(&ctx->dataplane, ctx->ifnames[p], p, 1);
+			ret = voqd_dataplane_add_port(&ctx->dataplane, ctx->ifnames[p], p, 0);
 			if (ret < 0) {
-				fprintf(stderr, "Failed to add AF_XDP socket for %s: %s\n",
+				fprintf(stderr, "Warning: Failed to add AF_XDP socket for %s: %s\n",
 				        ctx->ifnames[p], strerror(-ret));
-				voqd_dataplane_destroy(&ctx->dataplane);
-				state_ctrl_destroy(&ctx->state);
-				voq_mgr_destroy(&ctx->voq);
-				return ret;
+				fprintf(stderr, "Continuing with software queues only (no hardware AF_XDP support)\n");
+				/* Don't fail - continue with software queue simulation */
 			}
 		}
 	}

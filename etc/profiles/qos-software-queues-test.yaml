@@ -57,17 +57,27 @@ settings:
   # Debug mode
   debug: true
 
-# Interface configuration (use loopback or dummy interfaces for testing)
-interfaces:
-  - name: lo
-    port_idx: 0
+# Interface configuration (use real NICs for testing)
+ports:
+  - interface: ens34
     mode: access
     access_vlan: 1
     qos_config:
       enable_afxdp: false  # Software queues don't need AF_XDP
 
-  - name: dummy0
-    port_idx: 1
+  - interface: ens35
+    mode: access
+    access_vlan: 1
+    qos_config:
+      enable_afxdp: false
+
+  - interface: ens36
+    mode: access
+    access_vlan: 1
+    qos_config:
+      enable_afxdp: false
+
+  - interface: ens37
     mode: access
     access_vlan: 1
     qos_config:
@@ -78,7 +88,7 @@ voqd_config:
   # Basic settings
   enabled: true
   mode: shadow               # Start with shadow mode (no hardware queues needed)
-  num_ports: 2
+  num_ports: 4
   prio_mask: 0x0F            # All priorities for testing
 
   # Software queue simulation (NEW FEATURE)
@@ -102,8 +112,8 @@ voqd_config:
   # QoS classification
   dscp_to_prio:
     46: 3  # EF -> CRITICAL
-    32: 2  # AF41 -> HIGH
-    16: 1  # AF21 -> NORMAL
+    34: 2  # AF41 -> HIGH (DSCP 34, not 32)
+    18: 1  # AF21 -> NORMAL (DSCP 18, not 16)
     0: 0   # BE -> LOW
   default_prio: 1
 
@@ -153,10 +163,10 @@ deployment:
   loader_cmd: "sudo ./build/rswitch_loader -p qos-software-queues-test"
 
   # 2. Start VOQd in shadow mode with software queues
-  voqd_shadow_cmd: "sudo ./build/rswitch-voqd -m shadow -q -Q 2048 -p 2 -P 0x0F -s -S 5"
+  voqd_shadow_cmd: "sudo ./build/rswitch-voqd -m shadow -q -Q 2048 -p 4 -P 0x0F -s -S 5"
 
   # 3. Alternative: Start VOQd in active mode (requires AF_XDP capable interface)
-  voqd_active_cmd: "sudo ./build/rswitch-voqd -m active -q -Q 2048 -p 2 -P 0x0F -i lo,dummy0 -s -S 5"
+  voqd_active_cmd: "sudo ./build/rswitch-voqd -m active -q -Q 2048 -p 4 -P 0x0F -i ens34,ens35,ens36,ens37 -s -S 5"
 
   # 4. Monitor software queue statistics
   monitor_cmd: "watch -n 2 'sudo ./build/rsvoqctl show-stats'"

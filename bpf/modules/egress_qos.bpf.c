@@ -169,6 +169,15 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } qos_qdepth_map SEC(".maps");
 
+/* VOQd state - Controls takeover */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct voqd_state);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+} voqd_state_map SEC(".maps");
+
 //
 // Statistics (per-CPU for performance)
 //
@@ -462,43 +471,60 @@ int qos_process(struct xdp_md *xdp_ctx)
     
     /* Congestion detection and ECN marking
      * Uses local qdepth_map for QoS-specific congestion management
+     * Note: In ACTIVE mode, congestion control is handled by VOQd in user-space
      */
     if (cfg->flags & QOS_FLAG_ECN_ENABLED) {
         __u32 egress_ifindex = ctx->egress_ifindex;
         if (egress_ifindex != 0 && priority < QOS_MAX_PRIORITIES && qos_cfg) {
-            /* Build queue depth key */
-            struct qdepth_key qkey = {
-                .port = (__u16)egress_ifindex,
-                .prio = (__u8)priority,
-                ._pad = 0,
-            };
+            /* Check AF_XDP state */
+            __u32 state_key = 0;
+            struct voqd_state *voqd_state = bpf_map_lookup_elem(&voqd_state_map, &state_key);
             
-            __u32 *qdepth = bpf_map_lookup_elem(&qos_qdepth_map, &qkey);
-            if (qdepth && *qdepth > 0) {
-                /* Congestion detected based on queue depth */
-                __u32 threshold = qos_cfg->ecn_threshold;
+            if (voqd_state && voqd_state->mode == VOQD_MODE_ACTIVE) {
+                /* In ACTIVE mode, VOQd handles all congestion control in user-space */
+                rs_debug("QoS: Skipping congestion check in ACTIVE mode (VOQd handles it)");
+            } else {
+                /* In BYPASS/SHADOW modes, check kernel queue depth with decay */
+                /* Build queue depth key */
+                struct qdepth_key qkey = {
+                    .port = (__u16)egress_ifindex,
+                    .prio = (__u8)priority,
+                    ._pad = 0,
+                };
                 
-                if (*qdepth >= threshold) {
-                    /* Congestion detected - mark ECN if possible, otherwise drop low priority */
-                    if (priority >= QOS_PRIO_HIGH) {
-                        mark_ecn_ce(iph);  // Mark high-priority traffic with ECN
-                        update_stat(QOS_STAT_ECN_MARKED);
-                        rs_debug("QoS: ECN marked priority=%u qdepth=%u", priority, *qdepth);
-                    } else {
-                        /* Drop low-priority traffic during congestion */
-                        rs_debug("QoS: Congestion drop priority=%u qdepth=%u", priority, *qdepth);
-                        update_stat(QOS_STAT_CONGESTION_DROPS);
-                        ctx->drop_reason = RS_DROP_CONGESTION;
-                        return XDP_DROP;
+                __u32 *qdepth = bpf_map_lookup_elem(&qos_qdepth_map, &qkey);
+                if (qdepth && *qdepth > 0) {
+                    /* Apply exponential decay: reduce by ~10% each time */
+                    __u32 decayed = *qdepth * 9 / 10;
+                    if (decayed < *qdepth) {
+                        *qdepth = decayed;
                     }
+                    
+                    /* Check congestion after decay */
+                    __u32 threshold = qos_cfg->ecn_threshold;
+                    
+                    if (*qdepth >= threshold) {
+                        /* Congestion detected - mark ECN if possible, otherwise drop low priority */
+                        if (priority >= QOS_PRIO_HIGH) {
+                            mark_ecn_ce(iph);  // Mark high-priority traffic with ECN
+                            update_stat(QOS_STAT_ECN_MARKED);
+                            rs_debug("QoS: ECN marked priority=%u qdepth=%u", priority, *qdepth);
+                        } else {
+                            /* Drop low priority packets during congestion */
+                            rs_debug("QoS: Congestion drop priority=%u qdepth=%u", priority, *qdepth);
+                            update_stat(QOS_STAT_CONGESTION_DROPS);
+                            ctx->drop_reason = RS_DROP_CONGESTION;
+                            return XDP_DROP;
+                        }
+                    }
+                    
+                    /* Increment queue depth for this packet */
+                    __sync_fetch_and_add(qdepth, 1);
+                } else if (!qdepth) {
+                    /* Initialize queue depth for this port/priority */
+                    __u32 initial_depth = 1;
+                    bpf_map_update_elem(&qos_qdepth_map, &qkey, &initial_depth, BPF_NOEXIST);
                 }
-                
-                /* Increment queue depth for this packet */
-                __sync_fetch_and_add(qdepth, 1);
-            } else if (!qdepth) {
-                /* Initialize queue depth for this port/priority */
-                __u32 initial_depth = 1;
-                bpf_map_update_elem(&qos_qdepth_map, &qkey, &initial_depth, BPF_NOEXIST);
             }
         }
     }

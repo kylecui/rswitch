@@ -72,6 +72,21 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);    /* Pin to /sys/fs/bpf/ */
 } rs_port_config_map SEC(".maps");
 
+/* Interface index to port index mapping
+ * 
+ * Maps real ifindex (e.g., 4) to consecutive port_idx (0, 1, 2, ...)
+ * Used by VOQd and AF_XDP modules that need 0-based port indexing.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, RS_MAX_INTERFACES);
+    __type(key, __u32);                     /* ifindex */
+    __type(value, __u32);                   /* port_idx (0-based) */
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_ifindex_to_port_map SEC(".maps");
+
+
+
 /* MAC address as map key
  * 
  * NOTE: Kept in map_defs.h for struct definition visibility.

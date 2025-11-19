@@ -134,6 +134,7 @@ struct loader_ctx {
     int rs_progs_fd;
     int rs_prog_chain_fd;        /* Chain map: prog_chain[my_id] = next_id */
     int rs_port_config_map_fd;
+    int rs_ifindex_to_port_map_fd;  /* Ifindex to port index mapping */
     int rs_devmap_fd;
     int rs_stats_map_fd;
     int rs_event_bus_fd;     /* Unified event bus (replaces per-module ringbufs) */
@@ -466,6 +467,17 @@ static int get_pinned_maps(struct loader_ctx *ctx)
 #endif
     ctx->rs_devmap_fd = bpf_obj_get(path);
     
+    /* Ifindex to port index mapping */
+    snprintf(path, sizeof(path), "%s/rs_ifindex_to_port_map", BPF_PIN_PATH);
+    ctx->rs_ifindex_to_port_map_fd = bpf_obj_get(path);
+    if (ctx->rs_ifindex_to_port_map_fd < 0) {
+        /* Try to get from dispatcher object */
+        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_ifindex_to_port_map");
+        if (map) {
+            ctx->rs_ifindex_to_port_map_fd = bpf_map__fd(map);
+        }
+    }
+    
     snprintf(path, sizeof(path), "%s/rs_stats_map", BPF_PIN_PATH);
     ctx->rs_stats_map_fd = bpf_obj_get(path);
     
@@ -755,6 +767,14 @@ static int configure_ports(struct loader_ctx *ctx)
                 continue;
             }
             
+            /* Create ifindex -> port_idx mapping (consecutive 0-based indices) */
+            __u32 port_idx = i;  /* Use array index as port_idx */
+            err = bpf_map_update_elem(ctx->rs_ifindex_to_port_map_fd, &ifindex, &port_idx, BPF_ANY);
+            if (err) {
+                fprintf(stderr, "  Warning: Failed to create ifindex->port_idx mapping for %s: %s\n", 
+                        pport->interface, strerror(errno));
+            }
+            
             struct rs_port_config cfg = {
                 .ifindex = ifindex,
                 .enabled = pport->enabled,
@@ -793,7 +813,7 @@ static int configure_ports(struct loader_ctx *ctx)
             }
             
             const char *mode_str[] = {"OFF", "ACCESS", "TRUNK", "HYBRID"};
-            printf("  Port %u (%s): mode=%s", ifindex, pport->interface, 
+            printf("  Port %u (%s) -> port_idx %u: mode=%s", ifindex, pport->interface, port_idx, 
                    mode_str[pport->vlan_mode < 4 ? pport->vlan_mode : 0]);
             if (pport->vlan_mode == RS_VLAN_MODE_ACCESS) {
                 printf(", access_vlan=%d", pport->access_vlan);
@@ -820,6 +840,15 @@ static int configure_ports(struct loader_ctx *ctx)
     
     for (i = 0; i < ctx->num_interfaces; i++) {
         __u32 ifindex = ctx->interfaces[i];
+        
+        /* Create ifindex -> port_idx mapping (consecutive 0-based indices) */
+        __u32 port_idx = i;  /* Use array index as port_idx */
+        err = bpf_map_update_elem(ctx->rs_ifindex_to_port_map_fd, &ifindex, &port_idx, BPF_ANY);
+        if (err) {
+            fprintf(stderr, "  Warning: Failed to create ifindex->port_idx mapping for ifindex %u: %s\n", 
+                    ifindex, strerror(errno));
+        }
+        
         struct rs_port_config cfg = {
             .ifindex = ifindex,
             .enabled = 1,
@@ -844,8 +873,8 @@ static int configure_ports(struct loader_ctx *ctx)
         if_indextoname(ifindex, ifname);
         
         const char *mode_str[] = {"OFF", "ACCESS", "TRUNK", "HYBRID"};
-        printf("  Port %u (%s): mode=%s, vlan=%d, learning=%s\n", 
-               ifindex, ifname, mode_str[vlan_mode], default_vlan,
+        printf("  Port %u (%s) -> port_idx %u: mode=%s, vlan=%d, learning=%s\n", 
+               ifindex, ifname, port_idx, mode_str[vlan_mode], default_vlan,
                cfg.learning ? "on" : "off");
     }
     
@@ -1409,6 +1438,10 @@ static void close_map_fds(struct loader_ctx *ctx)
         close(ctx->rs_port_config_map_fd);
         printf("  Closed rs_port_config_map_fd\n");
     }
+    if (ctx->rs_ifindex_to_port_map_fd >= 0) {
+        close(ctx->rs_ifindex_to_port_map_fd);
+        printf("  Closed rs_ifindex_to_port_map_fd\n");
+    }
     if (ctx->rs_devmap_fd >= 0) {
         close(ctx->rs_devmap_fd);
         printf("  Closed rs_devmap_fd\n");
@@ -1655,6 +1688,7 @@ int main(int argc, char **argv)
     ctx.rs_progs_fd = -1;
     ctx.rs_prog_chain_fd = -1;
     ctx.rs_port_config_map_fd = -1;
+    ctx.rs_ifindex_to_port_map_fd = -1;
     ctx.rs_devmap_fd = -1;
     ctx.rs_stats_map_fd = -1;
     

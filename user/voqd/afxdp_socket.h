@@ -58,11 +58,15 @@ struct xsk_socket {
 	uint32_t frame_size;        /* Per-frame size */
 	uint32_t num_frames;        /* Total number of frames */
 	
+	/* libxdp structures */
+	struct xsk_socket *xsk_sock; /* libxdp socket */
+	struct xsk_umem *umem;      /* libxdp UMEM */
+	
 	/* Ring buffers (kernel shared) */
-	void *rx_ring;              /* RX ring */
-	void *tx_ring;              /* TX ring */
-	void *fill_ring;            /* Fill queue */
-	void *comp_ring;            /* Completion queue */
+	struct xsk_ring_cons rx_ring;    /* RX ring */
+	struct xsk_ring_prod tx_ring;    /* TX ring */
+	struct xsk_ring_prod fill_ring;  /* Fill queue */
+	struct xsk_ring_cons comp_ring;  /* Completion queue */
 	
 	/* Ring metadata */
 	uint32_t rx_size;
@@ -75,6 +79,9 @@ struct xsk_socket {
 	uint32_t rx_cached_cons;
 	uint32_t tx_cached_prod;
 	uint32_t tx_cached_cons;
+	
+	/* Frame management */
+	uint32_t next_free_frame;   /* Next frame to allocate */
 	
 	/* Statistics */
 	uint64_t rx_packets;

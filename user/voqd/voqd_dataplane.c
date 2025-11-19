@@ -346,15 +346,28 @@ int voqd_dataplane_rx_process(struct voqd_dataplane *dp, uint32_t port_idx)
 		return 0;
 	
 	struct xsk_socket *xsk = xsk_manager_get_socket(&dp->xsk_mgr, port_idx);
-	if (!xsk)
+	if (!xsk) {
+		if (dp->rx_debug_count++ < 5) {  /* Only print first few times */
+			fprintf(stderr, "RX: No AF_XDP socket for port %u\n", port_idx);
+		}
 		return 0;
+	}
 	
 	/* Receive batch */
 	int rcvd = xsk_socket_rx_batch(xsk, dp->rx_frames, dp->rx_lengths,
 	                                dp->config.batch_size);
 	
-	if (rcvd <= 0)
+	if (rcvd < 0) {
+		if (dp->rx_debug_count++ < 5) {
+			fprintf(stderr, "RX: xsk_socket_rx_batch failed for port %u: %d\n", port_idx, rcvd);
+		}
 		return rcvd;
+	}
+	
+	if (rcvd > 0 && dp->rx_debug_count < 10) {
+		fprintf(stderr, "RX: Port %u received %d packets\n", port_idx, rcvd);
+		dp->rx_debug_count++;
+	}
 	
 	/* Enqueue packets into VOQ based on priority */
 	for (int i = 0; i < rcvd; i++) {
@@ -524,8 +537,8 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 	
 	/* Transmit batch via AF_XDP */
 	if (dp->config.enable_afxdp) {
-		/* For simplicity, send all to first socket */
-		/* TODO: Route to correct egress port socket */
+		/* Send all packets to socket 0 for now */
+		/* TODO: Implement per-port socket routing */
 		struct xsk_socket *xsk = xsk_manager_get_socket(&dp->xsk_mgr, 0);
 		if (xsk) {
 			int sent = xsk_socket_tx_batch(xsk, dp->tx_frames,
@@ -539,6 +552,9 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 			
 			if (sent < (int)tx_count)
 				dp->tx_errors += (tx_count - sent);
+		} else {
+			/* No socket available */
+			dp->tx_errors += tx_count;
 		}
 	}
 	
