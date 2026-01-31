@@ -495,16 +495,25 @@ static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
     char line[MAX_LINE_LEN];
     char key[256], value[256];
     
+    fprintf(stderr, "DEBUG: Entering parse_voqd_config()\n");
+    
     while (fgets(line, sizeof(line), fp)) {
+        char line_copy[MAX_LINE_LEN];
+        strncpy(line_copy, line, sizeof(line_copy) - 1);
+        line_copy[sizeof(line_copy) - 1] = '\0';
+        
+        fprintf(stderr, "DEBUG: voqd raw line: '%s'\n", line_copy);
+        
         remove_comment(line);
         char *trimmed = trim(line);
         
         if (strlen(trimmed) == 0) continue;
         
         /* Check if we're entering another section (non-indented line with ':') */
-        if (line[0] != ' ' && line[0] != '\t' && strchr(trimmed, ':')) {
+        if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
             /* Rewind to start of this line */
-            fseek(fp, -(long)strlen(line) - 1, SEEK_CUR);
+            fprintf(stderr, "DEBUG: voqd_config sees section boundary: '%s'\n", trimmed);
+            fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
             break;
         }
         
@@ -512,16 +521,20 @@ static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
             continue;
         }
         
+        fprintf(stderr, "DEBUG: voqd_config key='%s' value='%s'\n", key, value);
+        
         /* Parse VOQd configuration fields */
         if (strcmp(key, "enable") == 0 || strcmp(key, "enabled") == 0 || 
             strcmp(key, "enable_afxdp") == 0) {
             voqd->enabled = parse_bool(value);
             voqd->enable_afxdp = voqd->enabled;  // enable_afxdp implies enabled
         } else if (strcmp(key, "mode") == 0) {
+            fprintf(stderr, "DEBUG: Parsing mode='%s'\n", value);
             if (strcmp(value, "bypass") == 0) voqd->mode = 0;
             else if (strcmp(value, "shadow") == 0) voqd->mode = 1;
             else if (strcmp(value, "active") == 0) voqd->mode = 2;
             else voqd->mode = atoi(value);
+            fprintf(stderr, "DEBUG: Set voqd->mode=%d\n", voqd->mode);
         } else if (strcmp(key, "num_ports") == 0) {
             voqd->num_ports = atoi(value);
         } else if (strcmp(key, "prio_mask") == 0) {
@@ -655,7 +668,10 @@ int profile_load(const char *filename, struct rs_profile *profile)
             ret = parse_settings(fp, &profile->settings);
             if (ret < 0) goto error;
         } else if (strcmp(key, "voqd_config") == 0) {
+            fprintf(stderr, "DEBUG: Found voqd_config section, calling parse_voqd_config()\n");
             ret = parse_voqd_config(fp, &profile->voqd);
+            fprintf(stderr, "DEBUG: After parse_voqd_config: mode=%d, enabled=%d, prio_mask=0x%x\n",
+                    profile->voqd.mode, profile->voqd.enabled, profile->voqd.prio_mask);
             if (ret < 0) goto error;
         } else if (strcmp(key, "ports") == 0) {
             fprintf(stderr, "DEBUG: Parsing ports section\n");

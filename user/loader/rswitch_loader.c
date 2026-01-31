@@ -1437,6 +1437,9 @@ static int start_voqd(struct loader_ctx *ctx)
     /* Build VOQd command from profile configuration */
     struct rs_profile_voqd *voqd = &ctx->profile.voqd;
     
+    fprintf(stderr, "DEBUG: start_voqd() voqd->mode=%d, voqd->enabled=%d, voqd->prio_mask=0x%x\n",
+            voqd->mode, voqd->enabled, voqd->prio_mask);
+    
     snprintf(cmd, sizeof(cmd),
              "./build/rswitch-voqd -i %s -p %d -m %s -P 0x%x %s%s%s",
              iface_list,

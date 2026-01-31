@@ -49,7 +49,7 @@ settings:
 
 ports:
   - interface: ens34
-    mode: trunk
+    vlan_mode: trunk
     allowed_vlans: [1, 10]
     native_vlan: 1
     qos_config:
@@ -57,26 +57,27 @@ ports:
       prio_mask: 0x0C
 
   - interface: ens35
-    mode: access
+    vlan_mode: access
     access_vlan: 10
     qos_config:
       enable_afxdp: true
       prio_mask: 0x0C
 
   - interface: ens36
-    mode: access
+    vlan_mode: access
     access_vlan: 1
     qos_config:
       enable_afxdp: true
       prio_mask: 0x0C
 
   - interface: ens37
-    mode: access
+    vlan_mode: access
     access_vlan: 1
     qos_config:
       enable_afxdp: true
       prio_mask: 0x0C
-
+# VLAN database configuration (same as l2-vlan-lab)
+ 
 voqd_config:
   mode: active
   num_ports: 4

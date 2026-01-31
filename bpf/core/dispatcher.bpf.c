@@ -55,10 +55,9 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
     rctx->action = XDP_PASS;   /* Default action */
     rctx->timestamp = bpf_ktime_get_ns();
     
-    /* Copy VLAN configuration if available */
-    if (cfg) {
-        rctx->prio = cfg->default_prio;
-    }
+    /* Always UNSET: classification happens in AF_XDP/QoS modules, not here */
+    rctx->prio = 0xFF;
+    (void)cfg;
     
     /* Parse packet layers (Ethernet → VLAN → IP → TCP/UDP)
      * ⚠️ GOLDEN RULE: ALWAYS check bounds BEFORE accessing memory

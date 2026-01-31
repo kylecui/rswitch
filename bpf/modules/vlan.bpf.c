@@ -223,8 +223,7 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
         rs_debug("VLAN tag PCP=%u, DEI=%u -> prio=%u, ecn=%u",
                  pcp, dei, ctx->prio, ctx->ecn);
     } else {
-        // Untagged packets get default priority (typically 0 = best effort)
-        ctx->prio = 0;
+        ctx->prio = 0xFF;
         ctx->ecn = 0;
     }
     

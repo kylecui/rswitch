@@ -18,6 +18,9 @@
 /* QoS Priority Levels */
 #define QOS_MAX_PRIORITIES  4
 
+/* Sentinel value for unclassified priority */
+#define QOS_PRIO_UNSET      0xFF
+
 /* Legacy alias for compatibility */
 #define MAX_PRIORITIES QOS_MAX_PRIORITIES
 

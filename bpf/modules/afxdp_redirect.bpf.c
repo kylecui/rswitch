@@ -16,6 +16,7 @@
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <linux/in.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 #include "module_abi.h"
@@ -100,7 +101,7 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } afxdp_devmap SEC(".maps");
 
-/* Helper: Extract priority from packet */
+/* Helper: Extract priority from packet using DSCP and port-based classification */
 static __always_inline __u32 extract_priority(struct xdp_md *ctx, struct qos_config *qos)
 {
 	void *data_end = (void *)(long)ctx->data_end;
@@ -108,25 +109,59 @@ static __always_inline __u32 extract_priority(struct xdp_md *ctx, struct qos_con
 	struct ethhdr *eth = data;
 	struct iphdr *iph;
 	__u8 dscp;
+	__u8 proto;
+	__u16 dport = 0;
 	
-	/* Bounds check */
 	if ((void *)(eth + 1) > data_end)
-		return 0;
+		return QOS_PRIO_NORMAL;
 	
-	/* Only process IPv4 for now */
 	if (eth->h_proto != bpf_htons(ETH_P_IP))
-		return 0;
+		return QOS_PRIO_NORMAL;
 	
 	iph = (void *)(eth + 1);
 	if ((void *)(iph + 1) > data_end)
-		return 0;
+		return QOS_PRIO_NORMAL;
 	
-	/* Extract DSCP (6 bits from TOS) */
+	proto = iph->protocol;
+	
+	/* ICMP: HIGH priority */
+	if (proto == IPPROTO_ICMP)
+		return QOS_PRIO_HIGH;
+	
+	/* Parse L4 header for TCP/UDP */
+	if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+		__u8 ihl = iph->ihl;
+		void *l4 = (void *)iph + (ihl * 4);
+		struct {
+			__be16 sport;
+			__be16 dport;
+		} *l4hdr = l4;
+		
+		if ((void *)(l4hdr + 1) > data_end)
+			goto dscp_fallback;
+		
+		dport = bpf_ntohs(l4hdr->dport);
+		
+		/* Port-based classification */
+		switch (dport) {
+		case 22:    /* SSH */
+		case 53:    /* DNS */
+		case 161:   /* SNMP */
+		case 162:   /* SNMP trap */
+			return QOS_PRIO_CRITICAL;
+		case 80:    /* HTTP */
+		case 443:   /* HTTPS */
+			return QOS_PRIO_HIGH;
+		case 20:    /* FTP data */
+		case 21:    /* FTP control */
+			return QOS_PRIO_LOW;
+		}
+	}
+	
+dscp_fallback:
 	dscp = (iph->tos >> 2) & 0x3F;
-	
-	/* Map DSCP to priority */
 	if (dscp >= 64)
-		return 0;
+		return QOS_PRIO_NORMAL;
 	
 	return qos->dscp2prio[dscp];
 }
@@ -243,7 +278,7 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	 * 2. rs_ctx->prio set by egress QoS module (via DSCP marking feedback)
 	 * 3. extract_priority() reading DSCP field directly
 	 */
-	if (rs_ctx->prio < QOS_MAX_PRIORITIES) {
+	if (rs_ctx->prio != QOS_PRIO_UNSET && rs_ctx->prio < QOS_MAX_PRIORITIES) {
 		/* Priority already classified by upstream module */
 		prio = rs_ctx->prio;
 		bpf_printk("[AF_XDP] Using pre-classified prio=%u", prio);
