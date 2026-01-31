@@ -66,7 +66,7 @@ settings:
 
 # Interface-specific configuration
 ports:
-  - interface: ens33
+  - interface: ens34
     mode: trunk
     allowed_vlans: [1, 10, 20, 30]
     native_vlan: 1
@@ -76,7 +76,7 @@ ports:
       cpu_map_id: 0
       cpu_core: 2
 
-  - interface: ens34
+  - interface: ens35
     mode: access
     access_vlan: 10
     qos_config:
@@ -85,7 +85,7 @@ ports:
       cpu_map_id: 1
       cpu_core: 3
 
-  - interface: ens35
+  - interface: ens36
     mode: trunk
     allowed_vlans: [1, 20, 30, 40]
     native_vlan: 1
@@ -93,7 +93,7 @@ ports:
       enable_afxdp: false  # Fast-path only
       prio_mask: 0x00
 
-  - interface: ens36
+  - interface: ens37
     mode: hybrid
     untagged_vlans: [1]
     tagged_vlans: [10, 20, 30]
