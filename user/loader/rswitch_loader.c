@@ -1266,7 +1266,7 @@ static int setup_veth_egress(struct loader_ctx *ctx)
         return 0;
     }
     
-    snprintf(path, sizeof(path), "%s/modules/veth_egress.bpf.o", BUILD_DIR);
+    snprintf(path, sizeof(path), "%s/veth_egress.bpf.o", BUILD_DIR);
     ctx->veth_egress_obj = bpf_object__open(path);
     err = libbpf_get_error(ctx->veth_egress_obj);
     if (err) {
