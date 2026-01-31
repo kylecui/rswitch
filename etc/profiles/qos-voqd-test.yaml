@@ -201,8 +201,8 @@ test_scenarios:
   - name: "high_priority_traffic"
     description: "Test high-priority traffic redirection to AF_XDP"
     traffic:
-      - src_ip: "192.168.1.10"
-        dst_ip: "192.168.2.10"
+      - src_ip: "10.174.29.155"
+        dst_ip: "10.174.29.254"
         dscp: 46  # EF → CRITICAL
         expected_prio: 3
         expected_afxdp: true
@@ -210,8 +210,8 @@ test_scenarios:
   - name: "normal_priority_traffic"
     description: "Test normal-priority traffic stays in fast-path"
     traffic:
-      - src_ip: "192.168.1.20"
-        dst_ip: "192.168.2.20"
+      - src_ip: "10.174.29.218"
+        dst_ip: "10.174.29.254"
         dscp: 0   # BE → LOW
         expected_prio: 0
         expected_afxdp: false
