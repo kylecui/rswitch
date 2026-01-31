@@ -1,0 +1,113 @@
+# rSwitch Test Configuration: Veth Egress Path Verification
+#
+# Test environment:
+#   ens34: Trunk port (VLAN 1 @ 10.174.29.254, VLAN 10 @ 10.174.129.254)
+#   ens35: Access port VLAN 10 (Windows client, DHCP)
+#   ens36: Access port VLAN 1 (Windows @ 10.174.29.218)
+#   ens37: Access port VLAN 1 (Ubuntu @ 10.174.29.155)
+#
+# Test goal: Verify veth egress path works for VOQd high-priority traffic
+#   - HIGH/CRITICAL priority traffic goes through VOQd → veth → egress → NIC
+#   - Egress modules (QoS, VLAN) are applied to VOQd traffic
+#
+# QoS Classification (port-based defaults):
+#   CRITICAL (prio=3): SSH(22), DNS(53), SNMP(161)
+#   HIGH (prio=2): HTTP(80,443), ICMP
+#   NORMAL (prio=1): Other TCP/UDP
+#   LOW (prio=0): FTP(20,21)
+
+name: veth-egress-test
+description: "Veth egress path verification for VOQd"
+version: "1.0"
+
+ingress:
+  - vlan
+  - l2learn
+  - afxdp_redirect
+  - lastcall
+
+egress:
+  - egress_qos
+  - egress_vlan
+  - egress_final
+
+settings:
+  mac_learning: true
+  mac_aging_time: 300
+  vlan_enforcement: true
+  default_vlan: 1
+  qos_enabled: true
+  qos_default_prio: 1
+  afxdp_redirect_enabled: true
+  afxdp_prio_mask: 0x0C
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  stats_enabled: true
+  ringbuf_enabled: true
+  debug: false
+
+ports:
+  - interface: ens34
+    mode: trunk
+    allowed_vlans: [1, 10]
+    native_vlan: 1
+    qos_config:
+      enable_afxdp: true
+      prio_mask: 0x0C
+
+  - interface: ens35
+    mode: access
+    access_vlan: 10
+    qos_config:
+      enable_afxdp: true
+      prio_mask: 0x0C
+
+  - interface: ens36
+    mode: access
+    access_vlan: 1
+    qos_config:
+      enable_afxdp: true
+      prio_mask: 0x0C
+
+  - interface: ens37
+    mode: access
+    access_vlan: 1
+    qos_config:
+      enable_afxdp: true
+      prio_mask: 0x0C
+
+voqd_config:
+  mode: active
+  num_ports: 4
+  prio_mask: 0x0C
+  enable_afxdp: true
+  zero_copy: false
+  rx_ring_size: 2048
+  tx_ring_size: 2048
+  frame_size: 2048
+  batch_size: 256
+  poll_timeout_ms: 100
+  busy_poll: false
+  cpu_affinity: -1
+  enable_scheduler: true
+  use_veth_egress: true
+  veth_in_ifname: veth_voq_in
+
+vlans:
+  - vlan_id: 1
+    name: "management"
+    description: "Management VLAN"
+    untagged_ports: [ens36, ens37]
+    tagged_ports: [ens34]
+
+  - vlan_id: 10
+    name: "client"
+    description: "Client VLAN"
+    untagged_ports: [ens35]
+    tagged_ports: [ens34]
+
+deployment:
+  veth_setup_cmd: "sudo ./scripts/setup_veth_egress.sh create"
+  veth_cleanup_cmd: "sudo ./scripts/setup_veth_egress.sh delete"
+  loader_cmd: "sudo ./build/rswitch_loader --profile etc/profiles/veth-egress-test.yaml --ifaces ens34,ens35,ens36,ens37"
