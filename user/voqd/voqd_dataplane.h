@@ -81,13 +81,20 @@ struct voqd_dataplane_config {
 	/* QoS classification */
 	uint8_t dscp_to_prio[64];  /* DSCP value (0-63) to priority mapping */
 	uint8_t default_prio;      /* Default priority for unmapped DSCP */
+	
+	/* Veth egress configuration (for XDP egress processing) */
+	bool use_veth_egress;      /* Enable veth egress path */
+	char veth_in_ifname[16];   /* Veth inside interface (e.g., "veth_voq_in") */
+	uint32_t veth_in_ifindex;  /* Veth inside interface index */
+	uint32_t veth_queue_id;    /* Queue ID for veth AF_XDP socket */
 };
 
 /* Data plane runtime state */
 struct voqd_dataplane {
 	/* Components */
 	struct voq_mgr *voq;              /* VOQ manager */
-	struct xsk_manager xsk_mgr;       /* AF_XDP manager */
+	struct xsk_manager xsk_mgr;       /* AF_XDP manager (RX from physical NICs) */
+	struct xsk_manager veth_xsk_mgr;  /* AF_XDP manager (TX to veth) */
 	struct sw_queue_mgr sw_mgr;       /* Software queue manager */
 	
 	/* Configuration */

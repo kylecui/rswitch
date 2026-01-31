@@ -61,6 +61,10 @@ voqd_config:
   enable_afxdp: true              # ACTIVE 模式必需
   zero_copy: false                # 建议 false（兼容性更好）
   
+  # Veth egress path (ensures egress modules run on VOQd TX)
+  use_veth_egress: true
+  veth_in_ifname: veth_voq_in
+  
   # Ring 大小
   rx_ring_size: 2048
   tx_ring_size: 2048

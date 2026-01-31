@@ -19,6 +19,7 @@
 
 #include "voqd_dataplane.h"
 #include "../../bpf/core/afxdp_common.h"
+#include "../../bpf/core/veth_egress_common.h"
 
 /* AF_XDP constants (fallback if not defined) */
 #ifndef XDP_PACKET_HEADROOM
@@ -263,6 +264,38 @@ int voqd_dataplane_init(struct voqd_dataplane *dp, struct voq_mgr *voq,
 		printf("Data plane initialized: AF_XDP disabled (metadata-only mode)\n");
 	}
 	
+	/* Initialize veth egress socket manager if enabled */
+	if (config->use_veth_egress && config->enable_afxdp) {
+		ret = xsk_manager_init(&dp->veth_xsk_mgr, false, false);
+		if (ret < 0) {
+			fprintf(stderr, "Failed to initialize veth XSK manager: %s\n", strerror(-ret));
+			if (config->enable_afxdp)
+				xsk_manager_destroy(&dp->xsk_mgr);
+			return ret;
+		}
+		
+		struct xsk_socket_config veth_cfg = {
+			.rx_size = 0,
+			.tx_size = config->tx_ring_size,
+			.bind_flags = XDP_COPY,
+			.xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST,
+		};
+		
+		ret = xsk_manager_add_socket(&dp->veth_xsk_mgr, config->veth_in_ifname,
+		                             config->veth_queue_id, &veth_cfg);
+		if (ret < 0) {
+			fprintf(stderr, "Failed to add veth socket for %s: %s\n",
+			        config->veth_in_ifname, strerror(-ret));
+			xsk_manager_destroy(&dp->veth_xsk_mgr);
+			if (config->enable_afxdp)
+				xsk_manager_destroy(&dp->xsk_mgr);
+			return ret;
+		}
+		
+		printf("Veth egress enabled: TX to %s (ifindex=%u)\n",
+		       config->veth_in_ifname, config->veth_in_ifindex);
+	}
+	
 	/* Initialize software queue manager if enabled */
 	if (config->enable_sw_queues) {
 		uint32_t num_priorities = 8;  /* Default: 8 priority levels */
@@ -295,6 +328,10 @@ void voqd_dataplane_destroy(struct voqd_dataplane *dp)
 	/* Destroy AF_XDP manager */
 	if (dp->config.enable_afxdp)
 		xsk_manager_destroy(&dp->xsk_mgr);
+	
+	/* Destroy veth egress socket manager */
+	if (dp->config.use_veth_egress)
+		xsk_manager_destroy(&dp->veth_xsk_mgr);
 	
 	/* Destroy software queue manager */
 	if (dp->config.enable_sw_queues)
@@ -436,6 +473,15 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 {
 	uint32_t tx_count = 0;
 	uint32_t max_batch = dp->config.batch_size;
+	bool use_veth = dp->config.use_veth_egress && dp->config.enable_afxdp;
+	
+	struct xsk_socket *veth_xsk = NULL;
+	if (use_veth) {
+		veth_xsk = xsk_manager_get_socket(&dp->veth_xsk_mgr, 0);
+		if (!veth_xsk) {
+			use_veth = false;
+		}
+	}
 	
 	if (dp->config.enable_sw_queues) {
 		/* Software queue mode: dequeue from software queues */
@@ -444,11 +490,9 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 			struct sw_queue_entry *entry = sw_queue_dequeue(&dp->sw_mgr, &port_idx);
 			
 			if (!entry)
-				break;  /* No more packets */
+				break;
 			
-			/* Check if we have AF_XDP socket for this port */
 			if (!dp->config.enable_afxdp) {
-				/* No AF_XDP: just track metadata and free */
 				dp->tx_packets++;
 				dp->tx_bytes += entry->len;
 				sw_queue_free_entry(&dp->sw_mgr, entry);
@@ -456,16 +500,14 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 				continue;
 			}
 			
-			/* Get socket for egress port */
-			struct xsk_socket *xsk = xsk_manager_get_socket(&dp->xsk_mgr, port_idx);
+			struct xsk_socket *xsk = use_veth ? veth_xsk : 
+			                         xsk_manager_get_socket(&dp->xsk_mgr, port_idx);
 			if (!xsk) {
-				/* No socket: drop and free */
 				dp->tx_errors++;
 				sw_queue_free_entry(&dp->sw_mgr, entry);
 				continue;
 			}
 			
-			/* Get AF_XDP frame for transmission */
 			uint64_t frame_addr = xsk_alloc_frame(xsk);
 			if (frame_addr == 0) {
 				dp->tx_errors++;
@@ -473,7 +515,6 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 				continue;
 			}
 			
-			/* Copy packet data to AF_XDP frame */
 			uint8_t *frame_data = xsk_get_frame_data(xsk, frame_addr);
 			if (!frame_data) {
 				dp->tx_errors++;
@@ -482,15 +523,28 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 				continue;
 			}
 			
-			memcpy(frame_data, entry->data, entry->len);
+			uint32_t total_len = entry->len;
 			
-			/* Prepare for transmission */
+			if (use_veth) {
+				struct voq_tx_meta meta = {
+					.egress_ifindex = dp->voq->ports[port_idx].ifindex,
+					.ingress_ifindex = 0,
+					.prio = entry->priority,
+					.flags = VOQ_TX_FLAG_FROM_VOQ,
+					.vlan_id = 0,
+					.reserved = 0,
+				};
+				memcpy(frame_data, &meta, VOQ_TX_META_SIZE);
+				memcpy(frame_data + VOQ_TX_META_SIZE, entry->data, entry->len);
+				total_len = entry->len + VOQ_TX_META_SIZE;
+			} else {
+				memcpy(frame_data, entry->data, entry->len);
+			}
+			
 			dp->tx_frames[tx_count] = frame_addr;
-			dp->tx_lengths[tx_count] = entry->len;
+			dp->tx_lengths[tx_count] = total_len;
 			
-			/* Free software queue entry */
 			sw_queue_free_entry(&dp->sw_mgr, entry);
-			
 			tx_count++;
 		}
 	} else {
@@ -500,11 +554,9 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 			struct voq_entry *entry = voq_dequeue(dp->voq, &port_idx);
 			
 			if (!entry)
-				break;  /* No more packets */
+				break;
 			
-			/* Check if we have AF_XDP socket for this port */
 			if (!dp->config.enable_afxdp || port_idx >= dp->num_ports) {
-				/* No AF_XDP: just track metadata and free */
 				dp->tx_packets++;
 				dp->tx_bytes += entry->len;
 				voq_free_entry(dp->voq, entry);
@@ -512,22 +564,58 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 				continue;
 			}
 			
-			/* Get socket for egress port */
-			struct xsk_socket *xsk = xsk_manager_get_socket(&dp->xsk_mgr, port_idx);
-			if (!xsk) {
-				/* No socket: drop and free */
-				dp->tx_errors++;
-				voq_free_entry(dp->voq, entry);
-				continue;
+			if (use_veth) {
+				uint64_t frame_addr = xsk_alloc_frame(veth_xsk);
+				if (frame_addr == 0) {
+					dp->tx_errors++;
+					voq_free_entry(dp->voq, entry);
+					continue;
+				}
+				
+				uint8_t *frame_data = xsk_get_frame_data(veth_xsk, frame_addr);
+				if (!frame_data) {
+					dp->tx_errors++;
+					xsk_free_frame(veth_xsk, frame_addr);
+					voq_free_entry(dp->voq, entry);
+					continue;
+				}
+				
+				struct voq_tx_meta meta = {
+					.egress_ifindex = entry->eg_port,
+					.ingress_ifindex = 0,
+					.prio = entry->prio,
+					.flags = VOQ_TX_FLAG_FROM_VOQ,
+					.vlan_id = 0,
+					.reserved = 0,
+				};
+				
+				uint8_t *orig_data = xsk_get_frame_data(
+					xsk_manager_get_socket(&dp->xsk_mgr, 0), entry->xdp_frame_addr);
+				if (!orig_data) {
+					dp->tx_errors++;
+					xsk_free_frame(veth_xsk, frame_addr);
+					voq_free_entry(dp->voq, entry);
+					continue;
+				}
+				
+				memcpy(frame_data, &meta, VOQ_TX_META_SIZE);
+				memcpy(frame_data + VOQ_TX_META_SIZE, orig_data, entry->len);
+				
+				dp->tx_frames[tx_count] = frame_addr;
+				dp->tx_lengths[tx_count] = entry->len + VOQ_TX_META_SIZE;
+			} else {
+				struct xsk_socket *xsk = xsk_manager_get_socket(&dp->xsk_mgr, port_idx);
+				if (!xsk) {
+					dp->tx_errors++;
+					voq_free_entry(dp->voq, entry);
+					continue;
+				}
+				
+				dp->tx_frames[tx_count] = entry->xdp_frame_addr;
+				dp->tx_lengths[tx_count] = entry->len;
 			}
 			
-			/* Prepare for transmission */
-			dp->tx_frames[tx_count] = entry->xdp_frame_addr;
-			dp->tx_lengths[tx_count] = entry->len;
-			
-			/* Free VOQ entry (frame will be freed after TX complete) */
 			voq_free_entry(dp->voq, entry);
-			
 			tx_count++;
 		}
 	}
@@ -535,11 +623,9 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 	if (tx_count == 0)
 		return 0;
 	
-	/* Transmit batch via AF_XDP */
 	if (dp->config.enable_afxdp) {
-		/* Send all packets to socket 0 for now */
-		/* TODO: Implement per-port socket routing */
-		struct xsk_socket *xsk = xsk_manager_get_socket(&dp->xsk_mgr, 0);
+		struct xsk_socket *xsk = use_veth ? veth_xsk :
+		                         xsk_manager_get_socket(&dp->xsk_mgr, 0);
 		if (xsk) {
 			int sent = xsk_socket_tx_batch(xsk, dp->tx_frames,
 			                               dp->tx_lengths, tx_count);
@@ -553,12 +639,10 @@ int voqd_dataplane_tx_process(struct voqd_dataplane *dp)
 			if (sent < (int)tx_count)
 				dp->tx_errors += (tx_count - sent);
 		} else {
-			/* No socket available */
 			dp->tx_errors += tx_count;
 		}
 	}
 	
-	/* Update stats */
 	dp->tx_batch_sum += tx_count;
 	dp->tx_batch_count++;
 	dp->scheduler_rounds++;
@@ -624,16 +708,16 @@ void *voqd_dataplane_tx_thread(void *arg)
 	}
 	
 	while (dp->running) {
-		/* Process TX completions */
-		if (dp->config.enable_afxdp)
+		if (dp->config.enable_afxdp) {
 			xsk_manager_complete_all_tx(&dp->xsk_mgr);
+			if (dp->config.use_veth_egress)
+				xsk_manager_complete_all_tx(&dp->veth_xsk_mgr);
+		}
 		
-		/* Schedule and transmit packets */
 		int sent = voqd_dataplane_tx_process(dp);
 		
-		/* Busy poll mode: no sleep */
 		if (!dp->config.busy_poll && sent == 0)
-			usleep(100);  /* 100us sleep when idle */
+			usleep(100);
 	}
 	
 	printf("TX thread stopped\n");

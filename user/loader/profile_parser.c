@@ -109,6 +109,8 @@ void profile_init(struct rs_profile *profile)
     profile->voqd.busy_poll = 0;
     profile->voqd.cpu_affinity = -1;  // No affinity
     profile->voqd.enable_scheduler = 1;
+    profile->voqd.use_veth_egress = 1;  // Default enabled when VOQd is on
+    strcpy(profile->voqd.veth_in_ifname, "veth_voq_in");
     
     profile->ports = NULL;
     profile->port_count = 0;
@@ -542,6 +544,10 @@ static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
             voqd->cpu_affinity = atoi(value);
         } else if (strcmp(key, "enable_scheduler") == 0) {
             voqd->enable_scheduler = parse_bool(value);
+        } else if (strcmp(key, "use_veth_egress") == 0) {
+            voqd->use_veth_egress = parse_bool(value);
+        } else if (strcmp(key, "veth_in_ifname") == 0) {
+            strncpy(voqd->veth_in_ifname, value, sizeof(voqd->veth_in_ifname) - 1);
         }
     }
     

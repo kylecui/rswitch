@@ -53,6 +53,8 @@ struct rs_profile_voqd {
     int busy_poll;         // Enable busy polling
     int cpu_affinity;      // CPU core for VOQd threads
     int enable_scheduler;  // Enable DRR/WFQ scheduler
+    int use_veth_egress;   // Enable veth egress path for XDP egress processing
+    char veth_in_ifname[32]; // Veth inside interface name
 };
 
 /* Profile settings structure */

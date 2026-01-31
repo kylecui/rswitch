@@ -122,6 +122,10 @@ voqd_config:
   busy_poll: false
   cpu_affinity: 2       # RX thread on CPU 2, TX on CPU 3
 
+  # Veth egress path (ensures egress modules run on VOQd TX)
+  use_veth_egress: true
+  veth_in_ifname: veth_voq_in
+
   # Scheduler settings
   enable_scheduler: true
 
@@ -238,6 +242,10 @@ monitoring:
 
 # Deployment commands (for automation)
 deployment:
+  # Veth egress setup (run before loader)
+  veth_setup_cmd: "sudo ./scripts/setup_veth_egress.sh create"
+  veth_cleanup_cmd: "sudo ./scripts/setup_veth_egress.sh delete"
+
   # BPF loader command
   loader_cmd: "sudo ./build/rswitch_loader -p qos-voqd-test -c etc/profiles/qos-voqd-test.yaml"
 

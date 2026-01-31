@@ -153,6 +153,14 @@ struct loader_ctx {
     /* VOQd process management */
     pid_t voqd_pid;         /* VOQd process ID (0 = not running) */
     int voqd_enabled;       /* VOQd should be started */
+    
+    /* Veth egress path */
+    struct bpf_object *veth_egress_obj;
+    struct bpf_program *veth_egress_prog;
+    int veth_egress_fd;
+    int voq_egress_devmap_fd;
+    __u32 veth_out_ifindex;
+    int veth_egress_enabled;
 };
 
 static volatile int keep_running = 1;
@@ -1243,6 +1251,112 @@ static int populate_devmaps(struct loader_ctx *ctx)
     return 0;
 }
 
+static int setup_veth_egress(struct loader_ctx *ctx)
+{
+    char path[256];
+    int err;
+    
+    if (!ctx->veth_egress_enabled)
+        return 0;
+    
+    ctx->veth_out_ifindex = if_nametoindex("veth_voq_out");
+    if (ctx->veth_out_ifindex == 0) {
+        fprintf(stderr, "Warning: veth_voq_out not found. Run setup_veth_egress.sh first.\n");
+        ctx->veth_egress_enabled = 0;
+        return 0;
+    }
+    
+    snprintf(path, sizeof(path), "%s/modules/veth_egress.bpf.o", BUILD_DIR);
+    ctx->veth_egress_obj = bpf_object__open(path);
+    err = libbpf_get_error(ctx->veth_egress_obj);
+    if (err) {
+        fprintf(stderr, "Warning: Failed to open veth_egress.bpf.o: %s\n", strerror(-err));
+        ctx->veth_egress_enabled = 0;
+        return 0;
+    }
+    
+    err = bpf_object__load(ctx->veth_egress_obj);
+    if (err) {
+        fprintf(stderr, "Warning: Failed to load veth_egress.bpf.o: %s\n", strerror(-err));
+        bpf_object__close(ctx->veth_egress_obj);
+        ctx->veth_egress_obj = NULL;
+        ctx->veth_egress_enabled = 0;
+        return 0;
+    }
+    
+    ctx->veth_egress_prog = bpf_object__find_program_by_name(ctx->veth_egress_obj,
+                                                             "veth_egress_redirect");
+    if (!ctx->veth_egress_prog) {
+        fprintf(stderr, "Warning: veth_egress_redirect program not found\n");
+        bpf_object__close(ctx->veth_egress_obj);
+        ctx->veth_egress_obj = NULL;
+        ctx->veth_egress_enabled = 0;
+        return 0;
+    }
+    
+    ctx->veth_egress_fd = bpf_program__fd(ctx->veth_egress_prog);
+    
+    struct bpf_map *devmap = bpf_object__find_map_by_name(ctx->veth_egress_obj, "voq_egress_devmap");
+    if (devmap) {
+        ctx->voq_egress_devmap_fd = bpf_map__fd(devmap);
+    }
+    
+    struct bpf_map *config_map = bpf_object__find_map_by_name(ctx->veth_egress_obj, "veth_egress_config_map");
+    if (config_map) {
+        int config_fd = bpf_map__fd(config_map);
+        struct {
+            __u32 enabled;
+            __u32 veth_out_ifindex;
+            __u32 default_egress_if;
+            __u32 flags;
+        } config = {
+            .enabled = 1,
+            .veth_out_ifindex = ctx->veth_out_ifindex,
+            .default_egress_if = ctx->num_interfaces > 0 ? ctx->interfaces[0] : 0,
+            .flags = 0,
+        };
+        __u32 key = 0;
+        bpf_map_update_elem(config_fd, &key, &config, BPF_ANY);
+    }
+    
+    if (ctx->voq_egress_devmap_fd >= 0 && ctx->egress_fd >= 0) {
+        for (int i = 0; i < ctx->num_interfaces; i++) {
+            __u32 ifindex = ctx->interfaces[i];
+            struct bpf_devmap_val val = {
+                .ifindex = ifindex,
+                .bpf_prog.fd = ctx->egress_fd,
+            };
+            err = bpf_map_update_elem(ctx->voq_egress_devmap_fd, &ifindex, &val, BPF_ANY);
+            if (err) {
+                char ifname[IF_NAMESIZE];
+                if_indextoname(ifindex, ifname);
+                fprintf(stderr, "Warning: Failed to add %s to voq_egress_devmap: %s\n",
+                        ifname, strerror(errno));
+            }
+        }
+    }
+    
+    LIBBPF_OPTS(bpf_xdp_attach_opts, opts);
+    err = bpf_xdp_attach(ctx->veth_out_ifindex, ctx->veth_egress_fd,
+                         XDP_FLAGS_DRV_MODE, &opts);
+    if (err) {
+        err = bpf_xdp_attach(ctx->veth_out_ifindex, ctx->veth_egress_fd,
+                             XDP_FLAGS_SKB_MODE, &opts);
+        if (err) {
+            fprintf(stderr, "Warning: Failed to attach XDP to veth_voq_out: %s\n",
+                    strerror(-err));
+            ctx->veth_egress_enabled = 0;
+            return 0;
+        }
+        printf("Veth egress: attached to veth_voq_out (generic mode)\n");
+    } else {
+        printf("Veth egress: attached to veth_voq_out (native mode)\n");
+    }
+    
+    printf("Veth egress path enabled: VOQd TX -> veth -> XDP -> physical NIC\n");
+    return 0;
+}
+
 /* Attach dispatcher to interfaces */
 /* Prepare interface for XDP (promiscuous mode + disable VLAN offload) */
 static int prepare_interface(const char *ifname)
@@ -1607,6 +1721,15 @@ static void cleanup(struct loader_ctx *ctx)
         bpf_object__close(ctx->egress_obj);
         printf("  Closed egress\n");
     }
+    if (ctx->veth_egress_obj) {
+        if (ctx->veth_out_ifindex > 0) {
+            LIBBPF_OPTS(bpf_xdp_attach_opts, opts);
+            bpf_xdp_detach(ctx->veth_out_ifindex, 0, &opts);
+            printf("  Detached XDP from veth_voq_out\n");
+        }
+        bpf_object__close(ctx->veth_egress_obj);
+        printf("  Closed veth_egress\n");
+    }
     
     /* Step 5: Unpin maps from BPF filesystem */
     unpin_maps();
@@ -1691,6 +1814,10 @@ int main(int argc, char **argv)
     ctx.rs_ifindex_to_port_map_fd = -1;
     ctx.rs_devmap_fd = -1;
     ctx.rs_stats_map_fd = -1;
+    ctx.veth_egress_fd = -1;
+    ctx.voq_egress_devmap_fd = -1;
+    ctx.veth_out_ifindex = 0;
+    ctx.veth_egress_enabled = 0;
     
     /* Default XDP flags */
     ctx.xdp_flags = DEFAULT_XDP_FLAGS;
@@ -1866,6 +1993,12 @@ int main(int argc, char **argv)
     
     /* Populate devmaps with queue isolation */
     populate_devmaps(&ctx);
+    
+    /* Setup veth egress path if VOQd is enabled */
+    if (ctx.use_profile && ctx.profile.voqd.enabled) {
+        ctx.veth_egress_enabled = 1;
+        setup_veth_egress(&ctx);
+    }
     
     /* Attach XDP */
     if (attach_xdp(&ctx) < 0) {
