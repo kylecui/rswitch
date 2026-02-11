@@ -188,7 +188,7 @@ int egress_vlan_xdp(struct xdp_md *ctx)
      */
     if (!rs_ctx->modified) {
         __u16 vlan_id = rs_ctx->ingress_vlan;
-        if (vlan_id == 0) vlan_id = 1;  // Default VLAN
+        if (vlan_id == 0) vlan_id = RS_DEFAULT_VLAN;
         
         rs_debug("egress_vlan: Isolation check - port %u, VLAN %u", egress_ifindex, vlan_id);
         

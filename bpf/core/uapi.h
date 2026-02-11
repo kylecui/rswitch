@@ -25,6 +25,7 @@
 #define RS_MAX_VLANS        4096    /* Maximum VLAN IDs */
 #define RS_MAX_ALLOWED_VLANS 128    /* Maximum allowed VLANs per port (trunk/hybrid) */
 #define RS_VLAN_MAX_DEPTH   2       /* Q-in-Q support (802.1ad) */
+#define RS_DEFAULT_VLAN     1       /* IEEE 802.1Q default VLAN */
 
 /* Verifier-friendly offset masks for packet access
  * 

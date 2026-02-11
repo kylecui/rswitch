@@ -100,6 +100,7 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
         // Avoid forwarding back to ingress port
         if (egress_ifindex == ctx->ifindex) {
             rs_debug("Dropping packet: egress == ingress (%d)", egress_ifindex);
+            ctx->error = RS_ERROR_NO_ROUTE;
             ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
             return XDP_DROP;
         }
@@ -135,8 +136,8 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
     // - Handle VLAN tag manipulation (add/remove based on tagged/untagged membership)
     // - Update TX statistics
     
-    __u16 vlan_id = ctx->ingress_vlan;  // Set by VLAN module
-    if (vlan_id == 0) vlan_id = 1;       // Default VLAN if not set
+    __u16 vlan_id = ctx->ingress_vlan;
+    if (vlan_id == 0) vlan_id = RS_DEFAULT_VLAN;
     
     rs_debug("Flooding: VLAN %d from port %d to all ports (egress hook will filter)", 
              vlan_id, ctx->ifindex);

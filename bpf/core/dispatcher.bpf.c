@@ -55,9 +55,8 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
     rctx->action = XDP_PASS;   /* Default action */
     rctx->timestamp = bpf_ktime_get_ns();
     
-    /* Always UNSET: classification happens in AF_XDP/QoS modules, not here */
-    rctx->prio = 0xFF;
-    (void)cfg;
+    /* Set priority from port config if available, else mark as unclassified */
+    rctx->prio = cfg ? cfg->default_prio : 0xFF;
     
     /* Parse packet layers (Ethernet → VLAN → IP → TCP/UDP)
      * ⚠️ GOLDEN RULE: ALWAYS check bounds BEFORE accessing memory

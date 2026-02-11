@@ -156,6 +156,12 @@ static int parse_module_list(FILE *fp, char ***modules, int *count, const char *
     }
     
     while (fgets(line, sizeof(line), fp)) {
+        /* Save original line length BEFORE any modification for accurate fseek
+         * BUG FIX: trim() and remove_comment() modify line in place, changing
+         * strlen(line). Using the modified length causes off-by-one seek errors.
+         */
+        size_t original_len = strlen(line);
+        
         remove_comment(line);
         char *trimmed = trim(line);
         
@@ -163,8 +169,8 @@ static int parse_module_list(FILE *fp, char ***modules, int *count, const char *
         
         /* Check if we're entering another section */
         if (strchr(trimmed, ':') && trimmed[0] != '-') {
-            /* Put the line back by seeking backwards */
-            fseek(fp, -(long)strlen(line) - 1, SEEK_CUR);
+            /* Put the line back by seeking backwards using ORIGINAL length */
+            fseek(fp, -(long)original_len, SEEK_CUR);
             break;
         }
         
@@ -199,8 +205,6 @@ static int parse_settings(FILE *fp, struct rs_profile_settings *settings)
     char line[MAX_LINE_LEN];
     char key[256], value[256];
     
-    fprintf(stderr, "DEBUG: Entering parse_settings()\n");
-    
     while (fgets(line, sizeof(line), fp)) {
         char line_copy[MAX_LINE_LEN];
         strncpy(line_copy, line, sizeof(line_copy) - 1);
@@ -213,21 +217,17 @@ static int parse_settings(FILE *fp, struct rs_profile_settings *settings)
         /* Check if we're entering another section (not indented) */
         /* Need to check the original line BEFORE trim() removed leading spaces */
         if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
-            fprintf(stderr, "DEBUG: Exiting parse_settings() - found non-indented key: %s\n", trimmed);
-            fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
+            fseek(fp, -(long)strlen(line_copy), SEEK_CUR);
             break;
         }
         
         if (parse_key_value(trimmed, key, value, sizeof(key)) == 0) {
-            fprintf(stderr, "DEBUG: parse_settings() - key='%s', value='%s'\n", key, value);
             if (strcmp(key, "mac_learning") == 0) {
                 settings->mac_learning = parse_bool(value);
-                fprintf(stderr, "DEBUG: Set mac_learning=%d\n", settings->mac_learning);
             } else if (strcmp(key, "mac_aging_time") == 0) {
                 settings->mac_aging_time = atoi(value);
             } else if (strcmp(key, "vlan_enforcement") == 0) {
                 settings->vlan_enforcement = parse_bool(value);
-                fprintf(stderr, "DEBUG: Set vlan_enforcement=%d\n", settings->vlan_enforcement);
             } else if (strcmp(key, "default_vlan") == 0) {
                 settings->default_vlan = atoi(value);
             } else if (strcmp(key, "unknown_unicast_flood") == 0) {
@@ -309,7 +309,7 @@ static int parse_port_item(FILE *fp, struct rs_profile_port *port)
         
         /* Check if we're exiting this port (another port item or section) */
         if (trimmed[0] == '-' || (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':'))) {
-            fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
+            fseek(fp, -(long)strlen(line_copy), SEEK_CUR);
             break;
         }
         
@@ -371,7 +371,7 @@ static int parse_ports(FILE *fp, struct rs_profile *profile)
         
         /* Check if we're entering another section */
         if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
-            fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
+            fseek(fp, -(long)strlen(line_copy), SEEK_CUR);
             break;
         }
         
@@ -464,7 +464,7 @@ static int parse_vlan_item(FILE *fp, struct rs_profile_vlan *vlan)
         
         /* Check if we're exiting this VLAN (another VLAN item or section) */
         if (trimmed[0] == '-' || (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':'))) {
-            fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
+            fseek(fp, -(long)strlen(line_copy), SEEK_CUR);
             break;
         }
         
@@ -495,14 +495,10 @@ static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
     char line[MAX_LINE_LEN];
     char key[256], value[256];
     
-    fprintf(stderr, "DEBUG: Entering parse_voqd_config()\n");
-    
     while (fgets(line, sizeof(line), fp)) {
         char line_copy[MAX_LINE_LEN];
         strncpy(line_copy, line, sizeof(line_copy) - 1);
         line_copy[sizeof(line_copy) - 1] = '\0';
-        
-        fprintf(stderr, "DEBUG: voqd raw line: '%s'\n", line_copy);
         
         remove_comment(line);
         char *trimmed = trim(line);
@@ -512,8 +508,7 @@ static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
         /* Check if we're entering another section (non-indented line with ':') */
         if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
             /* Rewind to start of this line */
-            fprintf(stderr, "DEBUG: voqd_config sees section boundary: '%s'\n", trimmed);
-            fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
+            fseek(fp, -(long)strlen(line_copy), SEEK_CUR);
             break;
         }
         
@@ -521,20 +516,16 @@ static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
             continue;
         }
         
-        fprintf(stderr, "DEBUG: voqd_config key='%s' value='%s'\n", key, value);
-        
         /* Parse VOQd configuration fields */
         if (strcmp(key, "enable") == 0 || strcmp(key, "enabled") == 0 || 
             strcmp(key, "enable_afxdp") == 0) {
             voqd->enabled = parse_bool(value);
             voqd->enable_afxdp = voqd->enabled;  // enable_afxdp implies enabled
         } else if (strcmp(key, "mode") == 0) {
-            fprintf(stderr, "DEBUG: Parsing mode='%s'\n", value);
             if (strcmp(value, "bypass") == 0) voqd->mode = 0;
             else if (strcmp(value, "shadow") == 0) voqd->mode = 1;
             else if (strcmp(value, "active") == 0) voqd->mode = 2;
             else voqd->mode = atoi(value);
-            fprintf(stderr, "DEBUG: Set voqd->mode=%d\n", voqd->mode);
         } else if (strcmp(key, "num_ports") == 0) {
             voqd->num_ports = atoi(value);
         } else if (strcmp(key, "prio_mask") == 0) {
@@ -588,7 +579,7 @@ static int parse_vlans(FILE *fp, struct rs_profile *profile)
         
         /* Check if we're entering another section */
         if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
-            fseek(fp, -(long)strlen(line_copy) - 1, SEEK_CUR);
+            fseek(fp, -(long)strlen(line_copy), SEEK_CUR);
             break;
         }
         
@@ -668,21 +659,14 @@ int profile_load(const char *filename, struct rs_profile *profile)
             ret = parse_settings(fp, &profile->settings);
             if (ret < 0) goto error;
         } else if (strcmp(key, "voqd_config") == 0) {
-            fprintf(stderr, "DEBUG: Found voqd_config section, calling parse_voqd_config()\n");
             ret = parse_voqd_config(fp, &profile->voqd);
-            fprintf(stderr, "DEBUG: After parse_voqd_config: mode=%d, enabled=%d, prio_mask=0x%x\n",
-                    profile->voqd.mode, profile->voqd.enabled, profile->voqd.prio_mask);
             if (ret < 0) goto error;
         } else if (strcmp(key, "ports") == 0) {
-            fprintf(stderr, "DEBUG: Parsing ports section\n");
             ret = parse_ports(fp, profile);
             if (ret < 0) goto error;
-            fprintf(stderr, "DEBUG: Parsed %d ports\n", profile->port_count);
         } else if (strcmp(key, "vlans") == 0) {
-            fprintf(stderr, "DEBUG: Parsing vlans section\n");
             ret = parse_vlans(fp, profile);
             if (ret < 0) goto error;
-            fprintf(stderr, "DEBUG: Parsed %d VLANs\n", profile->vlan_count);
         }
     }
     

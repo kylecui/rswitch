@@ -65,7 +65,7 @@ static __always_inline __u16 get_effective_vlan_id(struct rs_ctx *ctx)
     // Otherwise use port's default VLAN based on mode
     struct rs_port_config *port = rs_get_port_config(ctx->ifindex);
     if (!port)
-        return 1; // Fallback to VLAN 1
+        return RS_DEFAULT_VLAN;
     
     switch (port->vlan_mode) {
     case RS_VLAN_MODE_ACCESS:
@@ -75,7 +75,7 @@ static __always_inline __u16 get_effective_vlan_id(struct rs_ctx *ctx)
     case RS_VLAN_MODE_HYBRID:
         return port->pvid;
     default:
-        return 1;
+        return RS_DEFAULT_VLAN;
     }
 }
 

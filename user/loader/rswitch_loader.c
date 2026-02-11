@@ -132,13 +132,14 @@ struct loader_ctx {
     /* Shared maps */
     int rs_ctx_map_fd;
     int rs_progs_fd;
-    int rs_prog_chain_fd;        /* Chain map: prog_chain[my_id] = next_id */
+    int rs_prog_chain_fd;
     int rs_port_config_map_fd;
-    int rs_ifindex_to_port_map_fd;  /* Ifindex to port index mapping */
+    int rs_ifindex_to_port_map_fd;
     int rs_devmap_fd;
     int rs_stats_map_fd;
-    int rs_event_bus_fd;     /* Unified event bus (replaces per-module ringbufs) */
-    int rs_mac_table_fd;     /* MAC table from l2learn module */
+    int rs_event_bus_fd;
+    int rs_mac_table_fd;
+    int rs_vlan_map_fd;
     
     /* Configuration */
     __u32 interfaces[MAX_INTERFACES];
@@ -489,9 +490,11 @@ static int get_pinned_maps(struct loader_ctx *ctx)
     snprintf(path, sizeof(path), "%s/rs_stats_map", BPF_PIN_PATH);
     ctx->rs_stats_map_fd = bpf_obj_get(path);
     
-    /* Unified event bus is pinned by core infrastructure */
-    ctx->rs_event_bus_fd = -1;  /* Will be obtained from pinned path */
-    ctx->rs_mac_table_fd = -1;  /* Will be obtained from l2learn module */
+    snprintf(path, sizeof(path), "%s/rs_event_bus", BPF_PIN_PATH);
+    ctx->rs_event_bus_fd = bpf_obj_get(path);
+    
+    snprintf(path, sizeof(path), "%s/rs_vlan_map", BPF_PIN_PATH);
+    ctx->rs_vlan_map_fd = bpf_obj_get(path);
     
     if (ctx->rs_progs_fd < 0) {
         fprintf(stderr, "Warning: Failed to get rs_progs from /sys/fs/bpf/rs_progs\n");
@@ -518,13 +521,83 @@ static int get_pinned_maps(struct loader_ctx *ctx)
         }
     }
     
-    /* Note: rs_devmap_fd (rs_xdp_devmap) is defined in lastcall module,
-     * which hasn't been loaded yet at this point. It will be obtained later
-     * in populate_devmaps() after modules are loaded. Devmap=-1 here is expected.
-     */
+    if (ctx->rs_event_bus_fd < 0) {
+        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_event_bus");
+        if (map) {
+            ctx->rs_event_bus_fd = bpf_map__fd(map);
+        }
+    }
     
-    printf("Map FDs: rs_progs=%d, port_config=%d, devmap=%d (devmap loaded later from modules)\n",
-           ctx->rs_progs_fd, ctx->rs_port_config_map_fd, ctx->rs_devmap_fd);
+    if (ctx->rs_vlan_map_fd < 0) {
+        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_vlan_map");
+        if (map) {
+            ctx->rs_vlan_map_fd = bpf_map__fd(map);
+        }
+    }
+    
+    if (ctx->rs_stats_map_fd < 0) {
+        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_stats_map");
+        if (map) {
+            ctx->rs_stats_map_fd = bpf_map__fd(map);
+        }
+    }
+    
+    printf("Map FDs: rs_progs=%d, port_config=%d, ctx=%d, chain=%d, event_bus=%d, vlan=%d, stats=%d, devmap=%d\n",
+           ctx->rs_progs_fd, ctx->rs_port_config_map_fd, ctx->rs_ctx_map_fd, 
+           ctx->rs_prog_chain_fd, ctx->rs_event_bus_fd, ctx->rs_vlan_map_fd,
+           ctx->rs_stats_map_fd, ctx->rs_devmap_fd);
+    
+    return 0;
+}
+
+/* Helper: Reuse shared maps in a BPF object before loading
+ * 
+ * CRITICAL: This must be called after bpf_object__open_file() but BEFORE bpf_object__load()!
+ * 
+ * Maps with LIBBPF_PIN_BY_NAME in BPF source are pinned by the dispatcher when it loads.
+ * However, subsequent module loads create NEW map instances instead of reusing pinned ones.
+ * 
+ * The fix: For each shared map, we:
+ * 1. Call bpf_map__set_autocreate(map, false) to prevent creating a new instance
+ * 2. Call bpf_map__reuse_fd(map, fd) with the FD from the already-pinned map
+ * 
+ * This ensures all modules share the SAME map instances as the dispatcher.
+ */
+static int reuse_shared_maps(struct bpf_object *obj, struct loader_ctx *ctx)
+{
+    struct bpf_map *map;
+    int err;
+    const char *names_to_reuse[] = {
+        "rs_ctx_map", "rs_progs", "rs_prog_chain", "rs_port_config_map",
+        "rs_ifindex_to_port_map", "rs_stats_map", "rs_event_bus", 
+        "rs_vlan_map", "rs_devmap", "rs_xdp_devmap"
+    };
+    int fds_to_reuse[] = {
+        ctx->rs_ctx_map_fd, ctx->rs_progs_fd, ctx->rs_prog_chain_fd, 
+        ctx->rs_port_config_map_fd, ctx->rs_ifindex_to_port_map_fd, 
+        ctx->rs_stats_map_fd, ctx->rs_event_bus_fd, ctx->rs_vlan_map_fd, 
+        ctx->rs_devmap_fd, ctx->rs_devmap_fd
+    };
+    int num_maps = sizeof(names_to_reuse) / sizeof(names_to_reuse[0]);
+    
+    for (int i = 0; i < num_maps; i++) {
+        if (fds_to_reuse[i] <= 0)
+            continue;
+            
+        map = bpf_object__find_map_by_name(obj, names_to_reuse[i]);
+        if (!map)
+            continue;
+        
+        err = bpf_map__reuse_fd(map, fds_to_reuse[i]);
+        if (err) {
+            fprintf(stderr, "  reuse_fd failed for %s (fd=%d): %s\n",
+                    names_to_reuse[i], fds_to_reuse[i], strerror(-err));
+            continue;
+        }
+        
+        fprintf(stderr, "  Reusing %s with fd=%d (map_fd after=%d)\n", 
+                names_to_reuse[i], fds_to_reuse[i], bpf_map__fd(map));
+    }
     
     return 0;
 }
@@ -537,13 +610,27 @@ static int load_modules(struct loader_ctx *ctx)
     for (i = 0; i < ctx->num_modules; i++) {
         struct loaded_module *mod = &ctx->modules[i];
         
-        /* Open BPF object */
-        mod->obj = bpf_object__open(mod->path);
+        /* Open BPF object with pin_root_path so LIBBPF_PIN_BY_NAME maps are reused */
+        LIBBPF_OPTS(bpf_object_open_opts, opts,
+            .pin_root_path = "/sys/fs/bpf",
+        );
+        mod->obj = bpf_object__open_file(mod->path, &opts);
         err = libbpf_get_error(mod->obj);
         if (err) {
             fprintf(stderr, "Failed to open module %s: %s\n", 
                     mod->name, strerror(-err));
             continue;
+        }
+        
+        /* CRITICAL: Reuse shared maps BEFORE loading!
+         * Without this, each module creates its own copies of rs_ctx_map, rs_progs, etc.
+         * which breaks the tail-call pipeline since modules aren't in the dispatcher's prog_array.
+         */
+        fprintf(stderr, "[%s] Calling reuse_shared_maps...\n", mod->name);
+        err = reuse_shared_maps(mod->obj, ctx);
+        if (err) {
+            fprintf(stderr, "Warning: Failed to reuse shared maps for %s\n", mod->name);
+            /* Continue anyway - module may work with its own maps */
         }
         
         /* Load BPF object */

@@ -1,0 +1,23 @@
+[Unit]
+Description=rSwitch XDP-based Software Switch
+After=network.target network-online.target
+Wants=network-online.target
+Documentation=https://github.com/rswitch
+
+[Service]
+Type=forking
+ExecStartPre=/opt/rswitch/scripts/rswitch-init.sh prepare
+ExecStart=/opt/rswitch/scripts/rswitch-init.sh start
+ExecStop=/opt/rswitch/scripts/rswitch-init.sh stop
+ExecReload=/opt/rswitch/scripts/rswitch-init.sh reload
+PIDFile=/run/rswitch/rswitch_loader.pid
+Restart=on-failure
+RestartSec=5
+LimitMEMLOCK=infinity
+LimitNOFILE=65535
+Environment=RSWITCH_HOME=/opt/rswitch
+Environment=RSWITCH_PROFILE=all-modules-test.yaml
+Environment=RSWITCH_INTERFACES=ens34,ens35,ens36,ens37
+
+[Install]
+WantedBy=multi-user.target

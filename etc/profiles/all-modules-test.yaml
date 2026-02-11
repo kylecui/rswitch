@@ -1,0 +1,105 @@
+name: all-modules-test
+description: "Comprehensive test profile with ALL available modules enabled"
+version: "1.0"
+
+ingress:
+  - vlan
+  - arp_learn
+  - acl
+  - mirror
+  - route
+  - l2learn
+  - afxdp_redirect
+  - lastcall
+
+egress:
+  - egress_qos
+  - egress_vlan
+  - egress_final
+
+settings:
+  mac_learning: true
+  mac_aging_time: 300
+  vlan_enforcement: true
+  default_vlan: 1
+  qos_enabled: true
+  qos_default_prio: 1
+  afxdp_redirect_enabled: true
+  afxdp_prio_mask: 0x0C
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  stats_enabled: true
+  ringbuf_enabled: true
+  debug: false
+
+ports:
+  - interface: ens34
+    vlan_mode: trunk
+    allowed_vlans: [1, 10, 20]
+    native_vlan: 1
+    mac_learning: true
+    default_priority: 1
+    qos_config:
+      enable_afxdp: true
+      prio_mask: 0x0C
+
+  - interface: ens35
+    vlan_mode: access
+    access_vlan: 10
+    mac_learning: true
+    default_priority: 1
+    qos_config:
+      enable_afxdp: true
+      prio_mask: 0x0C
+
+  - interface: ens36
+    vlan_mode: access
+    access_vlan: 1
+    mac_learning: true
+    default_priority: 1
+    qos_config:
+      enable_afxdp: true
+      prio_mask: 0x0C
+
+  - interface: ens37
+    vlan_mode: access
+    access_vlan: 1
+    mac_learning: true
+    default_priority: 1
+    qos_config:
+      enable_afxdp: true
+      prio_mask: 0x0C
+
+voqd_config:
+  mode: active
+  num_ports: 4
+  prio_mask: 0x0C
+  enable_afxdp: true
+  zero_copy: false
+  rx_ring_size: 2048
+  tx_ring_size: 2048
+  frame_size: 2048
+  batch_size: 256
+  poll_timeout_ms: 100
+  busy_poll: false
+  cpu_affinity: -1
+  enable_scheduler: true
+  use_veth_egress: true
+  veth_in_ifname: veth_voq_in
+
+vlans:
+  - vlan_id: 1
+    name: "management"
+    untagged_ports: [ens36, ens37]
+    tagged_ports: [ens34]
+
+  - vlan_id: 10
+    name: "client"
+    untagged_ports: [ens35]
+    tagged_ports: [ens34]
+
+  - vlan_id: 20
+    name: "test"
+    untagged_ports: []
+    tagged_ports: [ens34]

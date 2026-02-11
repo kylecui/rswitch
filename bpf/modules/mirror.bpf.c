@@ -1,19 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
-/* 
- * rSwitch Mirror (SPAN) Module
- * 
- * Implements port mirroring for traffic analysis and monitoring:
- * - SPAN (Switched Port Analyzer): Mirror traffic to monitoring port
- * - Ingress mirroring: Copy ingress packets
- * - Egress mirroring: Copy egress packets (via devmap egress hook)
- * - Filtered mirroring: Mirror only specific VLANs or protocols
- * 
- * Features:
- * - Single mirror destination port per switch
- * - VLAN-based filtering
- * - Protocol-based filtering
- * - Per-port mirror enable/disable
- * - Statistics (mirrored packets/bytes)
+/*
+ * rSwitch Mirror (SPAN) Module - Enhanced Version
+ *
+ * Advanced port mirroring with comprehensive filtering and pcap capture.
+ * Supports mirroring to SPAN port or ring buffer for userspace pcap capture.
  */
 
 #include "../include/rswitch_common.h"
@@ -21,51 +11,101 @@
 
 char _license[] SEC("license") = "GPL";
 
-// Module metadata
 RS_DECLARE_MODULE(
-    "mirror",                        // Module name
-    RS_HOOK_XDP_INGRESS,            // Hook point (ingress mirroring)
-    45,                              // Stage (after ACL, before L2Learn)
+    "mirror",
+    RS_HOOK_XDP_INGRESS,
+    45,
     RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_CREATES_EVENTS,
-    "Port mirroring (SPAN) for traffic analysis"
+    "Port mirroring (SPAN) with advanced filtering"
 );
 
-//
-// Data Structures
-//
+#define MIRROR_MAX_RULES        64
+#define MIRROR_PCAP_MAX_SIZE    1514
 
-// Mirror configuration
+enum mirror_filter_type {
+    MIRROR_FILTER_NONE = 0,
+    MIRROR_FILTER_SRC_MAC,
+    MIRROR_FILTER_DST_MAC,
+    MIRROR_FILTER_SRC_IP,
+    MIRROR_FILTER_DST_IP,
+    MIRROR_FILTER_PROTOCOL,
+    MIRROR_FILTER_SRC_PORT,
+    MIRROR_FILTER_DST_PORT,
+    MIRROR_FILTER_VLAN,
+    MIRROR_FILTER_IFINDEX,
+    MIRROR_FILTER_NETFLOW,
+};
+
+enum mirror_direction {
+    MIRROR_DIR_BOTH = 0,
+    MIRROR_DIR_INGRESS = 1,
+    MIRROR_DIR_EGRESS = 2,
+};
+
+struct mirror_filter_rule {
+    __u32 id;
+    __u8 enabled;
+    __u8 filter_type;
+    __u8 direction;
+    __u8 negate;
+
+    union {
+        __u8 mac[6];
+        __be32 ip;
+        __be16 l4_port;
+        __u16 vlan;
+        __u32 ifindex;
+        __u8 protocol;
+        struct {
+            __be32 src_ip;
+            __be32 dst_ip;
+            __be16 src_port;
+            __be16 dst_port;
+            __u8 protocol;
+            __u8 _pad[3];
+        } netflow;
+    } match;
+
+    __u32 _pad;
+    __u64 match_count;
+};
+
 struct mirror_config {
-    __u32 span_port;         // Destination port for mirrored traffic (ifindex)
-    __u8 ingress_enabled;    // Enable ingress mirroring
-    __u8 egress_enabled;     // Enable egress mirroring
-    __u8 enabled;            // Global mirror enable/disable
-    __u8 _pad;
-    
-    // Filters
-    __u16 vlan_filter;       // Filter by VLAN ID (0 = mirror all VLANs)
-    __u16 protocol_filter;   // Filter by Ethertype (0 = mirror all protocols)
-    
-    // Statistics
+    __u32 enabled;
+    __u32 span_port;
+
+    __u8 ingress_enabled;
+    __u8 egress_enabled;
+    __u8 pcap_enabled;
+    __u8 filter_mode;
+
+    __u16 vlan_filter;
+    __u16 protocol_filter;
+
     __u64 ingress_mirrored_packets;
     __u64 ingress_mirrored_bytes;
     __u64 egress_mirrored_packets;
     __u64 egress_mirrored_bytes;
-    __u64 mirror_drops;      // Packets that couldn't be mirrored
+    __u64 mirror_drops;
+    __u64 pcap_packets;
 };
 
-// Per-port mirror configuration
 struct port_mirror_config {
-    __u8 mirror_ingress;     // Mirror this port's ingress traffic
-    __u8 mirror_egress;      // Mirror this port's egress traffic
-    __u8 _pad[6];
+    __u8 mirror_ingress;
+    __u8 mirror_egress;
+    __u16 _reserved;
 };
 
-//
-// BPF Maps
-//
+struct mirror_pcap_event {
+    __u64 timestamp;
+    __u32 ifindex;
+    __u32 pkt_len;
+    __u32 cap_len;
+    __u8 direction;
+    __u8 _pad[3];
+    __u8 data[MIRROR_PCAP_MAX_SIZE];
+};
 
-// Global mirror configuration
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
@@ -74,16 +114,22 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } mirror_config_map SEC(".maps");
 
-// Per-port mirror configuration
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 256);        // Up to 256 ports
-    __type(key, __u32);              // Port ifindex
+    __uint(max_entries, 256);
+    __type(key, __u32);
     __type(value, struct port_mirror_config);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } port_mirror_map SEC(".maps");
 
-// Mirror statistics (per-CPU)
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, MIRROR_MAX_RULES);
+    __type(key, __u32);
+    __type(value, struct mirror_filter_rule);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} mirror_filter_rules SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
@@ -92,9 +138,12 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } mirror_stats SEC(".maps");
 
-// Reference to tx_port map (for packet redirection)
-// This should be populated by loader to point to the same devmap
-// used by lastcall module
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 1 << 24);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} mirror_pcap_rb SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_DEVMAP);
     __uint(max_entries, 256);
@@ -102,46 +151,212 @@ struct {
     __type(value, __u32);
 } tx_port SEC(".maps");
 
-//
-// Helper Functions
-//
+static __always_inline int mac_equal(const __u8 *a, const __u8 *b)
+{
+    return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] &&
+           a[3] == b[3] && a[4] == b[4] && a[5] == b[5];
+}
 
-// Check if packet should be mirrored based on filters
-static __always_inline int should_mirror(struct xdp_md *ctx,
-                                        struct mirror_config *config,
-                                        __u16 vlan_id)
+static __always_inline int check_filter_rule(struct xdp_md *ctx,
+                                             struct mirror_filter_rule *rule,
+                                             int is_ingress,
+                                             __u32 ifindex)
 {
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
-    
-    // Parse Ethernet header
+
+    if (!rule->enabled)
+        return -1;
+
+    if (rule->direction == MIRROR_DIR_INGRESS && !is_ingress)
+        return -1;
+    if (rule->direction == MIRROR_DIR_EGRESS && is_ingress)
+        return -1;
+
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end)
-        return 0;
-    
-    __u16 eth_proto = bpf_ntohs(eth->h_proto);
-    
-    // Check VLAN filter
-    if (config->vlan_filter != 0 && config->vlan_filter != vlan_id)
-        return 0;
-    
-    // Check protocol filter
-    if (config->protocol_filter != 0 && config->protocol_filter != eth_proto)
-        return 0;
-    
-    return 1;  // Should mirror
+        return -1;
+
+    int matched = 0;
+
+    switch (rule->filter_type) {
+    case MIRROR_FILTER_SRC_MAC:
+        matched = mac_equal(eth->h_source, rule->match.mac);
+        break;
+
+    case MIRROR_FILTER_DST_MAC:
+        matched = mac_equal(eth->h_dest, rule->match.mac);
+        break;
+
+    case MIRROR_FILTER_IFINDEX:
+        matched = (ifindex == rule->match.ifindex);
+        break;
+
+    case MIRROR_FILTER_VLAN: {
+        __u16 eth_proto = bpf_ntohs(eth->h_proto);
+        if (eth_proto == ETH_P_8021Q) {
+            struct vlan_hdr *vhdr = (void *)(eth + 1);
+            if ((void *)(vhdr + 1) <= data_end) {
+                __u16 vlan_id = bpf_ntohs(vhdr->h_vlan_TCI) & 0x0FFF;
+                matched = (vlan_id == rule->match.vlan);
+            }
+        }
+        break;
+    }
+
+    case MIRROR_FILTER_PROTOCOL:
+    case MIRROR_FILTER_SRC_IP:
+    case MIRROR_FILTER_DST_IP:
+    case MIRROR_FILTER_SRC_PORT:
+    case MIRROR_FILTER_DST_PORT:
+    case MIRROR_FILTER_NETFLOW: {
+        __u16 eth_proto = bpf_ntohs(eth->h_proto);
+        void *l3_hdr = (void *)(eth + 1);
+
+        if (eth_proto == ETH_P_8021Q) {
+            struct vlan_hdr *vhdr = l3_hdr;
+            if ((void *)(vhdr + 1) > data_end)
+                return -1;
+            eth_proto = bpf_ntohs(vhdr->h_vlan_encapsulated_proto);
+            l3_hdr = (void *)(vhdr + 1);
+        }
+
+        if (eth_proto != ETH_P_IP)
+            return -1;
+
+        struct iphdr *iph = l3_hdr;
+        if ((void *)(iph + 1) > data_end)
+            return -1;
+
+        if (rule->filter_type == MIRROR_FILTER_PROTOCOL) {
+            matched = (iph->protocol == rule->match.protocol);
+        } else if (rule->filter_type == MIRROR_FILTER_SRC_IP) {
+            matched = (iph->saddr == rule->match.ip);
+        } else if (rule->filter_type == MIRROR_FILTER_DST_IP) {
+            matched = (iph->daddr == rule->match.ip);
+        } else {
+            if (iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_UDP)
+                return -1;
+
+            __u32 ihl = iph->ihl * 4;
+            if (ihl < 20 || ihl > 60)
+                return -1;
+
+            void *l4_hdr = l3_hdr + ihl;
+            struct udphdr *udph = l4_hdr;
+            if ((void *)(udph + 1) > data_end)
+                return -1;
+
+            if (rule->filter_type == MIRROR_FILTER_SRC_PORT) {
+                matched = (udph->source == rule->match.l4_port);
+            } else if (rule->filter_type == MIRROR_FILTER_DST_PORT) {
+                matched = (udph->dest == rule->match.l4_port);
+            } else {
+                matched = (iph->saddr == rule->match.netflow.src_ip ||
+                          rule->match.netflow.src_ip == 0) &&
+                         (iph->daddr == rule->match.netflow.dst_ip ||
+                          rule->match.netflow.dst_ip == 0) &&
+                         (udph->source == rule->match.netflow.src_port ||
+                          rule->match.netflow.src_port == 0) &&
+                         (udph->dest == rule->match.netflow.dst_port ||
+                          rule->match.netflow.dst_port == 0) &&
+                         (iph->protocol == rule->match.netflow.protocol ||
+                          rule->match.netflow.protocol == 0);
+            }
+        }
+        break;
+    }
+
+    default:
+        return -1;
+    }
+
+    if (rule->negate)
+        matched = !matched;
+
+    return matched ? 1 : 0;
 }
 
-// Update mirror statistics
-static __always_inline void update_mirror_stats(int is_ingress, __u32 packet_len)
+static __always_inline int check_all_filters(struct xdp_md *ctx,
+                                             struct mirror_config *config,
+                                             int is_ingress,
+                                             __u32 ifindex,
+                                             __u16 vlan_id)
 {
-    __u32 key = 0;
-    struct mirror_config *config;
-    
-    config = bpf_map_lookup_elem(&mirror_config_map, &key);
-    if (!config)
+    if (config->vlan_filter != 0 && config->vlan_filter != vlan_id)
+        return 0;
+
+    if (config->protocol_filter != 0) {
+        void *data_end = (void *)(long)ctx->data_end;
+        void *data = (void *)(long)ctx->data;
+        struct ethhdr *eth = data;
+        if ((void *)(eth + 1) > data_end)
+            return 0;
+        __u16 eth_proto = bpf_ntohs(eth->h_proto);
+        if (config->protocol_filter != eth_proto)
+            return 0;
+    }
+
+    int has_rules = 0;
+    int any_match = 0;
+
+    #pragma unroll
+    for (__u32 i = 0; i < 16; i++) {
+        __u32 key = i;
+        struct mirror_filter_rule *rule = bpf_map_lookup_elem(&mirror_filter_rules, &key);
+        if (!rule || !rule->enabled)
+            continue;
+
+        has_rules = 1;
+        int result = check_filter_rule(ctx, rule, is_ingress, ifindex);
+        if (result == 1) {
+            __sync_fetch_and_add(&rule->match_count, 1);
+            any_match = 1;
+        }
+    }
+
+    return has_rules ? any_match : 1;
+}
+
+static __always_inline void send_to_pcap_ringbuf(struct xdp_md *ctx,
+                                                  struct mirror_config *config,
+                                                  int is_ingress,
+                                                  __u32 ifindex)
+{
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(long)ctx->data;
+    __u32 pkt_len = data_end - data;
+    __u32 cap_len = pkt_len;
+
+    if (cap_len > MIRROR_PCAP_MAX_SIZE)
+        cap_len = MIRROR_PCAP_MAX_SIZE;
+
+    struct mirror_pcap_event *event;
+    event = bpf_ringbuf_reserve(&mirror_pcap_rb, sizeof(*event), 0);
+    if (!event)
         return;
-    
+
+    event->timestamp = bpf_ktime_get_ns();
+    event->ifindex = ifindex;
+    event->pkt_len = pkt_len;
+    event->cap_len = cap_len;
+    event->direction = is_ingress ? MIRROR_DIR_INGRESS : MIRROR_DIR_EGRESS;
+
+    if (cap_len > 0 && cap_len <= MIRROR_PCAP_MAX_SIZE) {
+        if (bpf_probe_read_kernel(event->data, cap_len, data) < 0) {
+            bpf_ringbuf_discard(event, 0);
+            return;
+        }
+    }
+
+    bpf_ringbuf_submit(event, 0);
+    __sync_fetch_and_add(&config->pcap_packets, 1);
+}
+
+static __always_inline void update_mirror_stats(struct mirror_config *config,
+                                                 int is_ingress,
+                                                 __u32 packet_len)
+{
     if (is_ingress) {
         __sync_fetch_and_add(&config->ingress_mirrored_packets, 1);
         __sync_fetch_and_add(&config->ingress_mirrored_bytes, packet_len);
@@ -149,8 +364,8 @@ static __always_inline void update_mirror_stats(int is_ingress, __u32 packet_len
         __sync_fetch_and_add(&config->egress_mirrored_packets, 1);
         __sync_fetch_and_add(&config->egress_mirrored_bytes, packet_len);
     }
-    
-    // Also update per-CPU stats
+
+    __u32 key = 0;
     struct rs_stats *stats = bpf_map_lookup_elem(&mirror_stats, &key);
     if (stats) {
         __sync_fetch_and_add(&stats->rx_packets, 1);
@@ -158,164 +373,102 @@ static __always_inline void update_mirror_stats(int is_ingress, __u32 packet_len
     }
 }
 
-// Mirror packet to SPAN port
-// Note: XDP doesn't support native packet cloning like TC bpf_clone_redirect().
-// Instead, we use bpf_redirect_map() to forward a copy to the SPAN port via tx_port devmap.
-// This is a "tee" operation - the original packet continues through the pipeline.
-//
-// Implementation: We send metadata to user-space via ringbuf to indicate
-// that the packet should be mirrored. User-space (voqd or dedicated mirror daemon)
-// can then capture the packet via AF_XDP and replicate it to the SPAN port.
-//
-// For true kernel-space mirroring, we would need:
-// 1. TC-based mirroring (using bpf_clone_redirect), OR
-// 2. Custom mirroring via devmap egress hook that duplicates packets
-//
-// Current implementation: Simplified - just redirect to SPAN port without cloning.
-// This means we "tap" the packet but don't duplicate it (packet is moved, not copied).
-static __always_inline int mirror_packet(struct xdp_md *ctx,
-                                         struct mirror_config *config,
-                                         int is_ingress,
-                                         __u32 orig_ifindex)
+static __always_inline int do_mirror(struct xdp_md *ctx,
+                                      struct mirror_config *config,
+                                      int is_ingress,
+                                      __u32 orig_ifindex)
 {
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
     __u32 packet_len = data_end - data;
-    
-    // For simplicity: Redirect to SPAN port
-    // Limitation: This "steals" the packet rather than cloning it
-    // TODO: Implement true mirroring via AF_XDP or TC
+
+    if (config->pcap_enabled)
+        send_to_pcap_ringbuf(ctx, config, is_ingress, orig_ifindex);
+
+    update_mirror_stats(config, is_ingress, packet_len);
+
+    if (config->span_port == 0)
+        return 0;
+
     long ret = bpf_redirect_map(&tx_port, config->span_port, 0);
-    
-    if (ret == XDP_REDIRECT) {
-        // Update statistics
-        update_mirror_stats(is_ingress, packet_len);
-        
-        rs_debug("Mirrored packet: len=%u, span_port=%u, ingress=%d, orig_if=%u",
-                packet_len, config->span_port, is_ingress, orig_ifindex);
-        
-        return 0;  // Success
-    } else {
-        // Failed to redirect
+    if (ret != XDP_REDIRECT) {
         __sync_fetch_and_add(&config->mirror_drops, 1);
-        rs_debug("Mirror failed: span_port=%u, ret=%ld", config->span_port, ret);
         return -1;
     }
-}
 
-//
-// Main Mirror Processing (Ingress)
-//
+    return 0;
+}
 
 SEC("xdp")
-int mirror_ingress(struct xdp_md *ctx)
+int mirror_ingress(struct xdp_md *xdp_ctx)
 {
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data = (void *)(long)ctx->data;
-    
-    // Get global mirror configuration
+    struct rs_ctx *rs_ctx = RS_GET_CTX();
+    if (!rs_ctx) {
+        rs_debug("Mirror: Failed to get rs_ctx");
+        return XDP_DROP;
+    }
+
     __u32 cfg_key = 0;
     struct mirror_config *config;
-    
+
     config = bpf_map_lookup_elem(&mirror_config_map, &cfg_key);
-    if (!config || !config->enabled || !config->ingress_enabled)
-        return XDP_PASS;  // Mirroring disabled
-    
-    // Check if SPAN port is configured
-    if (config->span_port == 0)
-        return XDP_PASS;
-    
-    // Get per-port configuration
-    __u32 ifindex = ctx->ingress_ifindex;
+    if (!config || !config->enabled || !config->ingress_enabled) {
+        RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);
+        return XDP_DROP;
+    }
+
+    if (config->span_port == 0 && !config->pcap_enabled) {
+        RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);
+        return XDP_DROP;
+    }
+
+    __u32 ifindex = xdp_ctx->ingress_ifindex;
     struct port_mirror_config *port_config;
-    
+
     port_config = bpf_map_lookup_elem(&port_mirror_map, &ifindex);
-    if (!port_config || !port_config->mirror_ingress)
-        return XDP_PASS;  // This port not configured for ingress mirroring
-    
-    // Don't mirror packets from SPAN port itself (avoid loop)
-    if (ifindex == config->span_port)
-        return XDP_PASS;
-    
-    // Get VLAN ID (if available from context)
-    __u16 vlan_id = 0;  // TODO: Extract from rs_ctx if available
-    
-    // Check filters
-    if (!should_mirror(ctx, config, vlan_id))
-        return XDP_PASS;
-    
-    // Mirror the packet (ifindex already defined above)
-    mirror_packet(ctx, config, 1, ifindex);
-    
-    // Continue normal processing (don't consume the packet)
-    return XDP_PASS;
+    if (!port_config || !port_config->mirror_ingress) {
+        RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);
+        return XDP_DROP;
+    }
+
+    if (ifindex == config->span_port) {
+        RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);
+        return XDP_DROP;
+    }
+
+    __u16 vlan_id = 0;
+
+    if (!check_all_filters(xdp_ctx, config, 1, ifindex, vlan_id)) {
+        RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);
+        return XDP_DROP;
+    }
+
+    do_mirror(xdp_ctx, config, 1, ifindex);
+
+    RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);
+    return XDP_DROP;
 }
 
-//
-// Egress Mirroring (via devmap egress program)
-//
-
-SEC("xdp_devmap/egress")
+SEC("xdp/devmap")
 int mirror_egress(struct xdp_md *ctx)
 {
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data = (void *)(long)ctx->data;
-    
-    // Get global mirror configuration
     __u32 cfg_key = 0;
     struct mirror_config *config;
-    
+
     config = bpf_map_lookup_elem(&mirror_config_map, &cfg_key);
     if (!config || !config->enabled || !config->egress_enabled)
-        return XDP_PASS;  // Egress mirroring disabled
-    
-    // Check if SPAN port is configured
-    if (config->span_port == 0)
         return XDP_PASS;
-    
-    // Get egress port (from context or devmap)
-    // Note: In devmap egress, we don't have direct access to egress ifindex
-    // This would need to be stored in per-packet metadata
-    // For now, mirror all egress traffic
-    
-    // Don't mirror packets to SPAN port itself
-    // (This check would need egress port info)
-    
-    // Get VLAN ID
+
+    if (config->span_port == 0 && !config->pcap_enabled)
+        return XDP_PASS;
+
     __u16 vlan_id = 0;
-    
-    // Check filters
-    if (!should_mirror(ctx, config, vlan_id))
+    __u32 ifindex = ctx->egress_ifindex;
+
+    if (!check_all_filters(ctx, config, 0, ifindex, vlan_id))
         return XDP_PASS;
-    
-    // Get egress interface index (from devmap context)
-    // Note: XDP devmap programs don't have direct egress ifindex
-    // We use rx_queue_index as a proxy (not perfect)
-    __u32 ifindex = ctx->rx_queue_index;  // Approximation
-    
-    // Mirror the packet
-    mirror_packet(ctx, config, 0, ifindex);
-    
+
+    do_mirror(ctx, config, 0, ifindex);
+
     return XDP_PASS;
 }
-
-//
-// Helper program for user-space control
-//
-
-// Note: User-space tools can use the following to control mirroring:
-// 
-// 1. Enable/disable global mirroring:
-//    Update mirror_config_map[0].enabled
-//
-// 2. Set SPAN port:
-//    Update mirror_config_map[0].span_port = <ifindex>
-//
-// 3. Enable/disable per-port mirroring:
-//    Update port_mirror_map[<ifindex>].mirror_ingress/egress
-//
-// 4. Set filters:
-//    Update mirror_config_map[0].vlan_filter or protocol_filter
-//
-// 5. Get statistics:
-//    Read mirror_config_map[0] for packet/byte counts
