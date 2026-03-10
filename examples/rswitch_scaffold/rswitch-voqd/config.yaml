@@ -1,0 +1,7 @@
+ports:
+  "1":
+    prio:
+      "0": { quantum: 1500, rate_bps: 2000000 }
+      "1": { quantum: 3000, rate_bps: 5000000 }
+      "2": { quantum: 6000, rate_bps: 8000000 }
+      "3": { quantum: 9000, rate_bps: 10000000 }

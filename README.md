@@ -427,20 +427,31 @@ RS_EMIT_EVENT(&evt, sizeof(evt));
 
 ## 📚 Documentation
 
-### 📖 Getting Started
-- **[Quick Start](docs/Quick_Start.md)** - Minimal steps to build and run
-- **[How To Use](docs/How_To_Use.md)** - Practical usage examples and commands
-- **[Design Philosophy](docs/Design_Philosophy.md)** - High-level architecture and principles
+> 📖 [Full Documentation Index](docs/Documentation_Index.md) · [中文文档](docs/zh-CN/)
 
-### 🛠️ Development Guides
-- **[Module Developer Guide](docs/Module_Developer_Guide.md)** - Complete guide for authoring modules
-- **[Development Guide](docs/Development_Guide.md)** - Consolidated development roadmap and best practices
-- **[Migration Guide](docs/Migration_Guide.md)** - Comprehensive deployment and development guide
+### 📘 Usage
+- **[Quick Start](docs/usage/Quick_Start.md)** — Build, run, and verify in 5 minutes
+- **[How To Use](docs/usage/How_To_Use.md)** — Practical usage examples and workflows
+- **[Scenario Profiles](docs/usage/Scenario_Profiles.md)** — All 18 YAML profiles explained
+- **[CLI Reference](docs/usage/CLI_Reference.md)** — Complete CLI tool reference
+- **[Troubleshooting](docs/usage/Troubleshooting.md)** — Diagnostics and common issues
 
-### ⚙️ Configuration & Scenarios
-- **[Scenario Profiles](docs/Scenario_Profiles.md)** - Common YAML profiles and best practices
-- **[VOQd Auto Start](docs/VOQd_Auto_Start.md)** - VOQd configuration and deployment
-- **[Documentation Index](docs/Documentation_Index.md)** - Complete documentation overview
+### 📦 Deployment
+- **[Installation](docs/deployment/Installation.md)** — Build from source, dependencies, kernel requirements
+- **[Configuration](docs/deployment/Configuration.md)** — YAML profile structure and settings reference
+- **[VOQd Setup](docs/deployment/VOQd_Setup.md)** — QoS scheduler modes, AF_XDP, software queues
+- **[NIC Configuration](docs/deployment/NIC_Configuration.md)** — NIC-specific setup (i40e, mlx5, hv_netvsc)
+- **[Systemd Integration](docs/deployment/Systemd_Integration.md)** — Service units and production deployment
+
+### 🛠️ Development
+- **[Architecture](docs/development/Architecture.md)** — Dual-pipeline architecture deep-dive
+- **[Module Developer Guide](docs/development/Module_Developer_Guide.md)** — Complete module authoring guide
+- **[API Reference](docs/development/API_Reference.md)** — Macros, structs, maps, helpers, flags
+- **[CO-RE Guide](docs/development/CO-RE_Guide.md)** — Cross-kernel portability guide
+- **[Contributing](docs/development/Contributing.md)** — Contribution workflow and standards
+
+### 📋 Backlog
+- **[Platform](docs/backlog/platform-backlog.md)** · **[API & SDK](docs/backlog/api-backlog.md)** · **[Product](docs/backlog/product-backlog.md)** · **[Ecosystem](docs/backlog/ecosystem-backlog.md)**
 
 ### 📁 Project Structure
 ```
@@ -463,7 +474,7 @@ We welcome contributions! Please see our development documentation for details o
 ### Development Workflow
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes following our [Module Developer Guide](docs/Module_Developer_Guide.md)
+3. Make your changes following our [Module Developer Guide](docs/development/Module_Developer_Guide.md)
 4. Add tests and documentation
 5. Submit a pull request
 
