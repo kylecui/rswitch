@@ -88,6 +88,18 @@ voqd_config:
   use_veth_egress: true
   veth_in_ifname: veth_voq_in
 
+management:
+  enabled: true
+  port: 8080
+  web_root: /home/kylecui/dev/rswitch/web
+  use_namespace: true
+  namespace_name: rswitch-mgmt
+  iface_mode: dhcp
+  mgmt_vlan: 1
+  auth_enabled: true
+  auth_user: admin
+  auth_password: rswitch
+
 vlans:
   - vlan_id: 1
     name: "management"

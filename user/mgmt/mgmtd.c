@@ -28,6 +28,7 @@
 #include <linux/limits.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <net/if.h>
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
@@ -132,6 +133,7 @@ struct mgmtd_ctx {
 	struct mgmtd_config cfg;
 	struct rs_mgmt_iface_config mgmt_cfg;
 	struct timespec start_ts;
+	int loader_managed_veth;
 };
 
 static volatile sig_atomic_t g_running = 1;
@@ -2307,8 +2309,14 @@ int main(int argc, char **argv)
 	signal(SIGTERM, handle_signal);
 
 	if (g_ctx.cfg.use_namespace) {
-		if (rs_mgmt_iface_create(&g_ctx.mgmt_cfg) != 0)
-			RS_LOG_WARN("Management namespace create failed");
+		__u32 existing = if_nametoindex(g_ctx.mgmt_cfg.veth_host);
+		if (existing) {
+			RS_LOG_INFO("mgmt-br exists (ifindex=%u), loader-managed mode", existing);
+			g_ctx.loader_managed_veth = 1;
+		} else {
+			if (rs_mgmt_iface_create(&g_ctx.mgmt_cfg) != 0)
+				RS_LOG_WARN("Management namespace create failed");
+		}
 		if (rs_mgmt_iface_obtain_ip(&g_ctx.mgmt_cfg) != 0)
 			RS_LOG_WARN("Management IP obtain failed");
 	}
@@ -2321,7 +2329,7 @@ int main(int argc, char **argv)
 		RS_LOG_ERROR("Failed to listen on %s", g_ctx.cfg.listen_addr);
 		mg_mgr_free(&mgr);
 		mgmtd_maps_close();
-		if (g_ctx.cfg.use_namespace)
+		if (g_ctx.cfg.use_namespace && !g_ctx.loader_managed_veth)
 			rs_mgmt_iface_destroy(&g_ctx.mgmt_cfg);
 		return 1;
 	}
@@ -2335,7 +2343,7 @@ int main(int argc, char **argv)
 	mg_mgr_free(&mgr);
 	mgmtd_maps_close();
 
-	if (g_ctx.cfg.use_namespace)
+	if (g_ctx.cfg.use_namespace && !g_ctx.loader_managed_veth)
 		rs_mgmt_iface_destroy(&g_ctx.mgmt_cfg);
 
 	return 0;

@@ -23,7 +23,9 @@ void rs_mgmt_iface_default_config(struct rs_mgmt_iface_config *cfg);
 
 /*
  * Create management namespace and veth pair.
- * Sets up NAT/forwarding so management traffic can reach the device.
+ * The host-side veth (mgmt-br) is left unconfigured — the rswitch loader
+ * registers it in the XDP pipeline (devmap, port_config, VLAN membership)
+ * so that L2 forwarding reaches it through the same BPF path as physical ports.
  * Returns 0 on success, negative errno on failure.
  */
 int rs_mgmt_iface_create(const struct rs_mgmt_iface_config *cfg);

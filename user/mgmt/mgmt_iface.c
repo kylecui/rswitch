@@ -120,48 +120,16 @@ static int create_veth_pair(const struct rs_mgmt_iface_config *cfg)
 	return 0;
 }
 
-static int setup_forwarding(const struct rs_mgmt_iface_config *cfg)
-{
-	char cmd[512];
-
-	snprintf(cmd, sizeof(cmd),
-		 "ip addr add 169.254.1.1/30 dev %s 2>/dev/null || true",
-		 cfg->veth_host);
-	run_cmd(cmd);
-
-	snprintf(cmd, sizeof(cmd),
-		 "ip netns exec %s ip addr add 169.254.1.2/30 dev %s",
-		 cfg->mgmt_ns, cfg->veth_ns);
-	run_cmd(cmd);
-
-	snprintf(cmd, sizeof(cmd),
-		 "ip netns exec %s ip route add default via 169.254.1.1",
-		 cfg->mgmt_ns);
-	run_cmd(cmd);
-
-	run_cmd("sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1");
-
-	snprintf(cmd, sizeof(cmd),
-		 "iptables -t nat -A POSTROUTING -s 169.254.1.0/30 "
-		 "-o %s -j MASQUERADE 2>/dev/null || true",
-		 cfg->parent_iface);
-	run_cmd(cmd);
-
-	snprintf(cmd, sizeof(cmd),
-		 "iptables -A FORWARD -i %s -o %s -j ACCEPT 2>/dev/null || true",
-		 cfg->veth_host, cfg->parent_iface);
-	run_cmd(cmd);
-
-	snprintf(cmd, sizeof(cmd),
-		 "iptables -A FORWARD -i %s -o %s "
-		 "-m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true",
-		 cfg->parent_iface, cfg->veth_host);
-	run_cmd(cmd);
-
-	RS_LOG_INFO("Forwarding configured: %s <-> %s via NAT",
-		    cfg->veth_host, cfg->parent_iface);
-	return 0;
-}
+/*
+ * No explicit forwarding setup needed — mgmt-br participates as an
+ * XDP pipeline port.  The loader registers it in rs_xdp_devmap,
+ * rs_port_config_map, and the VLAN membership bitmap so that L2
+ * flooding/unicast forwarding reaches mgmt-br through the same BPF
+ * pipeline that connects the physical switch ports.
+ *
+ * Previously this function set up link-local addresses + iptables NAT.
+ * That approach is removed in favour of the XDP-integrated model.
+ */
 
 int rs_mgmt_iface_create(const struct rs_mgmt_iface_config *cfg)
 {
@@ -175,10 +143,6 @@ int rs_mgmt_iface_create(const struct rs_mgmt_iface_config *cfg)
 		return ret;
 
 	ret = create_veth_pair(cfg);
-	if (ret < 0)
-		return ret;
-
-	ret = setup_forwarding(cfg);
 	if (ret < 0)
 		return ret;
 
@@ -206,15 +170,12 @@ int rs_mgmt_iface_obtain_ip(const struct rs_mgmt_iface_config *cfg)
 	}
 
 	snprintf(cmd, sizeof(cmd),
-		 "ip netns exec %s dhclient -nw %s 2>/dev/null",
+		 "ip netns exec %s dhcpcd -b %s 2>/dev/null",
 		 cfg->mgmt_ns, cfg->veth_ns);
 
 	if (run_cmd(cmd) != 0) {
-		RS_LOG_WARN("DHCP failed on %s, using link-local only", cfg->veth_ns);
-		snprintf(cmd, sizeof(cmd),
-			 "ip netns exec %s ip addr add 169.254.1.2/30 dev %s 2>/dev/null || true",
-			 cfg->mgmt_ns, cfg->veth_ns);
-		run_cmd(cmd);
+		RS_LOG_WARN("DHCP client failed to start on %s", cfg->veth_ns);
+		return -EIO;
 	} else {
 		RS_LOG_INFO("DHCP started on %s in namespace %s",
 			    cfg->veth_ns, cfg->mgmt_ns);
@@ -257,23 +218,12 @@ int rs_mgmt_iface_destroy(const struct rs_mgmt_iface_config *cfg)
 		return -EINVAL;
 
 	snprintf(cmd, sizeof(cmd),
-		 "ip netns exec %s dhclient -r %s 2>/dev/null || true",
+		 "ip netns exec %s dhcpcd -k %s 2>/dev/null || true",
 		 cfg->mgmt_ns, cfg->veth_ns);
 	run_cmd(cmd);
 
 	snprintf(cmd, sizeof(cmd),
 		 "ip link del %s 2>/dev/null || true", cfg->veth_host);
-	run_cmd(cmd);
-
-	snprintf(cmd, sizeof(cmd),
-		 "iptables -t nat -D POSTROUTING -s 169.254.1.0/30 "
-		 "-o %s -j MASQUERADE 2>/dev/null || true",
-		 cfg->parent_iface);
-	run_cmd(cmd);
-
-	snprintf(cmd, sizeof(cmd),
-		 "iptables -D FORWARD -i %s -o %s -j ACCEPT 2>/dev/null || true",
-		 cfg->veth_host, cfg->parent_iface);
 	run_cmd(cmd);
 
 	snprintf(cmd, sizeof(cmd),

@@ -197,6 +197,8 @@ struct loader_ctx {
     int voq_egress_devmap_fd;
     __u32 veth_out_ifindex;
     int veth_egress_enabled;
+    
+    __u32 mgmt_ifindex;
 };
 
 static volatile int keep_running = 1;
@@ -1878,6 +1880,204 @@ static int setup_veth_egress(struct loader_ctx *ctx)
     return 0;
 }
 
+static int prepare_interface(const char *ifname);
+
+static int setup_mgmt_veth(struct loader_ctx *ctx)
+{
+    char cmd[512];
+    __u32 mgmt_ifindex;
+    int err;
+    const char *veth_host = "mgmt-br";
+    const char *veth_ns = "mgmt0";
+    const char *ns_name;
+    __u16 mgmt_vlan;
+
+    RS_LOG_INFO("setup_mgmt_veth: use_profile=%d mgmt.enabled=%d mgmt.use_namespace=%d",
+                ctx->use_profile, ctx->profile.mgmt.enabled,
+                ctx->profile.mgmt.use_namespace);
+
+    if (!ctx->use_profile || !ctx->profile.mgmt.enabled ||
+        !ctx->profile.mgmt.use_namespace)
+        return 0;
+
+    ns_name = ctx->profile.mgmt.namespace_name[0]
+              ? ctx->profile.mgmt.namespace_name
+              : "rswitch-mgmt";
+    mgmt_vlan = ctx->profile.mgmt.mgmt_vlan;
+    if (mgmt_vlan == 0)
+        mgmt_vlan = 1;
+
+    RS_LOG_INFO("Setting up management veth in XDP pipeline (ns=%s vlan=%u)",
+                ns_name, mgmt_vlan);
+
+    snprintf(cmd, sizeof(cmd), "ip netns list 2>/dev/null | grep -qw '%s'", ns_name);
+    if (system(cmd) != 0) {
+        snprintf(cmd, sizeof(cmd), "ip netns add %s", ns_name);
+        if (system(cmd) != 0) {
+            RS_LOG_ERROR("Failed to create namespace %s", ns_name);
+            return -1;
+        }
+    }
+
+    snprintf(cmd, sizeof(cmd), "ip link del %s 2>/dev/null", veth_host);
+    system(cmd);
+
+    snprintf(cmd, sizeof(cmd), "ip link add %s type veth peer name %s",
+             veth_host, veth_ns);
+    if (system(cmd) != 0) {
+        RS_LOG_ERROR("Failed to create veth pair %s <-> %s", veth_host, veth_ns);
+        return -1;
+    }
+
+    snprintf(cmd, sizeof(cmd), "ip link set %s netns %s", veth_ns, ns_name);
+    if (system(cmd) != 0) {
+        RS_LOG_ERROR("Failed to move %s into namespace %s", veth_ns, ns_name);
+        return -1;
+    }
+
+    snprintf(cmd, sizeof(cmd), "ip link set %s up", veth_host);
+    system(cmd);
+    snprintf(cmd, sizeof(cmd), "ip netns exec %s ip link set %s up", ns_name, veth_ns);
+    system(cmd);
+    snprintf(cmd, sizeof(cmd), "ip netns exec %s ip link set lo up", ns_name);
+    system(cmd);
+
+    mgmt_ifindex = if_nametoindex(veth_host);
+    if (mgmt_ifindex == 0) {
+        RS_LOG_ERROR("mgmt-br ifindex lookup failed after creation");
+        return -1;
+    }
+
+    printf("  Created veth pair: %s (ifindex=%u) <-> %s (ns:%s)\n",
+           veth_host, mgmt_ifindex, veth_ns, ns_name);
+
+    prepare_interface(veth_host);
+
+    RS_LOG_INFO("mgmt-br map fds: port_config=%d, ifindex_to_port=%d, devmap=%d, egress=%d",
+                ctx->rs_port_config_map_fd, ctx->rs_ifindex_to_port_map_fd,
+                ctx->rs_devmap_fd, ctx->egress_fd);
+
+    if (ctx->rs_port_config_map_fd >= 0) {
+        __u32 port_idx = ctx->num_interfaces;
+        RS_LOG_INFO("mgmt-br: setting ifindex_to_port: ifindex=%u -> port_idx=%u (fd=%d)",
+                    mgmt_ifindex, port_idx, ctx->rs_ifindex_to_port_map_fd);
+        err = bpf_map_update_elem(ctx->rs_ifindex_to_port_map_fd,
+                                  &mgmt_ifindex, &port_idx, BPF_ANY);
+        if (err)
+            RS_LOG_WARN("Failed to create ifindex->port_idx for mgmt-br: %s", strerror(errno));
+
+        struct rs_port_config cfg = {
+            .ifindex = mgmt_ifindex,
+            .enabled = 1,
+            .mgmt_type = 1,
+            .vlan_mode = RS_VLAN_MODE_ACCESS,
+            .learning = 1,
+            .pvid = mgmt_vlan,
+            .native_vlan = mgmt_vlan,
+            .access_vlan = mgmt_vlan,
+            .default_prio = 0,
+            .trust_dscp = 0,
+        };
+
+        err = bpf_map_update_elem(ctx->rs_port_config_map_fd,
+                                  &mgmt_ifindex, &cfg, BPF_ANY);
+        if (err)
+            RS_LOG_WARN("Failed to configure mgmt-br port: %s", strerror(errno));
+        else
+            RS_LOG_INFO("mgmt-br port_config: ifindex=%u, ACCESS vlan=%u, learning=on",
+                        mgmt_ifindex, mgmt_vlan);
+    } else {
+        RS_LOG_WARN("mgmt-br: rs_port_config_map_fd=%d, skipping port config",
+                    ctx->rs_port_config_map_fd);
+    }
+
+    if (ctx->rs_devmap_fd >= 0) {
+        struct bpf_devmap_val xdp_val = {
+            .ifindex = mgmt_ifindex,
+            .bpf_prog.fd = ctx->egress_fd,
+        };
+        RS_LOG_INFO("mgmt-br: adding to devmap: key=ifindex=%u, val.ifindex=%u, val.prog.fd=%d",
+                    mgmt_ifindex, mgmt_ifindex, ctx->egress_fd);
+        err = bpf_map_update_elem(ctx->rs_devmap_fd, &mgmt_ifindex,
+                                  &xdp_val, BPF_ANY);
+        if (err)
+            RS_LOG_WARN("Failed to add mgmt-br to XDP devmap: %s (errno=%d)",
+                        strerror(errno), errno);
+        else
+            RS_LOG_INFO("mgmt-br added to XDP devmap (ifindex=%u) with egress hook",
+                        mgmt_ifindex);
+    } else {
+        RS_LOG_WARN("mgmt-br: rs_devmap_fd=%d, skipping devmap registration",
+                    ctx->rs_devmap_fd);
+    }
+
+    {
+        char path[256];
+        snprintf(path, sizeof(path), "%s/rs_vlan_map", BPF_PIN_PATH);
+        int vlan_map_fd = bpf_obj_get(path);
+        if (vlan_map_fd < 0) {
+            for (int i = 0; i < ctx->num_modules; i++) {
+                if (ctx->modules[i].obj) {
+                    struct bpf_map *map = bpf_object__find_map_by_name(
+                        ctx->modules[i].obj, "rs_vlan_map");
+                    if (map) {
+                        vlan_map_fd = bpf_map__fd(map);
+                        break;
+                    }
+                }
+            }
+        }
+        if (vlan_map_fd >= 0) {
+            struct rs_vlan_members vlan = {0};
+            __u16 vkey = mgmt_vlan;
+            err = bpf_map_lookup_elem(vlan_map_fd, &vkey, &vlan);
+            if (err) {
+                memset(&vlan, 0, sizeof(vlan));
+                vlan.vlan_id = mgmt_vlan;
+            }
+
+            int word_idx = (mgmt_ifindex - 1) / 64;
+            int bit_idx = (mgmt_ifindex - 1) % 64;
+            if (word_idx < 4) {
+                vlan.untagged_members[word_idx] |= (1ULL << bit_idx);
+                vlan.member_count++;
+            }
+
+            err = bpf_map_update_elem(vlan_map_fd, &vkey, &vlan, BPF_ANY);
+            if (err)
+                RS_LOG_WARN("Failed to add mgmt-br to VLAN %u: %s",
+                            mgmt_vlan, strerror(errno));
+            else
+                RS_LOG_INFO("VLAN %u: added mgmt-br (ifindex=%u) as untagged member "
+                            "(word=%d bit=%d)", mgmt_vlan, mgmt_ifindex,
+                            (mgmt_ifindex - 1) / 64, (mgmt_ifindex - 1) % 64);
+
+            if (vlan_map_fd != ctx->rs_vlan_map_fd)
+                close(vlan_map_fd);
+        }
+    }
+
+    /*
+     * IMPORTANT: Attach mgmt-br in SKB/generic mode to match physical ports.
+     * veth supports native XDP, but if physical ports use xdpgeneric (e.g.
+     * VMware NICs), BPF_F_BROADCAST redirect from native→generic silently
+     * fails. All ports in the devmap must use the same XDP mode.
+     */
+    err = bpf_xdp_attach(mgmt_ifindex, ctx->dispatcher_fd,
+                          XDP_FLAGS_SKB_MODE, NULL);
+    if (err) {
+        RS_LOG_WARN("Failed to attach XDP dispatcher to mgmt-br: %s",
+                    strerror(-err));
+    } else {
+        printf("  XDP dispatcher attached to mgmt-br (generic/SKB mode)\n");
+    }
+
+    ctx->mgmt_ifindex = mgmt_ifindex;
+
+    printf("  Management veth ready for XDP pipeline participation\n");
+    return 0;
+}
+
 /* Attach dispatcher to interfaces */
 /* Prepare interface for XDP (promiscuous mode + disable VLAN offload) */
 static int prepare_interface(const char *ifname)
@@ -2057,6 +2257,15 @@ static void detach_xdp(struct loader_ctx *ctx)
         system(cmd);
         printf("  ✓ Restored %s to UP state\n", ifname);
     }
+    
+    if (ctx->mgmt_ifindex) {
+        char cmd[256];
+        if (bpf_xdp_detach(ctx->mgmt_ifindex, XDP_FLAGS_SKB_MODE, NULL) < 0) {
+            snprintf(cmd, sizeof(cmd), "ip link set mgmt-br xdp off 2>/dev/null");
+            system(cmd);
+        }
+        printf("  ✓ Detached from mgmt-br (ifindex=%u)\n", ctx->mgmt_ifindex);
+    }
 }
 
 /* Close all map file descriptors */
@@ -2201,6 +2410,23 @@ static void cleanup(struct loader_ctx *ctx)
         
         ctx->voqd_pid = 0;
         ctx->voqd_enabled = 0;
+    }
+    
+    if (ctx->use_profile && ctx->profile.mgmt.enabled &&
+        ctx->profile.mgmt.use_namespace) {
+        const char *ns = ctx->profile.mgmt.namespace_name[0]
+                         ? ctx->profile.mgmt.namespace_name
+                         : "rswitch-mgmt";
+        char cmd[256];
+
+        printf("\nTearing down management veth...\n");
+        snprintf(cmd, sizeof(cmd),
+                 "ip netns exec %s dhcpcd -k mgmt0 2>/dev/null || true", ns);
+        system(cmd);
+        system("ip link del mgmt-br 2>/dev/null || true");
+        snprintf(cmd, sizeof(cmd), "ip netns del %s 2>/dev/null || true", ns);
+        system(cmd);
+        printf("  Management veth + namespace removed\n");
     }
     
     /* Step 1: Flush TX queues to prevent netdev watchdog timeout
@@ -2356,6 +2582,7 @@ int main(int argc, char **argv)
     ctx.voq_egress_devmap_fd = -1;
     ctx.veth_out_ifindex = 0;
     ctx.veth_egress_enabled = 0;
+    ctx.mgmt_ifindex = 0;
     
     /* Default XDP flags */
     ctx.xdp_flags = DEFAULT_XDP_FLAGS;
@@ -2558,6 +2785,11 @@ int main(int argc, char **argv)
     if (attach_xdp(&ctx) < 0) {
         cleanup(&ctx);
         return 1;
+    }
+    
+    /* Setup management veth in XDP pipeline (if profile enables it) */
+    if (setup_mgmt_veth(&ctx) < 0) {
+        RS_LOG_WARN("Management veth setup failed, continuing without management plane");
     }
     
     /* Start VOQd if configured in profile */
