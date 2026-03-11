@@ -8,6 +8,13 @@
 
 #include <stdint.h>
 
+#define RS_MAX_MODULE_CONFIG_PARAMS 16
+
+struct rs_module_config_param {
+    char key[32];
+    char value[64];
+};
+
 /* Port configuration structure */
 struct rs_profile_port {
     char interface[32];
@@ -80,18 +87,28 @@ struct rs_profile_settings {
     int debug;
 };
 
+struct rs_profile_module_entry {
+    char name[64];
+    int stage_override;    /* -1 = use compiled-in default */
+    int optional;          /* 0 = required (default), 1 = optional */
+    char condition[64];    /* Condition for optional modules (e.g., "debug_mode") */
+    struct rs_module_config_param config[RS_MAX_MODULE_CONFIG_PARAMS];
+    int config_count;
+};
+
 /* Profile structure */
 struct rs_profile {
     char name[64];
     char description[256];
     char version[16];
+    char extends[256];
     
     /* Ingress pipeline modules */
-    char **ingress_modules;
+    struct rs_profile_module_entry *ingress_modules;
     int ingress_count;
     
     /* Egress pipeline modules */
-    char **egress_modules;
+    struct rs_profile_module_entry *egress_modules;
     int egress_count;
     
     /* Settings */
@@ -117,6 +134,7 @@ void profile_free(struct rs_profile *profile);
 
 /* Load and parse profile from file */
 int profile_load(const char *filename, struct rs_profile *profile);
+int profile_load_with_inheritance(const char *filename, struct rs_profile *profile);
 
 /* Print profile information */
 void profile_print(const struct rs_profile *profile);

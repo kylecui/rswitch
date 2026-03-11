@@ -1,0 +1,128 @@
+RSWITCH-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, Integer32, Counter64,
+    enterprises
+        FROM SNMPv2-SMI
+    DisplayString
+        FROM SNMPv2-TC;
+
+rswitchMIB MODULE-IDENTITY
+    LAST-UPDATED "202603110000Z"
+    ORGANIZATION "rSwitch Project"
+    CONTACT-INFO "https://github.com/rswitch"
+    DESCRIPTION  "MIB for rSwitch Reconfigurable Network Platform"
+    ::= { enterprises 99999 }
+
+rswitchInfo OBJECT IDENTIFIER ::= { rswitchMIB 1 }
+rswitchPorts OBJECT IDENTIFIER ::= { rswitchMIB 2 }
+rswitchModules OBJECT IDENTIFIER ::= { rswitchMIB 3 }
+rswitchVlans OBJECT IDENTIFIER ::= { rswitchMIB 4 }
+rswitchQos OBJECT IDENTIFIER ::= { rswitchMIB 5 }
+
+rswitchDescr OBJECT-TYPE
+    SYNTAX      DisplayString (SIZE (0..255))
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "rSwitch system description"
+    ::= { rswitchInfo 0 }
+
+rswitchVersion OBJECT-TYPE
+    SYNTAX      DisplayString (SIZE (0..32))
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "rSwitch software version"
+    ::= { rswitchInfo 1 }
+
+rswitchUptime OBJECT-TYPE
+    SYNTAX      Integer32 (0..2147483647)
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Agent uptime in seconds"
+    ::= { rswitchInfo 2 }
+
+rswitchModuleCount OBJECT-TYPE
+    SYNTAX      Integer32 (0..2147483647)
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Number of active modules"
+    ::= { rswitchInfo 3 }
+
+rswitchPortRxPackets OBJECT-TYPE
+    SYNTAX      Counter64
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Per-port RX packets. pass_persist exposes instances as
+         .1.3.6.1.4.1.99999.2.1.N"
+    ::= { rswitchPorts 1 }
+
+rswitchPortTxPackets OBJECT-TYPE
+    SYNTAX      Counter64
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Per-port TX packets. pass_persist exposes instances as
+         .1.3.6.1.4.1.99999.2.2.N"
+    ::= { rswitchPorts 2 }
+
+rswitchPortRxBytes OBJECT-TYPE
+    SYNTAX      Counter64
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Per-port RX bytes. pass_persist exposes instances as
+         .1.3.6.1.4.1.99999.2.3.N"
+    ::= { rswitchPorts 3 }
+
+rswitchPortTxBytes OBJECT-TYPE
+    SYNTAX      Counter64
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Per-port TX bytes. pass_persist exposes instances as
+         .1.3.6.1.4.1.99999.2.4.N"
+    ::= { rswitchPorts 4 }
+
+rswitchPortDrops OBJECT-TYPE
+    SYNTAX      Counter64
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Per-port drops (RX+TX). pass_persist exposes instances as
+         .1.3.6.1.4.1.99999.2.5.N"
+    ::= { rswitchPorts 5 }
+
+rswitchModuleName OBJECT-TYPE
+    SYNTAX      DisplayString (SIZE (0..31))
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Per-module name. pass_persist exposes instances as
+         .1.3.6.1.4.1.99999.3.1.N"
+    ::= { rswitchModules 1 }
+
+rswitchModulePackets OBJECT-TYPE
+    SYNTAX      Counter64
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Per-module packet counter. pass_persist exposes instances as
+         .1.3.6.1.4.1.99999.3.2.N"
+    ::= { rswitchModules 2 }
+
+rswitchVlanCount OBJECT-TYPE
+    SYNTAX      Integer32 (0..2147483647)
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Number of configured VLANs"
+    ::= { rswitchVlans 1 }
+
+rswitchQosPlaceholder OBJECT-TYPE
+    SYNTAX      Integer32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Reserved for QoS statistics expansion"
+    ::= { rswitchQos 1 }
+
+END

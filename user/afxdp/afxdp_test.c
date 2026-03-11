@@ -18,9 +18,12 @@
 #include <linux/if_ether.h>
 #include <linux/if_link.h>
 #include <linux/ip.h>
-#include <bpf/xsk.h>
-
 #include "afxdp_socket.h"
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 
 /* Default ring sizes from libbpf */
 #ifndef XSK_RING_CONS__DEFAULT_NUM_DESCS
@@ -65,6 +68,8 @@ static void print_packet_info(struct xsk_packet *pkt)
 
 int main(int argc, char **argv)
 {
+	rs_log_init("afxdp-test", RS_LOG_LEVEL_INFO);
+
 	const char *ifname;
 	uint32_t queue_id = 0;
 	struct xsk_umem *umem = NULL;
@@ -84,7 +89,7 @@ int main(int argc, char **argv)
 	int ret;
 	
 	if (argc < 2) {
-		fprintf(stderr, "Usage: %s <interface> [queue_id]\n", argv[0]);
+		RS_LOG_ERROR("Usage: %s <interface> [queue_id]", argv[0]);
 		return 1;
 	}
 	
@@ -103,7 +108,7 @@ int main(int argc, char **argv)
 	       config.num_frames, config.frame_size);
 	ret = xsk_umem_create(&umem, config.frame_size, config.num_frames);
 	if (ret) {
-		fprintf(stderr, "Failed to create UMEM: %s\n", strerror(-ret));
+		RS_LOG_ERROR("Failed to create UMEM: %s", strerror(-ret));
 		return 1;
 	}
 	printf("UMEM created: %lu bytes\n", umem->size);
@@ -113,13 +118,13 @@ int main(int argc, char **argv)
 	ret = xsk_socket_create(&xsk, ifname, queue_id, umem, &config);
 	if (ret) {
 		if (ret == -EOPNOTSUPP && config.bind_flags == XDP_ZEROCOPY) {
-			fprintf(stderr, "Zero-copy not supported, trying copy mode...\n");
+			RS_LOG_WARN("Zero-copy not supported, trying copy mode...");
 			config.bind_flags = XDP_COPY;
 			ret = xsk_socket_create(&xsk, ifname, queue_id, umem, &config);
 		}
 		
 		if (ret) {
-			fprintf(stderr, "Failed to create socket: %s\n", strerror(-ret));
+			RS_LOG_ERROR("Failed to create socket: %s", strerror(-ret));
 			xsk_umem_destroy(umem);
 			return 1;
 		}
@@ -144,7 +149,7 @@ int main(int argc, char **argv)
 		if (ret < 0) {
 			if (errno == EINTR)
 				continue;
-			fprintf(stderr, "Poll error: %s\n", strerror(errno));
+			RS_LOG_ERROR("Poll error: %s", strerror(errno));
 			break;
 		}
 		

@@ -42,6 +42,10 @@ RS_DECLARE_MODULE("route", RS_HOOK_XDP_INGRESS, 50,
 #define ROUTE_MAX_ENTRIES   10000
 #define ARP_MAX_ENTRIES     4096
 #define MAX_IFACES          256
+#define MAX_ECMP_PATHS      4
+
+#define ROUTE_EVENT_ARP_STALE            (RS_EVENT_ROUTE_BASE + 1)
+#define ROUTE_EVENT_ICMP_REDIRECT_NEEDED (RS_EVENT_ROUTE_BASE + 2)
 
 //
 // Data Structures
@@ -60,6 +64,18 @@ struct route_entry {
     __u32  metric;
     __u8   type;      // 0=direct, 1=static
     __u8   pad[3];
+    __u32  ecmp_group_id;
+};
+
+struct ecmp_group {
+    __u8 count;
+    __u8 pad[3];
+    struct {
+        __be32 nexthop;
+        __u32 ifindex;
+        __u8 weight;
+        __u8 pad[3];
+    } paths[MAX_ECMP_PATHS];
 };
 
 /* ARP entry */
@@ -84,6 +100,22 @@ struct route_config {
     __u8 pad[3];
 };
 
+struct arp_cfg {
+    __u32 max_age_sec;
+    __u8 enabled;
+    __u8 pad[3];
+};
+
+struct route_event {
+    __u32 event_type;
+    __u32 ifindex;
+    __u32 egress_ifindex;
+    __be32 saddr;
+    __be32 daddr;
+    __be32 nexthop;
+    __u32 aux;
+};
+
 //
 // Statistics
 //
@@ -97,7 +129,8 @@ enum route_stat_type {
     ROUTE_STAT_TTL_EXCEEDED = 5,
     ROUTE_STAT_DIRECT = 6,
     ROUTE_STAT_STATIC = 7,
-    ROUTE_STAT_MAX = 8,
+    ROUTE_STAT_REDIRECT = 8,
+    ROUTE_STAT_MAX = 9,
 };
 
 //
@@ -122,6 +155,14 @@ struct {
     __type(value, struct arp_entry);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } arp_tbl SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);
+    __type(value, struct ecmp_group);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} ecmp_groups SEC(".maps");
 
 /* Interface config */
 struct {
@@ -149,6 +190,14 @@ struct {
     __type(value, struct route_config);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } route_cfg SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct arp_cfg);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} arp_config SEC(".maps");
 
 //
 // Helper Functions
@@ -195,6 +244,31 @@ static __always_inline void update_stat(enum route_stat_type stat)
     __u64 *val = bpf_map_lookup_elem(&route_stats, &key);
     if (val)
         __sync_fetch_and_add(val, 1);
+}
+
+static __always_inline __u32 route_hash_5tuple(const struct rs_ctx *ctx)
+{
+    return ((__u32)ctx->layers.saddr ^ (__u32)ctx->layers.daddr ^
+            (__u32)ctx->layers.sport ^ (__u32)ctx->layers.dport ^
+            (__u32)ctx->layers.ip_proto);
+}
+
+static __always_inline void emit_route_event(__u32 event_type,
+                                             struct rs_ctx *ctx,
+                                             __u32 egress_ifindex,
+                                             __be32 nexthop,
+                                             __u32 aux)
+{
+    struct route_event evt = {
+        .event_type = event_type,
+        .ifindex = ctx->ifindex,
+        .egress_ifindex = egress_ifindex,
+        .saddr = ctx->layers.saddr,
+        .daddr = ctx->layers.daddr,
+        .nexthop = nexthop,
+        .aux = aux,
+    };
+    RS_EMIT_EVENT(&evt, sizeof(evt));
 }
 
 /* Check if packet is for router (dest MAC matches any router interface) */
@@ -358,19 +432,42 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
     
-    rs_debug("Route: Found route type=%u ifindex=%u nexthop=%pI4", 
-             route->type, route->ifindex, &route->nexthop);
+    rs_debug("Route: Found route type=%u ifindex=%u nexthop=%pI4 ecmp=%u",
+             route->type, route->ifindex, &route->nexthop, route->ecmp_group_id);
     update_stat(ROUTE_STAT_HIT);
     if (route->type == 0)
         update_stat(ROUTE_STAT_DIRECT);
     else
         update_stat(ROUTE_STAT_STATIC);
-    
+
+    __u32 egress_ifindex = route->ifindex;
+    __be32 route_nexthop = route->nexthop;
+
+    if (route->ecmp_group_id > 0) {
+        __u32 group_id = route->ecmp_group_id;
+        struct ecmp_group *group = bpf_map_lookup_elem(&ecmp_groups, &group_id);
+        if (group && group->count > 0 && group->count <= MAX_ECMP_PATHS) {
+            __u32 idx = route_hash_5tuple(ctx) % group->count;
+            egress_ifindex = group->paths[idx].ifindex;
+            route_nexthop = group->paths[idx].nexthop;
+            rs_debug("Route: ECMP group=%u selected=%u ifindex=%u nexthop=%pI4",
+                     group_id, idx, egress_ifindex, &route_nexthop);
+        }
+    }
+
+    if (egress_ifindex == ctx->ifindex) {
+        update_stat(ROUTE_STAT_REDIRECT);
+        emit_route_event(ROUTE_EVENT_ICMP_REDIRECT_NEEDED, ctx,
+                         egress_ifindex,
+                         route_nexthop ? route_nexthop : iph->daddr,
+                         route->ecmp_group_id);
+    }
+
     // Determine next-hop
-    __be32 nexthop_ip = route->nexthop ? route->nexthop : iph->daddr;
+    __be32 nexthop_ip = route_nexthop ? route_nexthop : iph->daddr;
     
     // Get egress iface config first (needed for both ARP hit and miss cases)
-    __u32 eg_ifkey = route->ifindex;
+    __u32 eg_ifkey = egress_ifindex;
     struct iface_config *egress_cfg = bpf_map_lookup_elem(&iface_cfg, &eg_ifkey);
     if (!egress_cfg) {
         rs_debug("Route: No egress iface config for ifindex=%u", eg_ifkey);
@@ -428,6 +525,19 @@ int route_ipv4(struct xdp_md *xdp_ctx)
                  arp->mac[0], arp->mac[1], arp->mac[2], 
                  arp->mac[3], arp->mac[4], arp->mac[5]);
         update_stat(ROUTE_STAT_ARP_HIT);
+
+        __u32 arp_cfg_key = 0;
+        struct arp_cfg *acfg = bpf_map_lookup_elem(&arp_config, &arp_cfg_key);
+        if (acfg && acfg->enabled && acfg->max_age_sec > 0 && arp->timestamp > 0) {
+            __u64 now = bpf_ktime_get_ns();
+            if (now > arp->timestamp) {
+                __u32 age_sec = (__u32)((now - arp->timestamp) / 1000000000ULL);
+                if (age_sec > acfg->max_age_sec) {
+                    emit_route_event(ROUTE_EVENT_ARP_STALE, ctx,
+                                     egress_ifindex, nexthop_ip, age_sec);
+                }
+            }
+        }
         
         __builtin_memcpy(eth->h_source, egress_cfg->mac, 6);
         __builtin_memcpy(eth->h_dest, arp->mac, 6);
@@ -440,10 +550,10 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     }
     
     // Set forwarding decision
-    ctx->egress_ifindex = route->ifindex;
+    ctx->egress_ifindex = egress_ifindex;
     ctx->action = XDP_REDIRECT;
     
-    rs_debug("Route: Success! Redirect to ifindex=%u", route->ifindex);
+    rs_debug("Route: Success! Redirect to ifindex=%u", egress_ifindex);
     
     // Next module
     RS_TAIL_CALL_NEXT(xdp_ctx, ctx);

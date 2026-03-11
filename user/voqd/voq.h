@@ -16,6 +16,7 @@
 
 #define MAX_PORTS 64
 #include "../../bpf/core/afxdp_common.h"
+#include "shaper.h"
 
 // MAX_PRIORITIES now defined in afxdp_common.h
 #define MAX_QUEUE_DEPTH 8192
@@ -60,6 +61,8 @@ struct voq_queue {
 	uint64_t latency_sum_ns;
 	uint64_t latency_count;
 	uint64_t latency_p99_ns;  /* Updated periodically */
+
+	struct rs_shaper shaper;
 	
 	pthread_mutex_t lock;
 };
@@ -67,12 +70,9 @@ struct voq_queue {
 /* Per-port VOQ (4 priority queues per port) */
 struct voq_port {
 	struct voq_queue queues[MAX_PRIORITIES];
-	
-	/* Token bucket for rate limiting */
-	uint64_t tokens;          /* Current token count (bytes) */
-	uint64_t rate_bps;        /* Rate limit (bits per second) */
-	uint64_t burst_bytes;     /* Burst size (bytes) */
-	uint64_t last_refill_ns;  /* Last token refill time */
+
+	struct rs_shaper shaper;
+	struct rs_wfq_scheduler wfq;
 	
 	/* Port state */
 	bool enabled;
@@ -110,6 +110,9 @@ struct voq_mgr {
 	/* Control */
 	volatile bool running;
 	pthread_t scheduler_thread;
+
+	struct rs_shaper_shared_cfg *shaper_cfg;
+	uint32_t shaper_cfg_generation;
 };
 
 /*

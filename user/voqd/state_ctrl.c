@@ -8,6 +8,11 @@
 #include <pthread.h>
 #include <time.h>
 #include <bpf/bpf.h>
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 
 #define NSEC_PER_SEC 1000000000ULL
 
@@ -30,16 +35,16 @@ int state_ctrl_init(struct state_ctrl *ctrl, const char *state_map_pin,
 	/* Open pinned maps */
 	ctrl->voqd_state_fd = bpf_obj_get(state_map_pin);
 	if (ctrl->voqd_state_fd < 0) {
-		fprintf(stderr, "Failed to open state_map at %s: %s\n",
-		        state_map_pin, strerror(errno));
+		RS_LOG_ERROR("Failed to open state_map at %s: %s",
+		             state_map_pin, strerror(errno));
 		return -errno;
 	}
 	
 	if (qos_config_pin) {
 		ctrl->qos_config_fd = bpf_obj_get(qos_config_pin);
 		if (ctrl->qos_config_fd < 0) {
-			fprintf(stderr, "Failed to open qos_config_map at %s: %s\n",
-			        qos_config_pin, strerror(errno));
+			RS_LOG_ERROR("Failed to open qos_config_map at %s: %s",
+			             qos_config_pin, strerror(errno));
 			close(ctrl->voqd_state_fd);
 			return -errno;
 		}
@@ -78,7 +83,7 @@ int state_ctrl_set_mode(struct state_ctrl *ctrl, uint32_t mode, uint32_t prio_ma
 		return -EINVAL;
 	
 	if (mode >= 3) {  /* BYPASS=0, SHADOW=1, ACTIVE=2 */
-		fprintf(stderr, "Invalid mode: %u\n", mode);
+		RS_LOG_ERROR("Invalid mode: %u", mode);
 		return -EINVAL;
 	}
 	
@@ -103,7 +108,7 @@ int state_ctrl_set_mode(struct state_ctrl *ctrl, uint32_t mode, uint32_t prio_ma
 	
 	ret = bpf_map_update_elem(ctrl->voqd_state_fd, &key, &state, BPF_ANY);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to update voqd_state_map: %s\n", strerror(errno));
+		RS_LOG_ERROR("Failed to update voqd_state_map: %s", strerror(errno));
 		return -errno;
 	}
 	
@@ -129,7 +134,7 @@ int state_ctrl_get_mode(struct state_ctrl *ctrl, uint32_t *mode, uint32_t *prio_
 	
 	int ret = bpf_map_lookup_elem(ctrl->voqd_state_fd, &key, &state);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to lookup voqd_state_map: %s\n", strerror(errno));
+		RS_LOG_ERROR("Failed to lookup voqd_state_map: %s", strerror(errno));
 		return -errno;
 	}
 	
@@ -148,7 +153,7 @@ int state_ctrl_set_qos_config(struct state_ctrl *ctrl, const struct qos_config *
 	uint32_t key = 0;
 	int ret = bpf_map_update_elem(ctrl->qos_config_fd, &key, cfg, BPF_ANY);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to update qos_config_map: %s\n", strerror(errno));
+		RS_LOG_ERROR("Failed to update qos_config_map: %s", strerror(errno));
 		return -errno;
 	}
 	
@@ -167,7 +172,7 @@ int state_ctrl_get_qos_config(struct state_ctrl *ctrl, struct qos_config *cfg)
 	uint32_t key = 0;
 	int ret = bpf_map_lookup_elem(ctrl->qos_config_fd, &key, cfg);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to lookup qos_config_map: %s\n", strerror(errno));
+		RS_LOG_ERROR("Failed to lookup qos_config_map: %s", strerror(errno));
 		return -errno;
 	}
 	
@@ -225,7 +230,7 @@ int state_ctrl_start_heartbeat(struct state_ctrl *ctrl)
 	
 	int ret = pthread_create(&ctrl->heartbeat_thread, NULL, heartbeat_thread_fn, ctrl);
 	if (ret != 0) {
-		fprintf(stderr, "Failed to create heartbeat thread: %s\n", strerror(ret));
+		RS_LOG_ERROR("Failed to create heartbeat thread: %s", strerror(ret));
 		return -ret;
 	}
 	
@@ -324,10 +329,10 @@ int state_ctrl_check_degradation(struct state_ctrl *ctrl, uint32_t *current_mode
 	/* Check if mode changed from what we expect */
 	if (state.mode != ctrl->mode) {
 		const char *mode_str[] = {"BYPASS", "SHADOW", "ACTIVE"};
-		fprintf(stderr, "WARNING: Auto-failover detected! Expected %s, but XDP set %s\n",
-		        mode_str[ctrl->mode], mode_str[state.mode]);
-		fprintf(stderr, "  Failover count: %u, Overload drops: %u\n",
-		        state.failover_count, state.overload_drops);
+		RS_LOG_WARN("Auto-failover detected! Expected %s, but XDP set %s",
+		            mode_str[ctrl->mode], mode_str[state.mode]);
+		RS_LOG_WARN("Failover count: %u, Overload drops: %u",
+		            state.failover_count, state.overload_drops);
 		
 		/* Update local state */
 		ctrl->mode = state.mode;
@@ -337,4 +342,3 @@ int state_ctrl_check_degradation(struct state_ctrl *ctrl, uint32_t *current_mode
 	
 	return 0;  /* No degradation */
 }
-

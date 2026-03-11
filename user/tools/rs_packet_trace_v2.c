@@ -14,6 +14,13 @@
 #include <arpa/inet.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
+
+int bpf_object__attach(struct bpf_object *obj);
 
 #define RS_VLAN_MAX_DEPTH 2
 
@@ -118,6 +125,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 
 int main(int argc, char **argv)
 {
+    rs_log_init("rs-packet-trace", RS_LOG_LEVEL_INFO);
+
     struct bpf_object *obj;
     struct ring_buffer *rb = NULL;
     int err;
@@ -126,34 +135,34 @@ int main(int argc, char **argv)
     obj = bpf_object__open_file("./build/bpf/packet_trace.bpf.o", NULL);
     err = libbpf_get_error(obj);
     if (err) {
-        fprintf(stderr, "Failed to open BPF object: %s\n", strerror(-err));
+        RS_LOG_ERROR("Failed to open BPF object: %s", strerror(-err));
         return 1;
     }
     
     err = bpf_object__load(obj);
     if (err) {
-        fprintf(stderr, "Failed to load BPF object: %s\n", strerror(-err));
+        RS_LOG_ERROR("Failed to load BPF object: %s", strerror(-err));
         goto cleanup;
     }
     
     /* Attach fentry program */
     err = bpf_object__attach(obj);
     if (err) {
-        fprintf(stderr, "Failed to attach BPF programs: %s\n", strerror(-err));
+        RS_LOG_ERROR("Failed to attach BPF programs: %s", strerror(-err));
         goto cleanup;
     }
     
     /* Set up ringbuf consumer */
     int ringbuf_fd = bpf_object__find_map_fd_by_name(obj, "pkt_events");
     if (ringbuf_fd < 0) {
-        fprintf(stderr, "Failed to find pkt_events map\n");
+        RS_LOG_ERROR("Failed to find pkt_events map");
         err = -1;
         goto cleanup;
     }
     
     rb = ring_buffer__new(ringbuf_fd, handle_event, NULL, NULL);
     if (!rb) {
-        fprintf(stderr, "Failed to create ring buffer\n");
+        RS_LOG_ERROR("Failed to create ring buffer");
         err = -1;
         goto cleanup;
     }
@@ -173,7 +182,7 @@ int main(int argc, char **argv)
             break;
         }
         if (err < 0) {
-            fprintf(stderr, "Error polling ringbuf: %d\n", err);
+            RS_LOG_ERROR("Error polling ringbuf: %d", err);
             break;
         }
     }

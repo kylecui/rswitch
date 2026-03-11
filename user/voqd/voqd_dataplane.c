@@ -17,6 +17,11 @@
 #include <arpa/inet.h>      /* For ntohs, ntohl */
 #include <linux/if_xdp.h>  /* For XDP_ZEROCOPY, XDP_COPY, XDP_PACKET_HEADROOM */
 
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 #include "voqd_dataplane.h"
 #include "../../bpf/core/afxdp_common.h"
 #include "../../bpf/core/veth_egress_common.h"
@@ -254,7 +259,7 @@ int voqd_dataplane_init(struct voqd_dataplane *dp, struct voq_mgr *voq,
 	if (config->enable_afxdp) {
 		ret = xsk_manager_init(&dp->xsk_mgr, false, config->zero_copy);
 		if (ret < 0) {
-			fprintf(stderr, "Failed to initialize XSK manager: %s\n", strerror(-ret));
+			RS_LOG_ERROR("Failed to initialize XSK manager: %s", strerror(-ret));
 			return ret;
 		}
 		
@@ -268,7 +273,7 @@ int voqd_dataplane_init(struct voqd_dataplane *dp, struct voq_mgr *voq,
 	if (config->use_veth_egress && config->enable_afxdp) {
 		ret = xsk_manager_init(&dp->veth_xsk_mgr, false, false);
 		if (ret < 0) {
-			fprintf(stderr, "Failed to initialize veth XSK manager: %s\n", strerror(-ret));
+			RS_LOG_ERROR("Failed to initialize veth XSK manager: %s", strerror(-ret));
 			if (config->enable_afxdp)
 				xsk_manager_destroy(&dp->xsk_mgr);
 			return ret;
@@ -284,8 +289,8 @@ int voqd_dataplane_init(struct voqd_dataplane *dp, struct voq_mgr *voq,
 		ret = xsk_manager_add_socket(&dp->veth_xsk_mgr, config->veth_in_ifname,
 		                             config->veth_queue_id, &veth_cfg);
 		if (ret < 0) {
-			fprintf(stderr, "Failed to add veth socket for %s: %s\n",
-			        config->veth_in_ifname, strerror(-ret));
+			RS_LOG_ERROR("Failed to add veth socket for %s: %s",
+			            config->veth_in_ifname, strerror(-ret));
 			xsk_manager_destroy(&dp->veth_xsk_mgr);
 			if (config->enable_afxdp)
 				xsk_manager_destroy(&dp->xsk_mgr);
@@ -302,7 +307,7 @@ int voqd_dataplane_init(struct voqd_dataplane *dp, struct voq_mgr *voq,
 		ret = sw_queue_mgr_init(&dp->sw_mgr, voq->num_ports, num_priorities,
 		                        config->sw_queue_depth, config->frame_size);
 		if (ret < 0) {
-			fprintf(stderr, "Failed to initialize software queue manager: %s\n", strerror(-ret));
+			RS_LOG_ERROR("Failed to initialize software queue manager: %s", strerror(-ret));
 			if (config->enable_afxdp)
 				xsk_manager_destroy(&dp->xsk_mgr);
 			return ret;
@@ -348,7 +353,7 @@ int voqd_dataplane_add_port(struct voqd_dataplane *dp, const char *ifname,
 		return -EINVAL;
 	
 	if (port_idx >= dp->num_ports) {
-		fprintf(stderr, "Invalid port index: %u\n", port_idx);
+		RS_LOG_ERROR("Invalid port index: %u", port_idx);
 		return -EINVAL;
 	}
 	
@@ -365,8 +370,8 @@ int voqd_dataplane_add_port(struct voqd_dataplane *dp, const char *ifname,
 	
 	int ret = xsk_manager_add_socket(&dp->xsk_mgr, ifname, queue_id, &config);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to add socket for %s queue %u: %s\n",
-		        ifname, queue_id, strerror(-ret));
+		RS_LOG_ERROR("Failed to add socket for %s queue %u: %s",
+		            ifname, queue_id, strerror(-ret));
 		return ret;
 	}
 	
@@ -385,7 +390,7 @@ int voqd_dataplane_rx_process(struct voqd_dataplane *dp, uint32_t port_idx)
 	struct xsk_socket *xsk = xsk_manager_get_socket(&dp->xsk_mgr, port_idx);
 	if (!xsk) {
 		if (dp->rx_debug_count++ < 5) {  /* Only print first few times */
-			fprintf(stderr, "RX: No AF_XDP socket for port %u\n", port_idx);
+			RS_LOG_DEBUG("RX: No AF_XDP socket for port %u", port_idx);
 		}
 		return 0;
 	}
@@ -396,13 +401,13 @@ int voqd_dataplane_rx_process(struct voqd_dataplane *dp, uint32_t port_idx)
 	
 	if (rcvd < 0) {
 		if (dp->rx_debug_count++ < 5) {
-			fprintf(stderr, "RX: xsk_socket_rx_batch failed for port %u: %d\n", port_idx, rcvd);
+			RS_LOG_ERROR("RX: xsk_socket_rx_batch failed for port %u: %d", port_idx, rcvd);
 		}
 		return rcvd;
 	}
 	
 	if (rcvd > 0 && dp->rx_debug_count < 10) {
-		fprintf(stderr, "RX: Port %u received %d packets\n", port_idx, rcvd);
+		RS_LOG_DEBUG("RX: Port %u received %d packets", port_idx, rcvd);
 		dp->rx_debug_count++;
 	}
 	
@@ -660,8 +665,8 @@ void *voqd_dataplane_rx_thread(void *arg)
 	/* Pin to CPU if configured */
 	if (dp->config.cpu_affinity > 0) {
 		if (pin_thread_to_cpu(dp->config.cpu_affinity) < 0)
-			fprintf(stderr, "Warning: Failed to pin RX thread to CPU %u\n",
-			        dp->config.cpu_affinity);
+			RS_LOG_WARN("Failed to pin RX thread to CPU %u",
+			            dp->config.cpu_affinity);
 	}
 	
 	while (dp->running) {
@@ -671,7 +676,7 @@ void *voqd_dataplane_rx_thread(void *arg)
 		if (dp->config.enable_afxdp) {
 			int ret = xsk_manager_poll_rx(&dp->xsk_mgr, dp->config.poll_timeout_ms);
 			if (ret < 0 && ret != -EINTR) {
-				fprintf(stderr, "RX poll error: %d\n", ret);
+				RS_LOG_ERROR("RX poll error: %d", ret);
 				break;
 			}
 		}
@@ -703,8 +708,8 @@ void *voqd_dataplane_tx_thread(void *arg)
 	/* Pin to CPU if configured (use next CPU after RX) */
 	if (dp->config.cpu_affinity > 0) {
 		if (pin_thread_to_cpu(dp->config.cpu_affinity + 1) < 0)
-			fprintf(stderr, "Warning: Failed to pin TX thread to CPU %u\n",
-			        dp->config.cpu_affinity + 1);
+			RS_LOG_WARN("Failed to pin TX thread to CPU %u",
+			            dp->config.cpu_affinity + 1);
 	}
 	
 	while (dp->running) {
@@ -734,7 +739,7 @@ int voqd_dataplane_start(struct voqd_dataplane *dp)
 	
 	/* Start RX thread */
 	if (pthread_create(&dp->rx_thread, NULL, voqd_dataplane_rx_thread, dp) != 0) {
-		fprintf(stderr, "Failed to create RX thread\n");
+		RS_LOG_ERROR("Failed to create RX thread");
 		dp->running = false;
 		return -1;
 	}
@@ -742,7 +747,7 @@ int voqd_dataplane_start(struct voqd_dataplane *dp)
 	/* Start TX thread if scheduler enabled */
 	if (dp->config.enable_scheduler) {
 		if (pthread_create(&dp->tx_thread, NULL, voqd_dataplane_tx_thread, dp) != 0) {
-			fprintf(stderr, "Failed to create TX thread\n");
+			RS_LOG_ERROR("Failed to create TX thread");
 			dp->running = false;
 			pthread_cancel(dp->rx_thread);
 			pthread_join(dp->rx_thread, NULL);

@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rSwitch Module Marketplace</title>
+  <meta name="description" content="Discover, Install, and Share Reconfigurable Network Modules">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="hero">
+    <div class="hero__content">
+      <p class="hero__eyebrow">Ecosystem 1.2</p>
+      <h1>rSwitch Module Marketplace</h1>
+      <p class="hero__tagline">Discover, Install, and Share Reconfigurable Network Modules</p>
+      <div class="search-wrap">
+        <label for="moduleSearch" class="sr-only">Search modules</label>
+        <input id="moduleSearch" type="search" placeholder="Search by module, description, or category..." autocomplete="off">
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <nav id="categoryTabs" class="tabs" aria-label="Module categories">
+      <button class="tab is-active" data-category="All" type="button">All</button>
+      <button class="tab" data-category="L2 Switching" type="button">L2 Switching</button>
+      <button class="tab" data-category="L3 Routing" type="button">L3 Routing</button>
+      <button class="tab" data-category="Security" type="button">Security</button>
+      <button class="tab" data-category="QoS" type="button">QoS</button>
+      <button class="tab" data-category="Monitoring" type="button">Monitoring</button>
+      <button class="tab" data-category="Tunneling" type="button">Tunneling</button>
+    </nav>
+
+    <section class="results-header">
+      <h2>Module Catalog</h2>
+      <p id="resultsCount">Loading modules...</p>
+    </section>
+
+    <section id="moduleGrid" class="module-grid" aria-live="polite"></section>
+  </main>
+
+  <dialog id="moduleModal" class="modal" aria-labelledby="modalTitle">
+    <article class="modal__panel">
+      <button id="closeModal" class="modal__close" type="button" aria-label="Close details">x</button>
+      <h3 id="modalTitle"></h3>
+      <p id="modalMeta" class="modal__meta"></p>
+      <p id="modalDescription"></p>
+      <div class="modal__section">
+        <h4>Dependencies</h4>
+        <p id="modalDependencies"></p>
+      </div>
+      <div class="modal__section">
+        <h4>Compatibility</h4>
+        <p id="modalCompatibility"></p>
+      </div>
+      <div class="modal__section">
+        <h4>Usage Example</h4>
+        <pre id="modalUsage"></pre>
+      </div>
+    </article>
+  </dialog>
+
+  <footer class="footer">
+    <a href="../Documentation_Index.md">Documentation</a>
+    <a href="https://github.com/kylecui/rswitch" target="_blank" rel="noreferrer">GitHub</a>
+    <a href="../development/Module_Developer_Guide.md">SDK Guide</a>
+  </footer>
+
+  <template id="cardTemplate">
+    <article class="card">
+      <header class="card__header">
+        <h3 class="card__title"></h3>
+        <span class="card__version"></span>
+      </header>
+      <p class="card__summary"></p>
+      <ul class="card__meta">
+        <li><strong>Author:</strong> <span class="meta-author"></span></li>
+        <li><strong>Stage:</strong> <span class="meta-stage"></span></li>
+        <li><strong>Hook:</strong> <span class="meta-hook"></span></li>
+      </ul>
+      <div class="card__badges"></div>
+      <button class="card__details" type="button">View Details</button>
+    </article>
+  </template>
+
+  <script>
+    const state = {
+      modules: [],
+      activeCategory: "All",
+      query: ""
+    };
+
+    const grid = document.getElementById("moduleGrid");
+    const count = document.getElementById("resultsCount");
+    const search = document.getElementById("moduleSearch");
+    const tabs = document.getElementById("categoryTabs");
+    const template = document.getElementById("cardTemplate");
+    const modal = document.getElementById("moduleModal");
+
+    function badgeClass(category) {
+      return "badge badge--" + category.toLowerCase().replace(/\s+/g, "-");
+    }
+
+    function matchesFilters(mod) {
+      const selected = state.activeCategory;
+      const inCategory = selected === "All" || mod.category === selected;
+      const haystack = [mod.name, mod.description, mod.category].join(" ").toLowerCase();
+      const hasQuery = haystack.includes(state.query);
+      return inCategory && hasQuery;
+    }
+
+    function renderCards() {
+      const filtered = state.modules.filter(matchesFilters).sort((a, b) => a.stage - b.stage);
+      grid.textContent = "";
+      count.textContent = `${filtered.length} module${filtered.length === 1 ? "" : "s"} shown`;
+
+      if (filtered.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "No modules match your filter.";
+        grid.appendChild(empty);
+        return;
+      }
+
+      for (const mod of filtered) {
+        const fragment = template.content.cloneNode(true);
+        fragment.querySelector(".card__title").textContent = mod.name;
+        fragment.querySelector(".card__version").textContent = `v${mod.version}`;
+        fragment.querySelector(".card__summary").textContent = mod.description;
+        fragment.querySelector(".meta-author").textContent = mod.author;
+        fragment.querySelector(".meta-stage").textContent = mod.stage;
+        fragment.querySelector(".meta-hook").textContent = mod.hook;
+
+        const badges = fragment.querySelector(".card__badges");
+        const categoryBadge = document.createElement("span");
+        categoryBadge.className = badgeClass(mod.category);
+        categoryBadge.textContent = mod.category;
+        badges.appendChild(categoryBadge);
+
+        if (mod.required) {
+          const required = document.createElement("span");
+          required.className = "badge badge--required";
+          required.textContent = "Required";
+          badges.appendChild(required);
+        }
+
+        fragment.querySelector(".card__details").addEventListener("click", () => openModal(mod));
+        grid.appendChild(fragment);
+      }
+    }
+
+    function openModal(mod) {
+      document.getElementById("modalTitle").textContent = mod.name;
+      document.getElementById("modalMeta").textContent = `v${mod.version} | ABI ${mod.abi_version} | ${mod.hook} stage ${mod.stage}`;
+      document.getElementById("modalDescription").textContent = mod.full_description || mod.description;
+      document.getElementById("modalDependencies").textContent = mod.dependencies && mod.dependencies.length
+        ? mod.dependencies.join(", ")
+        : "None";
+      document.getElementById("modalCompatibility").textContent = mod.compatibility || "Not specified";
+      document.getElementById("modalUsage").textContent = mod.usage_example || "No example available.";
+      modal.showModal();
+    }
+
+    document.getElementById("closeModal").addEventListener("click", () => modal.close());
+    modal.addEventListener("click", (event) => {
+      const panel = event.target.closest(".modal__panel");
+      if (!panel) {
+        modal.close();
+      }
+    });
+
+    tabs.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-category]");
+      if (!button) {
+        return;
+      }
+      state.activeCategory = button.dataset.category;
+      document.querySelectorAll(".tab").forEach((tab) => tab.classList.remove("is-active"));
+      button.classList.add("is-active");
+      renderCards();
+    });
+
+    search.addEventListener("input", (event) => {
+      state.query = event.target.value.trim().toLowerCase();
+      renderCards();
+    });
+
+    async function bootstrap() {
+      try {
+        const response = await fetch("./modules.json", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        state.modules = await response.json();
+        renderCards();
+      } catch (error) {
+        count.textContent = "Failed to load modules catalog.";
+        grid.innerHTML = `<p class="empty">Unable to fetch modules.json: ${error.message}</p>`;
+      }
+    }
+
+    bootstrap();
+  </script>
+</body>
+</html>

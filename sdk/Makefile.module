@@ -1,0 +1,48 @@
+# rSwitch Module Build Rules
+# Usage: make -f Makefile.module MODULE=my_module
+#
+# Requirements: clang, llvm, libbpf headers
+
+MODULE ?= my_module
+SDK_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+CLANG ?= clang
+LLC ?= llc
+ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
+
+# Compiler flags for BPF
+BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
+		      -Wall -Werror \
+		      -I$(SDK_DIR)/include \
+		      -D__BPF__
+
+# Detect vmlinux.h
+VMLINUX_H := $(SDK_DIR)/include/vmlinux.h
+ifneq ($(wildcard $(VMLINUX_H)),)
+	BPF_CFLAGS += -I$(SDK_DIR)/include
+else
+	$(warning vmlinux.h not found in SDK. Generate with: bpftool btf dump file /sys/kernel/btf/vmlinux format c > $(VMLINUX_H))
+endif
+
+# Module source
+MODULE_SRC := $(MODULE).bpf.c
+MODULE_OBJ := $(MODULE).bpf.o
+
+.PHONY: all clean install verify
+
+all: $(MODULE_OBJ)
+
+$(MODULE_OBJ): $(MODULE_SRC)
+	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
+	@echo "Built: $@"
+
+clean:
+	rm -f $(MODULE_OBJ)
+
+install: $(MODULE_OBJ)
+	@echo "Installing module to /usr/local/lib/rswitch/modules/"
+	install -D -m 644 $(MODULE_OBJ) /usr/local/lib/rswitch/modules/$(MODULE_OBJ)
+
+# Verify module metadata
+verify: $(MODULE_OBJ)
+	@echo "Module metadata:"
+	@llvm-readelf -x .rodata.mod $(MODULE_OBJ) 2>/dev/null || echo "(no metadata section found)"

@@ -1,0 +1,45 @@
+intent:
+  name: "datacenter-tor"
+  description: "Data center top-of-rack switch with L3 gateway, telemetry, and HA uplinks"
+
+  segments:
+    - name: "servers-a"
+      vlan: 110
+      ports: [1, 2, 3, 4, 5, 6]
+    - name: "servers-b"
+      vlan: 120
+      ports: [7, 8, 9, 10, 11, 12]
+    - name: "storage"
+      vlan: 130
+      ports: [13, 14, 15, 16]
+    - name: "infra"
+      vlan: 999
+      ports: [47, 48]
+
+  security:
+    acl: true
+    source_guard: false
+    dhcp_snooping: false
+
+  qos:
+    enabled: true
+    default_class: "critical"
+
+  monitoring:
+    sflow: true
+    mirror: true
+    telemetry: true
+
+  routing:
+    enabled: true
+
+  high_availability:
+    stp: true
+    lacp: true
+
+  tunnels:
+    enabled: true
+    type: "vxlan"
+
+  ecmp:
+    enabled: true

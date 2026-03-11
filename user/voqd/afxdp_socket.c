@@ -23,6 +23,11 @@
 #include <net/if.h>
 #include <poll.h>
 
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 #include "afxdp_socket.h"
 
 /* Feature check at compile time */
@@ -63,7 +68,7 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	/* Get interface index */
 	ifindex = if_nametoindex(ifname);
 	if (!ifindex) {
-		fprintf(stderr, "Interface %s not found\n", ifname);
+		RS_LOG_ERROR("Interface %s not found", ifname);
 		free(xsk);
 		return -ENODEV;
 	}
@@ -81,8 +86,8 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	}
 	
 	if (xsks_map_fd < 0) {
-		fprintf(stderr, "Warning: Could not open xsks_map: %s (errno=%d)\n", 
-		        strerror(errno), errno);
+		RS_LOG_WARN("Could not open xsks_map: %s (errno=%d)",
+		            strerror(errno), errno);
 	}
 	
 	/* Calculate UMEM size */
@@ -97,7 +102,7 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	                 -1, 0);
 	
 	if (umem_area == MAP_FAILED) {
-		fprintf(stderr, "Failed to allocate UMEM: %s\n", strerror(errno));
+		RS_LOG_ERROR("Failed to allocate UMEM: %s", strerror(errno));
 		free(xsk);
 		return -ENOMEM;
 	}
@@ -112,8 +117,8 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	/* Create UMEM */
 	ret = xsk_umem__create(&umem, umem_area, umem_size, &fill, &comp, &umem_cfg);
 	if (ret) {
-		fprintf(stderr, "Failed to create UMEM for %s queue %u: %s\n",
-		        ifname, queue_id, strerror(-ret));
+		RS_LOG_ERROR("Failed to create UMEM for %s queue %u: %s",
+		             ifname, queue_id, strerror(-ret));
 		munmap(umem_area, umem_size);
 		free(xsk);
 		return ret;
@@ -137,8 +142,8 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	struct xsk_socket *xsk_sock = NULL;
 	ret = xsk_socket__create_shared(&xsk_sock, ifname, queue_id, umem, &rx, &tx, &fill, &comp, &xsk_cfg);
 	if (ret) {
-		fprintf(stderr, "Failed to add socket for %s queue %u: %s (errno=%d, ret=%d)\n",
-		        ifname, queue_id, strerror(-ret), errno, ret);
+		RS_LOG_ERROR("Failed to add socket for %s queue %u: %s (errno=%d, ret=%d)",
+		             ifname, queue_id, strerror(-ret), errno, ret);
 		xsk_umem__delete(umem);
 		munmap(umem_area, umem_size);
 		free(xsk);
@@ -178,8 +183,8 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 	if (xsks_map_fd >= 0) {
 		ret = bpf_map_update_elem(xsks_map_fd, &queue_id, &xsk->xsk_fd, BPF_ANY);
 		if (ret < 0) {
-			fprintf(stderr, "Warning: Failed to update xsks_map[%u]: %s\n",
-			        queue_id, strerror(errno));
+			RS_LOG_WARN("Failed to update xsks_map[%u]: %s",
+			            queue_id, strerror(errno));
 		} else {
 			printf("Registered AF_XDP socket in xsks_map[%u] = fd %d\n",
 			       queue_id, xsk->xsk_fd);
@@ -391,9 +396,9 @@ void *xsk_get_frame_data(struct xsk_socket *xsk, uint64_t frame_addr)
 int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
                       uint32_t queue_id, struct xsk_socket_config *config)
 {
-	fprintf(stderr, "AF_XDP not supported: libbpf xsk.h not available\n");
-	fprintf(stderr, "Rebuild with libbpf >= 1.0 for AF_XDP support\n");
-	fprintf(stderr, "VOQd can run in SHADOW mode for testing\n");
+	RS_LOG_ERROR("AF_XDP not supported: libbpf xsk.h not available");
+	RS_LOG_WARN("Rebuild with libbpf >= 1.0 for AF_XDP support");
+	RS_LOG_WARN("VOQd can run in SHADOW mode for testing");
 	return -ENOTSUP;
 }
 
@@ -491,7 +496,7 @@ int xsk_manager_add_socket(struct xsk_manager *mgr, const char *ifname,
                            uint32_t queue_id, struct xsk_socket_config *config)
 {
 	if (mgr->num_sockets >= 64) {
-		fprintf(stderr, "Maximum number of sockets reached\n");
+		RS_LOG_ERROR("Maximum number of sockets reached");
 		return -ENOMEM;
 	}
 	
@@ -531,7 +536,7 @@ int xsk_manager_poll_rx(struct xsk_manager *mgr, int timeout_ms)
 	
 	int ret = poll(fds, nfds, timeout_ms);
 	if (ret < 0 && errno != EINTR) {
-		fprintf(stderr, "Poll error: %s\n", strerror(errno));
+		RS_LOG_ERROR("Poll error: %s", strerror(errno));
 		return -errno;
 	}
 	

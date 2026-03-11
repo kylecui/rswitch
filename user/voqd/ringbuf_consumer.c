@@ -6,6 +6,11 @@
 #include <errno.h>
 #include <pthread.h>
 #include <unistd.h>
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 
 /*
  * Ringbuf Consumer Implementation
@@ -17,8 +22,8 @@ static int rb_event_handler(void *ctx, void *data, size_t data_sz)
 	struct rb_consumer *consumer = ctx;
 	
 	if (data_sz != sizeof(struct voq_meta)) {
-		fprintf(stderr, "Invalid event size: %zu (expected %zu)\n",
-		        data_sz, sizeof(struct voq_meta));
+		RS_LOG_ERROR("Invalid event size: %zu (expected %zu)",
+		             data_sz, sizeof(struct voq_meta));
 		consumer->events_dropped++;
 		return 0;
 	}
@@ -58,15 +63,15 @@ int rb_consumer_init(struct rb_consumer *consumer, const char *pin_path,
 	/* Open pinned ringbuf map */
 	consumer->ringbuf_fd = bpf_obj_get(pin_path);
 	if (consumer->ringbuf_fd < 0) {
-		fprintf(stderr, "Failed to open pinned ringbuf at %s: %s\n",
-		        pin_path, strerror(errno));
+		RS_LOG_ERROR("Failed to open pinned ringbuf at %s: %s",
+		             pin_path, strerror(errno));
 		return -errno;
 	}
 	
 	/* Create ring_buffer consumer */
 	consumer->rb = ring_buffer__new(consumer->ringbuf_fd, rb_event_handler, consumer, NULL);
 	if (!consumer->rb) {
-		fprintf(stderr, "Failed to create ring_buffer: %s\n", strerror(errno));
+		RS_LOG_ERROR("Failed to create ring_buffer: %s", strerror(errno));
 		close(consumer->ringbuf_fd);
 		return -errno;
 	}
@@ -108,7 +113,7 @@ static void *consumer_thread(void *arg)
 	while (consumer->running) {
 		int ret = rb_consumer_poll(consumer, 100);  /* 100ms timeout */
 		if (ret < 0 && ret != -EINTR) {
-			fprintf(stderr, "Ringbuf poll error: %d\n", ret);
+			RS_LOG_ERROR("Ringbuf poll error: %d", ret);
 			break;
 		}
 	}

@@ -20,13 +20,16 @@
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 
 #include "profile_parser.h"
+#include "rs_log.h"
 
 #define MAX_LINE_LEN 1024
 #define MAX_MODULES 32
 #define MAX_PORTS 64
 #define MAX_VLANS 128
+#define MAX_INHERIT_DEPTH 3
 
 /* Trim whitespace from both ends of string */
 static char *trim(char *str)
@@ -77,6 +80,18 @@ static int parse_bool(const char *value)
     return 0;
 }
 
+static int count_indent(const char *line)
+{
+    int indent = 0;
+
+    while (*line == ' ' || *line == '\t') {
+        indent++;
+        line++;
+    }
+
+    return indent;
+}
+
 /* Initialize profile with defaults */
 void profile_init(struct rs_profile *profile)
 {
@@ -122,14 +137,9 @@ void profile_init(struct rs_profile *profile)
 void profile_free(struct rs_profile *profile)
 {
     if (!profile) return;
-    
-    for (int i = 0; i < profile->ingress_count; i++) {
-        free(profile->ingress_modules[i]);
-    }
-    
-    for (int i = 0; i < profile->egress_count; i++) {
-        free(profile->egress_modules[i]);
-    }
+
+    free(profile->ingress_modules);
+    free(profile->egress_modules);
     
     if (profile->ports) {
         free(profile->ports);
@@ -142,61 +152,386 @@ void profile_free(struct rs_profile *profile)
     memset(profile, 0, sizeof(*profile));
 }
 
+static void profile_defaults(struct rs_profile *defaults)
+{
+    profile_init(defaults);
+}
+
+static void profile_merge(struct rs_profile *child, const struct rs_profile *parent)
+{
+    struct rs_profile defaults;
+
+    if (!child || !parent)
+        return;
+
+    if (child->name[0] == '\0')
+        strncpy(child->name, parent->name, sizeof(child->name) - 1);
+
+    if (child->description[0] == '\0')
+        strncpy(child->description, parent->description, sizeof(child->description) - 1);
+
+    if (child->version[0] == '\0')
+        strncpy(child->version, parent->version, sizeof(child->version) - 1);
+
+    if (child->ingress_count == 0 && parent->ingress_count > 0) {
+        child->ingress_modules = malloc(parent->ingress_count * sizeof(struct rs_profile_module_entry));
+        if (child->ingress_modules) {
+            memcpy(child->ingress_modules,
+                   parent->ingress_modules,
+                   parent->ingress_count * sizeof(struct rs_profile_module_entry));
+            child->ingress_count = parent->ingress_count;
+        } else {
+            RS_LOG_ERROR("Failed to allocate inherited ingress modules");
+        }
+    }
+
+    if (child->egress_count == 0 && parent->egress_count > 0) {
+        child->egress_modules = malloc(parent->egress_count * sizeof(struct rs_profile_module_entry));
+        if (child->egress_modules) {
+            memcpy(child->egress_modules,
+                   parent->egress_modules,
+                   parent->egress_count * sizeof(struct rs_profile_module_entry));
+            child->egress_count = parent->egress_count;
+        } else {
+            RS_LOG_ERROR("Failed to allocate inherited egress modules");
+        }
+    }
+
+    profile_defaults(&defaults);
+
+    if (child->settings.mac_learning == defaults.settings.mac_learning)
+        child->settings.mac_learning = parent->settings.mac_learning;
+    if (child->settings.mac_aging_time == defaults.settings.mac_aging_time)
+        child->settings.mac_aging_time = parent->settings.mac_aging_time;
+    if (child->settings.vlan_enforcement == defaults.settings.vlan_enforcement)
+        child->settings.vlan_enforcement = parent->settings.vlan_enforcement;
+    if (child->settings.default_vlan == defaults.settings.default_vlan)
+        child->settings.default_vlan = parent->settings.default_vlan;
+    if (child->settings.unknown_unicast_flood == defaults.settings.unknown_unicast_flood)
+        child->settings.unknown_unicast_flood = parent->settings.unknown_unicast_flood;
+    if (child->settings.broadcast_flood == defaults.settings.broadcast_flood)
+        child->settings.broadcast_flood = parent->settings.broadcast_flood;
+    if (child->settings.multicast_flood == defaults.settings.multicast_flood)
+        child->settings.multicast_flood = parent->settings.multicast_flood;
+    if (child->settings.stats_enabled == defaults.settings.stats_enabled)
+        child->settings.stats_enabled = parent->settings.stats_enabled;
+    if (child->settings.ringbuf_enabled == defaults.settings.ringbuf_enabled)
+        child->settings.ringbuf_enabled = parent->settings.ringbuf_enabled;
+    if (child->settings.debug == defaults.settings.debug)
+        child->settings.debug = parent->settings.debug;
+
+    if (child->voqd.enabled == defaults.voqd.enabled)
+        child->voqd.enabled = parent->voqd.enabled;
+    if (child->voqd.mode == defaults.voqd.mode)
+        child->voqd.mode = parent->voqd.mode;
+    if (child->voqd.num_ports == defaults.voqd.num_ports)
+        child->voqd.num_ports = parent->voqd.num_ports;
+    if (child->voqd.prio_mask == defaults.voqd.prio_mask)
+        child->voqd.prio_mask = parent->voqd.prio_mask;
+    if (child->voqd.enable_afxdp == defaults.voqd.enable_afxdp)
+        child->voqd.enable_afxdp = parent->voqd.enable_afxdp;
+    if (child->voqd.zero_copy == defaults.voqd.zero_copy)
+        child->voqd.zero_copy = parent->voqd.zero_copy;
+    if (child->voqd.rx_ring_size == defaults.voqd.rx_ring_size)
+        child->voqd.rx_ring_size = parent->voqd.rx_ring_size;
+    if (child->voqd.tx_ring_size == defaults.voqd.tx_ring_size)
+        child->voqd.tx_ring_size = parent->voqd.tx_ring_size;
+    if (child->voqd.frame_size == defaults.voqd.frame_size)
+        child->voqd.frame_size = parent->voqd.frame_size;
+    if (child->voqd.batch_size == defaults.voqd.batch_size)
+        child->voqd.batch_size = parent->voqd.batch_size;
+    if (child->voqd.poll_timeout_ms == defaults.voqd.poll_timeout_ms)
+        child->voqd.poll_timeout_ms = parent->voqd.poll_timeout_ms;
+    if (child->voqd.busy_poll == defaults.voqd.busy_poll)
+        child->voqd.busy_poll = parent->voqd.busy_poll;
+    if (child->voqd.cpu_affinity == defaults.voqd.cpu_affinity)
+        child->voqd.cpu_affinity = parent->voqd.cpu_affinity;
+    if (child->voqd.enable_scheduler == defaults.voqd.enable_scheduler)
+        child->voqd.enable_scheduler = parent->voqd.enable_scheduler;
+    if (child->voqd.use_veth_egress == defaults.voqd.use_veth_egress)
+        child->voqd.use_veth_egress = parent->voqd.use_veth_egress;
+    if (strcmp(child->voqd.veth_in_ifname, defaults.voqd.veth_in_ifname) == 0)
+        strncpy(child->voqd.veth_in_ifname, parent->voqd.veth_in_ifname,
+                sizeof(child->voqd.veth_in_ifname) - 1);
+
+    if (child->port_count == 0 && parent->port_count > 0) {
+        child->ports = malloc(parent->port_count * sizeof(struct rs_profile_port));
+        if (child->ports) {
+            memcpy(child->ports,
+                   parent->ports,
+                   parent->port_count * sizeof(struct rs_profile_port));
+            child->port_count = parent->port_count;
+        } else {
+            RS_LOG_ERROR("Failed to allocate inherited port list");
+        }
+    }
+
+    if (child->vlan_count == 0 && parent->vlan_count > 0) {
+        child->vlans = malloc(parent->vlan_count * sizeof(struct rs_profile_vlan));
+        if (child->vlans) {
+            memcpy(child->vlans,
+                   parent->vlans,
+                   parent->vlan_count * sizeof(struct rs_profile_vlan));
+            child->vlan_count = parent->vlan_count;
+        } else {
+            RS_LOG_ERROR("Failed to allocate inherited VLAN list");
+        }
+    }
+}
+
+static int resolve_parent_path(const char *child_filename,
+                               const char *extends_name,
+                               char *parent_path,
+                               size_t parent_path_len)
+{
+    const char *slash;
+
+    if (!child_filename || !extends_name || !parent_path)
+        return -EINVAL;
+
+    if (extends_name[0] == '/') {
+        int n = snprintf(parent_path, parent_path_len, "%s", extends_name);
+        return (n < 0 || (size_t)n >= parent_path_len) ? -ENAMETOOLONG : 0;
+    }
+
+    slash = strrchr(child_filename, '/');
+    if (!slash) {
+        int n = snprintf(parent_path, parent_path_len, "%s", extends_name);
+        return (n < 0 || (size_t)n >= parent_path_len) ? -ENAMETOOLONG : 0;
+    }
+
+    {
+        size_t dir_len = (size_t)(slash - child_filename);
+        int n;
+
+        if (dir_len + 1 >= parent_path_len)
+            return -ENAMETOOLONG;
+
+        memcpy(parent_path, child_filename, dir_len);
+        parent_path[dir_len] = '\0';
+
+        n = snprintf(parent_path + dir_len,
+                     parent_path_len - dir_len,
+                     "/%s",
+                     extends_name);
+        return (n < 0 || (size_t)n >= (parent_path_len - dir_len)) ? -ENAMETOOLONG : 0;
+    }
+}
+
+static int profile_load_recursive(const char *filename, struct rs_profile *profile, int depth)
+{
+    int ret;
+
+    if (depth > MAX_INHERIT_DEPTH) {
+        RS_LOG_ERROR("Profile inheritance depth exceeded (%d): %s", MAX_INHERIT_DEPTH, filename);
+        return -ELOOP;
+    }
+
+    ret = profile_load(filename, profile);
+    if (ret < 0)
+        return ret;
+
+    if (profile->extends[0] == '\0')
+        return 0;
+
+    {
+        char parent_path[PATH_MAX];
+        struct rs_profile parent;
+
+        ret = resolve_parent_path(filename, profile->extends, parent_path, sizeof(parent_path));
+        if (ret < 0) {
+            RS_LOG_ERROR("Failed to resolve parent path '%s' from '%s'", profile->extends, filename);
+            return ret;
+        }
+
+        profile_init(&parent);
+        ret = profile_load_recursive(parent_path, &parent, depth + 1);
+        if (ret < 0) {
+            profile_free(&parent);
+            return ret;
+        }
+
+        profile_merge(profile, &parent);
+        profile_free(&parent);
+    }
+
+    return 0;
+}
+
+int profile_load_with_inheritance(const char *filename, struct rs_profile *profile)
+{
+    return profile_load_recursive(filename, profile, 0);
+}
+
 /* Parse ingress/egress module list */
-static int parse_module_list(FILE *fp, char ***modules, int *count, const char *section)
+static int parse_module_list(FILE *fp, struct rs_profile_module_entry **modules,
+                             int *count, const char *section)
 {
     char line[MAX_LINE_LEN];
     int module_count = 0;
-    char **module_list = NULL;
-    
+    struct rs_profile_module_entry *module_list = NULL;
+
+    (void)section;
+
     /* Allocate initial array */
-    module_list = calloc(MAX_MODULES, sizeof(char *));
+    module_list = calloc(MAX_MODULES, sizeof(struct rs_profile_module_entry));
     if (!module_list) {
         return -ENOMEM;
     }
-    
+
     while (fgets(line, sizeof(line), fp)) {
-        /* Save original line length BEFORE any modification for accurate fseek
-         * BUG FIX: trim() and remove_comment() modify line in place, changing
-         * strlen(line). Using the modified length causes off-by-one seek errors.
-         */
         size_t original_len = strlen(line);
-        
+        char line_copy[MAX_LINE_LEN];
+        char key[256], value[256];
+
+        strncpy(line_copy, line, sizeof(line_copy) - 1);
+        line_copy[sizeof(line_copy) - 1] = '\0';
+
         remove_comment(line);
         char *trimmed = trim(line);
-        
+
         if (strlen(trimmed) == 0) continue;
-        
+
         /* Check if we're entering another section */
-        if (strchr(trimmed, ':') && trimmed[0] != '-') {
-            /* Put the line back by seeking backwards using ORIGINAL length */
+        if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
             fseek(fp, -(long)original_len, SEEK_CUR);
             break;
         }
-        
+
         /* Parse list item */
-        if (trimmed[0] == '-') {
-            char *module_name = trim(trimmed + 1);
-            if (strlen(module_name) > 0 && module_count < MAX_MODULES) {
-                module_list[module_count] = strdup(module_name);
-                if (!module_list[module_count]) {
-                    goto error;
+        if (trimmed[0] == '-' && module_count < MAX_MODULES) {
+            char *list_item = trim(trimmed + 1);
+            struct rs_profile_module_entry entry;
+
+            memset(&entry, 0, sizeof(entry));
+            entry.stage_override = -1;
+
+            if (strlen(list_item) == 0) {
+                continue;
+            }
+
+            if (parse_key_value(list_item, key, value, sizeof(key)) == 0) {
+                if (strcmp(key, "name") != 0) {
+                    continue;
                 }
+
+                strncpy(entry.name, value, sizeof(entry.name) - 1);
+
+                while (fgets(line, sizeof(line), fp)) {
+                    size_t child_len = strlen(line);
+                    char child_copy[MAX_LINE_LEN];
+                    char child_key[256], child_value[256];
+                    char *first_non_ws;
+                    int child_indent;
+
+                    strncpy(child_copy, line, sizeof(child_copy) - 1);
+                    child_copy[sizeof(child_copy) - 1] = '\0';
+
+                    remove_comment(line);
+                    char *child_trimmed = trim(line);
+
+                    if (strlen(child_trimmed) == 0)
+                        continue;
+
+                    first_non_ws = child_copy;
+                    while (*first_non_ws == ' ' || *first_non_ws == '\t')
+                        first_non_ws++;
+
+                    child_indent = count_indent(child_copy);
+
+                    if (child_copy[0] != ' ' && child_copy[0] != '\t') {
+                        fseek(fp, -(long)child_len, SEEK_CUR);
+                        break;
+                    }
+
+                    if (*first_non_ws == '-') {
+                        fseek(fp, -(long)child_len, SEEK_CUR);
+                        break;
+                    }
+
+                    if (parse_key_value(child_trimmed, child_key, child_value,
+                                        sizeof(child_key)) != 0) {
+                        continue;
+                    }
+
+                    if (strcmp(child_key, "stage") == 0) {
+                        entry.stage_override = atoi(child_value);
+                    } else if (strcmp(child_key, "optional") == 0) {
+                        entry.optional = parse_bool(child_value);
+                    } else if (strcmp(child_key, "condition") == 0) {
+                        strncpy(entry.condition, child_value, sizeof(entry.condition) - 1);
+                    } else if (strcmp(child_key, "name") == 0) {
+                        strncpy(entry.name, child_value, sizeof(entry.name) - 1);
+                    } else if (strcmp(child_key, "config") == 0) {
+                        while (fgets(line, sizeof(line), fp)) {
+                            size_t cfg_len = strlen(line);
+                            char cfg_copy[MAX_LINE_LEN];
+                            char cfg_key[256], cfg_value[256];
+                            char *cfg_first_non_ws;
+                            int cfg_indent;
+
+                            strncpy(cfg_copy, line, sizeof(cfg_copy) - 1);
+                            cfg_copy[sizeof(cfg_copy) - 1] = '\0';
+
+                            remove_comment(line);
+                            char *cfg_trimmed = trim(line);
+
+                            if (strlen(cfg_trimmed) == 0)
+                                continue;
+
+                            cfg_first_non_ws = cfg_copy;
+                            while (*cfg_first_non_ws == ' ' || *cfg_first_non_ws == '\t')
+                                cfg_first_non_ws++;
+
+                            if (cfg_copy[0] != ' ' && cfg_copy[0] != '\t') {
+                                fseek(fp, -(long)cfg_len, SEEK_CUR);
+                                break;
+                            }
+
+                            if (*cfg_first_non_ws == '-') {
+                                fseek(fp, -(long)cfg_len, SEEK_CUR);
+                                break;
+                            }
+
+                            cfg_indent = count_indent(cfg_copy);
+                            if (cfg_indent <= child_indent) {
+                                fseek(fp, -(long)cfg_len, SEEK_CUR);
+                                break;
+                            }
+
+                            if (parse_key_value(cfg_trimmed, cfg_key, cfg_value,
+                                                sizeof(cfg_key)) != 0) {
+                                continue;
+                            }
+
+                            if (entry.config_count >= RS_MAX_MODULE_CONFIG_PARAMS) {
+                                continue;
+                            }
+
+                            strncpy(entry.config[entry.config_count].key,
+                                    cfg_key,
+                                    sizeof(entry.config[entry.config_count].key) - 1);
+                            strncpy(entry.config[entry.config_count].value,
+                                    cfg_value,
+                                    sizeof(entry.config[entry.config_count].value) - 1);
+                            entry.config_count++;
+                        }
+                    }
+                }
+            } else {
+                strncpy(entry.name, list_item, sizeof(entry.name) - 1);
+            }
+
+            if (entry.name[0] != '\0') {
+                module_list[module_count] = entry;
                 module_count++;
             }
         }
     }
-    
+
     *modules = module_list;
     *count = module_count;
     return 0;
-    
-error:
-    for (int i = 0; i < module_count; i++) {
-        free(module_list[i]);
-    }
-    free(module_list);
-    return -ENOMEM;
 }
 
 /* Parse settings section */
@@ -626,7 +961,7 @@ int profile_load(const char *filename, struct rs_profile *profile)
     
     fp = fopen(filename, "r");
     if (!fp) {
-        fprintf(stderr, "Failed to open profile: %s\n", filename);
+        RS_LOG_ERROR("Failed to open profile: %s", filename);
         return -errno;
     }
     
@@ -647,6 +982,15 @@ int profile_load(const char *filename, struct rs_profile *profile)
             strncpy(profile->description, value, sizeof(profile->description) - 1);
         } else if (strcmp(key, "version") == 0) {
             strncpy(profile->version, value, sizeof(profile->version) - 1);
+        } else if (strcmp(key, "extends") == 0) {
+            char *extend_value = value;
+            size_t value_len = strlen(extend_value);
+
+            if (value_len >= 2 && extend_value[0] == '"' && extend_value[value_len - 1] == '"') {
+                extend_value[value_len - 1] = '\0';
+                extend_value++;
+            }
+            strncpy(profile->extends, extend_value, sizeof(profile->extends) - 1);
         } else if (strcmp(key, "ingress") == 0) {
             ret = parse_module_list(fp, &profile->ingress_modules, 
                                    &profile->ingress_count, "ingress");
@@ -689,12 +1033,36 @@ void profile_print(const struct rs_profile *profile)
     
     printf("\nIngress pipeline (%d modules):\n", profile->ingress_count);
     for (int i = 0; i < profile->ingress_count; i++) {
-        printf("  - %s\n", profile->ingress_modules[i]);
+        const struct rs_profile_module_entry *entry = &profile->ingress_modules[i];
+        printf("  - %s", entry->name);
+        if (entry->stage_override >= 0) {
+            printf(" (stage_override=%d)", entry->stage_override);
+        }
+        if (entry->optional) {
+            if (entry->condition[0] != '\0') {
+                printf(" [optional if %s]", entry->condition);
+            } else {
+                printf(" [optional]");
+            }
+        }
+        printf("\n");
     }
     
     printf("\nEgress pipeline (%d modules):\n", profile->egress_count);
     for (int i = 0; i < profile->egress_count; i++) {
-        printf("  - %s\n", profile->egress_modules[i]);
+        const struct rs_profile_module_entry *entry = &profile->egress_modules[i];
+        printf("  - %s", entry->name);
+        if (entry->stage_override >= 0) {
+            printf(" (stage_override=%d)", entry->stage_override);
+        }
+        if (entry->optional) {
+            if (entry->condition[0] != '\0') {
+                printf(" [optional if %s]", entry->condition);
+            } else {
+                printf(" [optional]");
+            }
+        }
+        printf("\n");
     }
     
     printf("\nSettings:\n");

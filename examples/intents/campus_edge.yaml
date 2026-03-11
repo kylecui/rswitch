@@ -1,0 +1,35 @@
+intent:
+  name: "campus-edge-switch"
+  description: "Campus edge switch with VLAN segmentation and baseline security controls"
+
+  segments:
+    - name: "student"
+      vlan: 100
+      ports: [1, 2, 3, 4, 5, 6]
+    - name: "faculty"
+      vlan: 200
+      ports: [7, 8, 9, 10]
+    - name: "management"
+      vlan: 999
+      ports: [24]
+
+  security:
+    acl: true
+    source_guard: true
+    dhcp_snooping: true
+
+  qos:
+    enabled: true
+    default_class: "best-effort"
+
+  monitoring:
+    sflow: false
+    mirror: false
+    telemetry: true
+
+  routing:
+    enabled: true
+
+  high_availability:
+    stp: true
+    lacp: false

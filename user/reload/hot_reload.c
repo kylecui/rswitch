@@ -31,16 +31,27 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <getopt.h>
 
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include <bpf/btf.h>
 
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
+
 /* BPF pinning path */
 #define BPF_PIN_PATH "/sys/fs/bpf"
 
 /* From rswitch_loader.c */
-#define RS_ABI_VERSION 1
+#define RS_ABI_VERSION_MAJOR 1
+#define RS_ABI_VERSION_MINOR 0
+#define RS_ABI_VERSION ((RS_ABI_VERSION_MAJOR << 16) | RS_ABI_VERSION_MINOR)
+#define RS_ABI_MAJOR(v) ((v) >> 16)
+#define RS_ABI_MINOR(v) ((v) & 0xFFFF)
 #define RS_HOOK_XDP_INGRESS 0
 #define RS_HOOK_XDP_EGRESS 1
 #define MAX_MODULES 64
@@ -75,15 +86,27 @@ struct reload_ctx {
     
     /* Map FDs */
     int rs_progs_fd;
+    int rs_prog_chain_fd;
     
     /* Options */
     int verbose;
     int dry_run;  /* Validate but don't apply */
 };
 
+struct verified_module {
+    struct rs_module_desc desc;
+    struct bpf_object *obj;
+    struct bpf_program *prog;
+    int prog_fd;
+};
+
 /* Forward declarations */
 static int is_loadable_module(int prog_fd, struct rs_module_desc *desc);
 static int read_module_metadata(const char *path, struct rs_module_desc *desc);
+static int verify_module_before_swap(struct reload_ctx *ctx, const char *module_path,
+                                     const char *expected_module_name, __u32 expected_hook,
+                                     int dry_run, struct verified_module *out);
+static int reload_module(struct reload_ctx *ctx, const char *module_name, int dry_run);
 
 /* Auto-get rs_progs FD if not already set */
 static int ensure_rs_progs_fd(struct reload_ctx *ctx)
@@ -96,14 +119,18 @@ static int ensure_rs_progs_fd(struct reload_ctx *ctx)
     /* Auto-detect from pinned map */
     ctx->rs_progs_fd = bpf_obj_get(BPF_PIN_PATH "/rs_progs");
     if (ctx->rs_progs_fd < 0) {
-        fprintf(stderr, "Failed to get rs_progs map: %s\n", strerror(errno));
-        fprintf(stderr, "Make sure rSwitch is running and maps are pinned.\n");
-        fprintf(stderr, "Or specify the map FD manually with -p/--prog-fd\n");
+        RS_LOG_ERROR("Failed to get rs_progs map: %s", strerror(errno));
+        RS_LOG_ERROR("Make sure rSwitch is running and maps are pinned.");
+        RS_LOG_ERROR("Or specify the map FD manually with -p/--prog-fd");
         return -1;
     }
     
     if (ctx->verbose) {
         printf("Auto-detected rs_progs map: fd=%d\n", ctx->rs_progs_fd);
+    }
+
+    if (ctx->rs_prog_chain_fd <= 0) {
+        ctx->rs_prog_chain_fd = bpf_obj_get(BPF_PIN_PATH "/rs_prog_chain");
     }
     
     return 0;
@@ -122,14 +149,14 @@ static int read_module_metadata(const char *path, struct rs_module_desc *desc)
     obj = bpf_object__open(path);
     err = libbpf_get_error(obj);
     if (err) {
-        fprintf(stderr, "Failed to open %s: %s\n", path, strerror(-err));
+        RS_LOG_ERROR("Failed to open %s: %s", path, strerror(-err));
         return -1;
     }
     
     btf = bpf_object__btf(obj);
     if (!btf) {
         bpf_object__close(obj);
-        fprintf(stderr, "No BTF in %s\n", path);
+        RS_LOG_ERROR("No BTF in %s", path);
         return -1;
     }
     
@@ -145,7 +172,7 @@ static int read_module_metadata(const char *path, struct rs_module_desc *desc)
             struct bpf_map *map = bpf_object__find_map_by_name(obj, ".rodata.mod");
             if (!map) {
                 bpf_object__close(obj);
-                fprintf(stderr, "Failed to find .rodata.mod map in %s\n", path);
+                RS_LOG_ERROR("Failed to find .rodata.mod map in %s", path);
                 return -1;
             }
             
@@ -158,19 +185,45 @@ static int read_module_metadata(const char *path, struct rs_module_desc *desc)
                     size = sizeof(*desc);
                 } else {
                     bpf_object__close(obj);
-                    fprintf(stderr, "Invalid .rodata.mod section in %s (size=%zu)\n", 
-                            path, size);
+                    RS_LOG_ERROR("Invalid .rodata.mod section in %s (size=%zu)",
+                                 path, size);
                     return -1;
                 }
             }
             
             memcpy(desc, data, sizeof(*desc));
             
-            /* Validate ABI version */
-            if (desc->abi_version != RS_ABI_VERSION) {
-                fprintf(stderr, "ABI version mismatch in %s: expected %u, got %u\n",
-                        path, RS_ABI_VERSION, desc->abi_version);
-                return -1;
+            {
+                __u32 mod_major = RS_ABI_MAJOR(desc->abi_version);
+                __u32 mod_minor = RS_ABI_MINOR(desc->abi_version);
+
+                if (mod_major == 0 && desc->abi_version == 1) {
+                    mod_major = 1;
+                    mod_minor = 0;
+                }
+
+                if (mod_major != RS_ABI_VERSION_MAJOR) {
+                    RS_LOG_ERROR("ABI major mismatch in %s: platform=%u.%u module=%u.%u (raw=%u)",
+                                 path,
+                                 RS_ABI_VERSION_MAJOR,
+                                 RS_ABI_VERSION_MINOR,
+                                 mod_major,
+                                 mod_minor,
+                                 desc->abi_version);
+                    bpf_object__close(obj);
+                    return -1;
+                }
+
+                if (mod_minor > RS_ABI_VERSION_MINOR) {
+                    RS_LOG_ERROR("ABI minor too new in %s: platform=%u.%u module=%u.%u",
+                                 path,
+                                 RS_ABI_VERSION_MAJOR,
+                                 RS_ABI_VERSION_MINOR,
+                                 mod_major,
+                                 mod_minor);
+                    bpf_object__close(obj);
+                    return -1;
+                }
             }
             
             bpf_object__close(obj);
@@ -179,7 +232,7 @@ static int read_module_metadata(const char *path, struct rs_module_desc *desc)
     }
     
     bpf_object__close(obj);
-    fprintf(stderr, "No .rodata.mod section found in %s\n", path);
+    RS_LOG_ERROR("No .rodata.mod section found in %s", path);
     return -1;
 }
 
@@ -206,13 +259,13 @@ static int load_module_for_reload(struct reload_ctx *ctx, const char *module_nam
     module->obj = bpf_object__open(path);
     err = libbpf_get_error(module->obj);
     if (err) {
-        fprintf(stderr, "Failed to open module %s: %s\n", module_name, strerror(-err));
+        RS_LOG_ERROR("Failed to open module %s: %s", module_name, strerror(-err));
         return -1;
     }
     
     err = bpf_object__load(module->obj);
     if (err) {
-        fprintf(stderr, "Failed to load module %s: %s\n", module_name, strerror(-err));
+        RS_LOG_ERROR("Failed to load module %s: %s", module_name, strerror(-err));
         bpf_object__close(module->obj);
         return -1;
     }
@@ -238,14 +291,14 @@ static int load_module_for_reload(struct reload_ctx *ctx, const char *module_nam
     }
     
     if (!module->prog) {
-        fprintf(stderr, "No XDP program found in module %s\n", module_name);
+        RS_LOG_ERROR("No XDP program found in module %s", module_name);
         bpf_object__close(module->obj);
         return -1;
     }
     
     module->prog_fd = bpf_program__fd(module->prog);
     if (module->prog_fd < 0) {
-        fprintf(stderr, "Failed to get FD for module %s\n", module_name);
+        RS_LOG_ERROR("Failed to get FD for module %s", module_name);
         bpf_object__close(module->obj);
         return -1;
     }
@@ -270,8 +323,7 @@ static int update_prog_array(struct reload_ctx *ctx, int stage, int new_prog_fd)
     
     err = bpf_map_update_elem(ctx->rs_progs_fd, &stage, &new_prog_fd, BPF_ANY);
     if (err < 0) {
-        fprintf(stderr, "Failed to update prog_array[%d]: %s\n", 
-                stage, strerror(errno));
+        RS_LOG_ERROR("Failed to update prog_array[%d]: %s", stage, strerror(errno));
         return -1;
     }
     
@@ -354,7 +406,7 @@ static int verify_pipeline(struct reload_ctx *ctx, int *expected_stages, int num
         int stage = expected_stages[i];
         
         if (find_module_by_stage(stage, &prog_id, module_name, sizeof(module_name)) < 0) {
-            fprintf(stderr, "  [FAIL] Stage %d: no module loaded\n", stage);
+            RS_LOG_ERROR("  [FAIL] Stage %d: no module loaded", stage);
             return -1;
         }
         
@@ -365,58 +417,314 @@ static int verify_pipeline(struct reload_ctx *ctx, int *expected_stages, int num
     return 0;
 }
 
-/* Hot-reload a single module */
-static int hot_reload_module(struct reload_ctx *ctx, const char *module_name)
+static void emit_reload_event(const char *module_name, int success, const char *reason)
 {
-    struct reload_module new_module = {0};
-    int old_prog_id = -1;
-    char old_module_name[64] = {0};
-    int err;
-    
-    printf("\n=== Hot-reloading module: %s ===\n", module_name);
-    
-    /* Ensure rs_progs FD is available */
+    int fd = bpf_obj_get("/sys/fs/bpf/rs_event_bus");
+    if (fd >= 0) {
+        close(fd);
+    }
+
+    if (success) {
+        RS_LOG_INFO("RELOAD %s SUCCESS", module_name);
+    } else if (reason && reason[0] != '\0') {
+        RS_LOG_ERROR("RELOAD %s FAILED: %s", module_name, reason);
+    } else {
+        RS_LOG_ERROR("RELOAD %s FAILED", module_name);
+    }
+}
+
+static int module_name_matches(const char *expected, const char *prog_name)
+{
+    size_t n;
+
+    if (!expected || !prog_name) {
+        return 0;
+    }
+
+    if (strcmp(expected, prog_name) == 0) {
+        return 1;
+    }
+
+    n = strlen(expected);
+    if (strncmp(expected, prog_name, n) == 0 && (prog_name[n] == '_' || prog_name[n] == '\0')) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static __u32 hook_from_slot(__u32 slot)
+{
+    return slot >= 128 ? RS_HOOK_XDP_EGRESS : RS_HOOK_XDP_INGRESS;
+}
+
+static int find_module_slot(struct reload_ctx *ctx, const char *module_name,
+                            int *out_slot, int *out_prog_fd)
+{
+    __u32 slot;
+
     if (ensure_rs_progs_fd(ctx) < 0) {
         return -1;
     }
-    
-    /* Step 1: Load new module */
-    printf("Step 1: Loading new module...\n");
-    if (load_module_for_reload(ctx, module_name, &new_module) < 0) {
-        fprintf(stderr, "Failed to load new module\n");
-        return -1;
+
+    for (slot = 0; slot <= 255; slot++) {
+        __u32 prog_id = 0;
+        int prog_fd;
+        struct bpf_prog_info info = {};
+        __u32 info_len = sizeof(info);
+
+        if (bpf_map_lookup_elem(ctx->rs_progs_fd, &slot, &prog_id) < 0 || prog_id == 0) {
+            continue;
+        }
+
+        prog_fd = bpf_prog_get_fd_by_id(prog_id);
+        if (prog_fd < 0) {
+            continue;
+        }
+
+        if (bpf_obj_get_info_by_fd(prog_fd, &info, &info_len) < 0) {
+            close(prog_fd);
+            continue;
+        }
+
+        if (info.type == BPF_PROG_TYPE_XDP && module_name_matches(module_name, (const char *)info.name)) {
+            *out_slot = (int)slot;
+            *out_prog_fd = prog_fd;
+            return 0;
+        }
+
+        close(prog_fd);
     }
-    
-    /* Step 2: Check if there's an existing module at this stage */
-    printf("Step 2: Checking for existing module at stage %d...\n", new_module.stage);
-    if (find_module_by_stage(new_module.stage, &old_prog_id, old_module_name, sizeof(old_module_name)) == 0) {
-        printf("  Found existing module: %s (prog_id=%d)\n", old_module_name, old_prog_id);
-    } else {
-        printf("  No existing module at this stage (new module)\n");
+
+    return -1;
+}
+
+static struct bpf_program *find_xdp_program(struct bpf_object *obj, const char *module_name)
+{
+    struct bpf_program *prog;
+    char prog_name[128];
+
+    snprintf(prog_name, sizeof(prog_name), "%s_ingress", module_name);
+    prog = bpf_object__find_program_by_name(obj, prog_name);
+    if (prog) {
+        return prog;
     }
-    
-    /* Step 3: Update prog_array (atomic from kernel perspective) */
-    printf("Step 3: Updating pipeline (stage %d)...\n", new_module.stage);
-    err = update_prog_array(ctx, new_module.stage, new_module.prog_fd);
+
+    snprintf(prog_name, sizeof(prog_name), "%s_egress", module_name);
+    prog = bpf_object__find_program_by_name(obj, prog_name);
+    if (prog) {
+        return prog;
+    }
+
+    prog = bpf_object__find_program_by_name(obj, module_name);
+    if (prog) {
+        return prog;
+    }
+
+    bpf_object__for_each_program(prog, obj) {
+        if (bpf_program__type(prog) == BPF_PROG_TYPE_XDP) {
+            return prog;
+        }
+    }
+
+    return NULL;
+}
+
+static int verify_module_before_swap(struct reload_ctx *ctx, const char *module_path,
+                                     const char *expected_module_name, __u32 expected_hook,
+                                     int dry_run, struct verified_module *out)
+{
+    LIBBPF_OPTS(bpf_object_open_opts, opts,
+        .pin_root_path = "/sys/fs/bpf",
+    );
+    int err;
+
+    memset(out, 0, sizeof(*out));
+    out->prog_fd = -1;
+
+    err = read_module_metadata(module_path, &out->desc);
     if (err < 0) {
-        fprintf(stderr, "Failed to update pipeline\n");
-        bpf_object__close(new_module.obj);
         return -1;
     }
-    
-    printf("✓ Hot-reload completed successfully\n");
-    printf("  Module: %s\n", new_module.name);
-    printf("  Stage: %d\n", new_module.stage);
-    printf("  Program FD: %d\n", new_module.prog_fd);
-    if (old_prog_id >= 0) {
-        printf("  Replaced: %s (prog_id=%d)\n", old_module_name, old_prog_id);
+
+    if (strcmp(out->desc.name, expected_module_name) != 0) {
+        RS_LOG_ERROR("Module name mismatch: expected %s, got %s",
+                     expected_module_name, out->desc.name);
+        return -1;
     }
-    
-    /* Note: We don't close new_module.obj here because the program needs to stay loaded.
-     * The kernel will keep the program alive as long as it's referenced in prog_array.
-     * If you want to truly unload it later, use the 'unload' command. */
-    
+
+    if (out->desc.hook != expected_hook) {
+        RS_LOG_ERROR("Hook mismatch for %s: expected %u, got %u",
+                     expected_module_name, expected_hook, out->desc.hook);
+        return -1;
+    }
+
+    out->obj = bpf_object__open_file(module_path, &opts);
+    err = libbpf_get_error(out->obj);
+    if (err) {
+        out->obj = NULL;
+        RS_LOG_ERROR("Failed to open %s: %s", module_path, strerror(-err));
+        return -1;
+    }
+
+    err = bpf_object__load(out->obj);
+    if (err) {
+        RS_LOG_ERROR("Verifier rejected %s: %s", module_path, strerror(-err));
+        bpf_object__close(out->obj);
+        out->obj = NULL;
+        return -1;
+    }
+
+    out->prog = find_xdp_program(out->obj, expected_module_name);
+    if (!out->prog) {
+        RS_LOG_ERROR("No XDP program found in %s", module_path);
+        bpf_object__close(out->obj);
+        out->obj = NULL;
+        return -1;
+    }
+
+    out->prog_fd = bpf_program__fd(out->prog);
+    if (out->prog_fd < 0) {
+        RS_LOG_ERROR("Failed to get program FD for %s", expected_module_name);
+        bpf_object__close(out->obj);
+        out->obj = NULL;
+        return -1;
+    }
+
+    if (dry_run) {
+        RS_LOG_INFO("Dry-run verification passed for %s", expected_module_name);
+    }
+
     return 0;
+}
+
+static int atomic_module_swap(struct reload_ctx *ctx, const char *module_name, int slot,
+                              struct bpf_object *new_obj, struct bpf_program *new_prog,
+                              int new_fd, int old_fd)
+{
+    __u32 key = (__u32)slot;
+    __u32 new_prog_id = 0;
+    __u32 got_prog_id = 0;
+    struct bpf_prog_info info = {};
+    __u32 info_len = sizeof(info);
+    int err;
+
+    err = bpf_obj_get_info_by_fd(new_fd, &info, &info_len);
+    if (err < 0) {
+        RS_LOG_ERROR("Failed to read new program info for %s: %s", module_name, strerror(errno));
+        bpf_object__close(new_obj);
+        return -1;
+    }
+    new_prog_id = info.id;
+
+    err = bpf_map_update_elem(ctx->rs_progs_fd, &key, &new_fd, BPF_ANY);
+    if (err) {
+        RS_LOG_ERROR("Failed to update rs_progs[%d] for module %s: %s",
+                     slot, module_name, strerror(errno));
+        bpf_object__close(new_obj);
+        return -1;
+    }
+
+    if (bpf_map_lookup_elem(ctx->rs_progs_fd, &key, &got_prog_id) == 0 && got_prog_id != new_prog_id) {
+        RS_LOG_ERROR("Swap verification failed for %s at slot %d (expected prog_id=%u, got=%u)",
+                     module_name, slot, new_prog_id, got_prog_id);
+        if (old_fd >= 0) {
+            bpf_map_update_elem(ctx->rs_progs_fd, &key, &old_fd, BPF_ANY);
+        }
+        bpf_object__close(new_obj);
+        return -1;
+    }
+
+    for (int i = 0; i < MAX_MODULES; i++) {
+        if (ctx->modules[i].active && strcmp(ctx->modules[i].name, module_name) == 0) {
+            if (ctx->modules[i].obj) {
+                bpf_object__close(ctx->modules[i].obj);
+            }
+            ctx->modules[i].obj = new_obj;
+            ctx->modules[i].prog = new_prog;
+            ctx->modules[i].prog_fd = new_fd;
+            ctx->modules[i].stage = slot;
+            return 0;
+        }
+    }
+
+    for (int i = 0; i < MAX_MODULES; i++) {
+        if (!ctx->modules[i].active) {
+            snprintf(ctx->modules[i].name, sizeof(ctx->modules[i].name), "%s", module_name);
+            ctx->modules[i].obj = new_obj;
+            ctx->modules[i].prog = new_prog;
+            ctx->modules[i].prog_fd = new_fd;
+            ctx->modules[i].stage = slot;
+            ctx->modules[i].active = 1;
+            ctx->num_modules++;
+            return 0;
+        }
+    }
+
+    RS_LOG_WARN("Module tracking table full; swap succeeded but not tracked: %s", module_name);
+    return 0;
+}
+
+static int reload_module(struct reload_ctx *ctx, const char *module_name, int dry_run)
+{
+    char module_path[512];
+    struct verified_module verified;
+    int slot = -1;
+    int old_prog_fd = -1;
+    __u32 expected_hook;
+
+    if (find_module_slot(ctx, module_name, &slot, &old_prog_fd) < 0) {
+        RS_LOG_ERROR("Module %s is not currently loaded in rs_progs", module_name);
+        emit_reload_event(module_name, 0, "module not loaded");
+        return -1;
+    }
+
+    expected_hook = hook_from_slot((__u32)slot);
+    snprintf(module_path, sizeof(module_path), "%s/%s.bpf.o", BUILD_DIR, module_name);
+
+    if (verify_module_before_swap(ctx, module_path, module_name, expected_hook,
+                                  dry_run, &verified) < 0) {
+        if (old_prog_fd >= 0) {
+            close(old_prog_fd);
+        }
+        emit_reload_event(module_name, 0, "pre-verification failed");
+        return -1;
+    }
+
+    if (dry_run) {
+        if (verified.obj) {
+            bpf_object__close(verified.obj);
+        }
+        if (old_prog_fd >= 0) {
+            close(old_prog_fd);
+        }
+        emit_reload_event(module_name, 1, NULL);
+        printf("Dry-run succeeded: module %s verified for slot %d\n", module_name, slot);
+        return 0;
+    }
+
+    if (atomic_module_swap(ctx, module_name, slot, verified.obj, verified.prog,
+                           verified.prog_fd, old_prog_fd) < 0) {
+        if (old_prog_fd >= 0) {
+            close(old_prog_fd);
+        }
+        emit_reload_event(module_name, 0, "atomic swap failed");
+        return -1;
+    }
+
+    if (old_prog_fd >= 0) {
+        close(old_prog_fd);
+    }
+
+    emit_reload_event(module_name, 1, NULL);
+    printf("Reloaded module %s at slot %d\n", module_name, slot);
+    return 0;
+}
+
+/* Hot-reload a single module */
+static int hot_reload_module(struct reload_ctx *ctx, const char *module_name)
+{
+    return reload_module(ctx, module_name, ctx->dry_run);
 }
 
 /* Remove module from pipeline (clear prog_array entry) */
@@ -481,8 +789,8 @@ static int unload_module(struct reload_ctx *ctx, const char *module_name)
     }
     
     if (!found) {
-        fprintf(stderr, "Module not found: %s\n", module_name);
-        fprintf(stderr, "Use 'list' command to see loaded modules.\n");
+        RS_LOG_ERROR("Module not found: %s", module_name);
+        RS_LOG_ERROR("Use 'list' command to see loaded modules.");
         return -1;
     }
     
@@ -494,8 +802,7 @@ static int unload_module(struct reload_ctx *ctx, const char *module_name)
     if (!ctx->dry_run) {
         err = bpf_map_delete_elem(ctx->rs_progs_fd, &stage);
         if (err < 0) {
-            fprintf(stderr, "Failed to delete prog_array[%d]: %s\n", 
-                    stage, strerror(errno));
+            RS_LOG_ERROR("Failed to delete prog_array[%d]: %s", stage, strerror(errno));
             return -1;
         }
     } else {
@@ -580,7 +887,7 @@ static int list_modules(struct reload_ctx *ctx)
                 /* No more programs */
                 break;
             }
-            fprintf(stderr, "Error iterating programs: %s\n", strerror(errno));
+            RS_LOG_ERROR("Error iterating programs: %s", strerror(errno));
             break;
         }
         
@@ -645,6 +952,7 @@ static void usage(const char *prog)
 {
     fprintf(stderr,
         "Usage: %s <command> [OPTIONS]\n"
+        "   or: %s -r <module> [OPTIONS]\n"
         "\n"
         "Commands:\n"
         "  reload <module>     Hot-reload a module (e.g., 'vlan', 'l2learn')\n"
@@ -671,7 +979,7 @@ static void usage(const char *prog)
         "  # Manual FD override (if needed):\n"
         "  sudo bpftool map list | grep rs_progs\n"
         "  sudo %s reload vlan -p 42 -v\n",
-        prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog);
 }
 
 int main(int argc, char **argv)
@@ -679,39 +987,96 @@ int main(int argc, char **argv)
     struct reload_ctx ctx = {0};
     const char *command = NULL;
     const char *module_name = NULL;
-    int opt;
+    int stages[64] = {0};
+    int num_stages = 0;
+
+    rs_log_init("rswitch-reload", RS_LOG_LEVEL_INFO);
     
     if (argc < 2) {
         usage(argv[0]);
         return 1;
     }
-    
-    command = argv[1];
-    
-    /* Parse remaining arguments */
-    for (int i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--prog-fd") == 0) {
-            if (++i >= argc) {
-                fprintf(stderr, "Missing argument for %s\n", argv[i-1]);
+
+    if (strcmp(argv[1], "-r") == 0 || strcmp(argv[1], "--reload") == 0) {
+        static struct option long_options[] = {
+            {"reload", required_argument, NULL, 'r'},
+            {"prog-fd", required_argument, NULL, 'p'},
+            {"dry-run", no_argument, NULL, 'n'},
+            {"verbose", no_argument, NULL, 'v'},
+            {"help", no_argument, NULL, 'h'},
+            {0, 0, 0, 0},
+        };
+        int opt;
+
+        command = "reload";
+        optind = 1;
+
+        while ((opt = getopt_long(argc, argv, "r:p:nvh", long_options, NULL)) != -1) {
+            switch (opt) {
+            case 'r':
+                module_name = optarg;
+                break;
+            case 'p':
+                ctx.rs_progs_fd = atoi(optarg);
+                break;
+            case 'n':
+                ctx.dry_run = 1;
+                break;
+            case 'v':
+                ctx.verbose = 1;
+                break;
+            case 'h':
+                usage(argv[0]);
+                return 0;
+            default:
+                usage(argv[0]);
                 return 1;
             }
-            ctx.rs_progs_fd = atoi(argv[i]);
-        } else if (strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--dry-run") == 0) {
-            ctx.dry_run = 1;
-        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
-            ctx.verbose = 1;
-        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            usage(argv[0]);
-            return 0;
-        } else if (argv[i][0] != '-' && !module_name) {
-            module_name = argv[i];
+        }
+    } else {
+        command = argv[1];
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--prog-fd") == 0) {
+                if (++i >= argc) {
+                    RS_LOG_ERROR("Missing argument for %s", argv[i - 1]);
+                    return 1;
+                }
+                ctx.rs_progs_fd = atoi(argv[i]);
+                continue;
+            }
+
+            if (strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--dry-run") == 0) {
+                ctx.dry_run = 1;
+                continue;
+            }
+
+            if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+                ctx.verbose = 1;
+                continue;
+            }
+
+            if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+                usage(argv[0]);
+                return 0;
+            }
+
+            if (argv[i][0] != '-') {
+                if ((strcmp(command, "reload") == 0 || strcmp(command, "unload") == 0) && !module_name) {
+                    module_name = argv[i];
+                } else if (strcmp(command, "verify") == 0 && num_stages < 64) {
+                    stages[num_stages++] = atoi(argv[i]);
+                }
+            }
         }
     }
+
+    if (ctx.verbose)
+        rs_log_set_level(RS_LOG_LEVEL_DEBUG);
     
     /* Execute command */
     if (strcmp(command, "reload") == 0) {
         if (!module_name) {
-            fprintf(stderr, "Error: module name required for reload\n");
+            RS_LOG_ERROR("module name required for reload");
             usage(argv[0]);
             return 1;
         }
@@ -720,7 +1085,7 @@ int main(int argc, char **argv)
         
     } else if (strcmp(command, "unload") == 0) {
         if (!module_name) {
-            fprintf(stderr, "Error: module name required for unload\n");
+            RS_LOG_ERROR("module name required for unload");
             usage(argv[0]);
             return 1;
         }
@@ -731,24 +1096,15 @@ int main(int argc, char **argv)
         return list_modules(&ctx) < 0 ? 1 : 0;
         
     } else if (strcmp(command, "verify") == 0) {
-        /* Remaining args are stages */
-        int stages[64];
-        int num_stages = 0;
-        for (int i = 2; i < argc && num_stages < 64; i++) {
-            if (argv[i][0] != '-' && strcmp(argv[i], command) != 0) {
-                stages[num_stages++] = atoi(argv[i]);
-            }
-        }
-        
         if (num_stages == 0) {
-            fprintf(stderr, "Error: at least one stage required for verify\n");
+            RS_LOG_ERROR("at least one stage required for verify");
             return 1;
         }
         
         return verify_pipeline(&ctx, stages, num_stages) < 0 ? 1 : 0;
         
     } else {
-        fprintf(stderr, "Unknown command: %s\n", command);
+        RS_LOG_ERROR("Unknown command: %s", command);
         usage(argv[0]);
         return 1;
     }

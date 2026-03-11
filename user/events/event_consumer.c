@@ -14,6 +14,11 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include "event_consumer.h"
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 
 #define BPF_PIN_PATH "/sys/fs/bpf"
 
@@ -91,11 +96,11 @@ static void *consumer_thread(void *arg)
                                      unified_ringbuf_callback,
                                      consumer, NULL);
         if (!event_rb) {
-            fprintf(stderr, "Failed to create event bus ringbuf consumer\n");
+            RS_LOG_ERROR("Failed to create event bus ringbuf consumer");
             return NULL;
         }
     } else {
-        fprintf(stderr, "Event bus FD not available\n");
+        RS_LOG_ERROR("Event bus FD not available");
         return NULL;
     }
     
@@ -124,8 +129,8 @@ int event_consumer_init(struct event_consumer *consumer)
     snprintf(path, sizeof(path), "%s/rs_event_bus", BPF_PIN_PATH);
     consumer->event_bus_fd = bpf_obj_get(path);
     if (consumer->event_bus_fd < 0) {
-        fprintf(stderr, "Error: Failed to open rs_event_bus: %s\n", strerror(errno));
-        fprintf(stderr, "Make sure rSwitch is loaded and rs_event_bus is pinned.\n");
+        RS_LOG_ERROR("Failed to open rs_event_bus: %s", strerror(errno));
+        RS_LOG_ERROR("Make sure rSwitch is loaded and rs_event_bus is pinned.");
         return -errno;
     }
     
@@ -153,7 +158,7 @@ int event_consumer_start(struct event_consumer *consumer)
     consumer->running = 1;
     
     if (pthread_create(&consumer->thread, NULL, consumer_thread, consumer) != 0) {
-        fprintf(stderr, "Failed to create consumer thread\n");
+        RS_LOG_ERROR("Failed to create consumer thread");
         return -errno;
     }
     
@@ -251,6 +256,8 @@ int main(int argc, char **argv)
     int log_macs = 0;
     int log_policy = 0;
     int log_errors = 1;  /* Always log errors by default */
+
+    rs_log_init("rswitch-events", RS_LOG_LEVEL_INFO);
     
     int opt;
     while ((opt = getopt(argc, argv, "mpeh")) != -1) {
@@ -290,7 +297,7 @@ int main(int argc, char **argv)
     
     struct event_consumer consumer;
     if (event_consumer_init(&consumer) < 0) {
-        fprintf(stderr, "Failed to initialize event consumer\n");
+        RS_LOG_ERROR("Failed to initialize event consumer");
         return 1;
     }
     
@@ -308,7 +315,7 @@ int main(int argc, char **argv)
     }
     
     if (event_consumer_start(&consumer) < 0) {
-        fprintf(stderr, "Failed to start event consumer\n");
+        RS_LOG_ERROR("Failed to start event consumer");
         event_consumer_destroy(&consumer);
         return 1;
     }

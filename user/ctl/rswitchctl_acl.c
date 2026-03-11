@@ -13,6 +13,11 @@
 #include <arpa/inet.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 
 #define DEFAULT_ACL_RULES_MAP      "/sys/fs/bpf/acl_rules"
 #define DEFAULT_ACL_RULE_ORDER_MAP "/sys/fs/bpf/acl_rule_order"
@@ -71,7 +76,7 @@ static int parse_ip_cidr(const char *str, uint32_t *ip, uint32_t *mask)
         *slash = '\0';
         int prefix_len = atoi(slash + 1);
         if (prefix_len < 0 || prefix_len > 32) {
-            fprintf(stderr, "Invalid prefix length: %d\n", prefix_len);
+            RS_LOG_ERROR("Invalid prefix length: %d", prefix_len);
             return -1;
         }
         *mask = prefix_len == 0 ? 0 : htonl(~0u << (32 - prefix_len));
@@ -81,7 +86,7 @@ static int parse_ip_cidr(const char *str, uint32_t *ip, uint32_t *mask)
     
     struct in_addr addr;
     if (inet_pton(AF_INET, buf, &addr) != 1) {
-        fprintf(stderr, "Invalid IP address: %s\n", buf);
+        RS_LOG_ERROR("Invalid IP address: %s", buf);
         return -1;
     }
     
@@ -142,7 +147,7 @@ int cmd_acl_add_rule(int argc, char **argv)
             else if (strcmp(argv[i], "rate-limit") == 0)
                 rule.action = 2;
             else {
-                fprintf(stderr, "Invalid action: %s (use pass/drop/rate-limit)\n", argv[i]);
+                RS_LOG_ERROR("Invalid action: %s (use pass/drop/rate-limit)", argv[i]);
                 return -1;
             }
         }
@@ -158,20 +163,20 @@ int cmd_acl_add_rule(int argc, char **argv)
     }
     
     if (!has_rule_id) {
-        fprintf(stderr, "Error: --id required\n");
+        RS_LOG_ERROR("--id required");
         return -1;
     }
     
     // Open map
     int fd = bpf_obj_get(DEFAULT_ACL_RULES_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open ACL rules map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open ACL rules map: %s", strerror(errno));
         return -1;
     }
     
     // Add rule
     if (bpf_map_update_elem(fd, &rule_id, &rule, BPF_ANY) < 0) {
-        fprintf(stderr, "Failed to add rule: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to add rule: %s", strerror(errno));
         close(fd);
         return -1;
     }
@@ -186,12 +191,12 @@ int cmd_acl_del_rule(uint32_t rule_id)
 {
     int fd = bpf_obj_get(DEFAULT_ACL_RULES_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open ACL rules map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open ACL rules map: %s", strerror(errno));
         return -1;
     }
     
     if (bpf_map_delete_elem(fd, &rule_id) < 0) {
-        fprintf(stderr, "Failed to delete rule %u: %s\n", rule_id, strerror(errno));
+        RS_LOG_ERROR("Failed to delete rule %u: %s", rule_id, strerror(errno));
         close(fd);
         return -1;
     }
@@ -206,7 +211,7 @@ int cmd_acl_show_rules(void)
 {
     int fd = bpf_obj_get(DEFAULT_ACL_RULES_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open ACL rules map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open ACL rules map: %s", strerror(errno));
         return -1;
     }
     
@@ -281,7 +286,7 @@ int cmd_acl_show_stats(void)
 {
     int fd = bpf_obj_get(DEFAULT_ACL_STATS_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open ACL stats map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open ACL stats map: %s", strerror(errno));
         return -1;
     }
     
@@ -289,7 +294,7 @@ int cmd_acl_show_stats(void)
     uint32_t key = 0;
     
     if (bpf_map_lookup_elem(fd, &key, &stats) < 0) {
-        fprintf(stderr, "Failed to read stats: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to read stats: %s", strerror(errno));
         close(fd);
         return -1;
     }
@@ -308,7 +313,7 @@ int cmd_acl_enable(int enable)
 {
     int fd = bpf_obj_get(DEFAULT_ACL_CONFIG_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open ACL config map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open ACL config map: %s", strerror(errno));
         return -1;
     }
     
@@ -322,7 +327,7 @@ int cmd_acl_enable(int enable)
     config.enabled = enable ? 1 : 0;
     
     if (bpf_map_update_elem(fd, &key, &config, BPF_ANY) < 0) {
-        fprintf(stderr, "Failed to update config: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to update config: %s", strerror(errno));
         close(fd);
         return -1;
     }

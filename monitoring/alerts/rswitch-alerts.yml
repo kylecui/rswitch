@@ -1,0 +1,149 @@
+# rSwitch Prometheus Alerting Rules
+# ==================================
+# Operational monitoring alerts for rSwitch packet forwarding system
+# Scrape target: rswitch-prometheus:9417
+# Metric prefix: rswitch_*
+
+groups:
+  - name: rswitch
+    interval: 30s
+    rules:
+      # ================================================================
+      # CRITICAL ALERTS - Immediate operational impact
+      # ================================================================
+
+      # Port receiving no packets - likely interface down or disconnected
+      - alert: RSwitchPortDown
+        expr: |
+          rate(rswitch_port_rx_packets_total{interface=~".+"}[2m]) == 0
+        for: 60s
+        labels:
+          severity: critical
+          component: port
+        annotations:
+          summary: "rSwitch port {{ $labels.interface }} is down"
+          description: "Port {{ $labels.interface }} has received zero packets for over 60 seconds. The interface may be disconnected or administratively down."
+
+      # Expected module is not processing packets - module load/runtime failure
+      - alert: RSwitchModuleLoadFailure
+        expr: |
+          absent(rswitch_module_packets_processed_total{module=~"arp_learn|l2_forward|vlan_filter"})
+        for: 2m
+        labels:
+          severity: critical
+          component: module
+        annotations:
+          summary: "rSwitch module {{ $labels.module }} is not loaded or processing packets"
+          description: "Critical module {{ $labels.module }} has not reported packet processing metrics for over 2 minutes. The module may have failed to load or crashed."
+
+      # High packet drop rate at port level - indicates system overload or misconfiguration
+      - alert: RSwitchHighDropRate
+        expr: |
+          (
+            rate(rswitch_port_drop_packets_total[5m]) 
+            / 
+            rate(rswitch_port_rx_packets_total[5m])
+          ) > 0.01
+        for: 2m
+        labels:
+          severity: critical
+          component: port
+        annotations:
+          summary: "rSwitch port {{ $labels.interface }} dropping >1% of packets"
+          description: "Port {{ $labels.interface }} is dropping {{ $value | humanizePercentage }} of received packets over the last 5 minutes. This indicates system overload, buffer exhaustion, or misconfiguration."
+
+      # ================================================================
+      # WARNING ALERTS - Degraded performance or approaching limits
+      # ================================================================
+
+      # MAC address table approaching capacity (90% full)
+      - alert: RSwitchMACTableNearFull
+        expr: |
+          rswitch_mac_table_entries > 58000
+        for: 5m
+        labels:
+          severity: warning
+          component: mac_table
+        annotations:
+          summary: "rSwitch MAC table approaching capacity"
+          description: "MAC table contains {{ $value }} entries (max 65536). At >90% capacity, learning failures may occur soon. Consider aging tuning or capacity planning."
+
+      # VOQ depth approaching typical maximum - indicates congestion or slow egress
+      - alert: RSwitchVOQdCongestion
+        expr: |
+          rswitch_voqd_queue_depth > 800
+        for: 2m
+        labels:
+          severity: warning
+          component: voqd
+        annotations:
+          summary: "rSwitch VOQd queue congestion detected"
+          description: "VOQd queue depth is {{ $value }} (>80% of typical 1024 max) for queue {{ $labels.queue }}. This indicates egress congestion or head-of-line blocking."
+
+      # High CPU usage by rSwitch process - may lead to packet drops
+      - alert: RSwitchHighCPU
+        expr: |
+          rate(process_cpu_seconds_total{job="rswitch"}[5m]) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "rSwitch process CPU usage is high"
+          description: "rSwitch process CPU usage is {{ $value | humanizePercentage }} (>80%) averaged over 5 minutes. This may lead to packet processing delays or drops."
+
+      # Module-specific drop rate exceeding threshold - indicates module performance issue
+      - alert: RSwitchModuleHighDropRate
+        expr: |
+          (
+            rate(rswitch_module_packets_dropped_total[5m]) 
+            / 
+            rate(rswitch_module_packets_processed_total[5m])
+          ) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+          component: module
+        annotations:
+          summary: "rSwitch module {{ $labels.module }} dropping >5% of packets"
+          description: "Module {{ $labels.module }} is dropping {{ $value | humanizePercentage }} of processed packets over the last 5 minutes. Check module logs and resource constraints."
+
+      # ARP learning module experiencing drops - may indicate table churn or attacks
+      - alert: RSwitchARPAgingFailure
+        expr: |
+          rate(rswitch_module_packets_dropped_total{module="arp_learn"}[5m]) > 10
+        for: 3m
+        labels:
+          severity: warning
+          component: arp
+        annotations:
+          summary: "rSwitch ARP learning module experiencing high drop rate"
+          description: "ARP learning module is dropping {{ $value }} packets/sec over 5 minutes. This may indicate MAC table churn, aging issues, or ARP flooding attacks."
+
+      # ================================================================
+      # INFO ALERTS - Operational state changes
+      # ================================================================
+
+      # rSwitch recently restarted - informational for correlation with other events
+      - alert: RSwitchRestarted
+        expr: |
+          rswitch_uptime_seconds < 300
+        for: 1m
+        labels:
+          severity: info
+          component: system
+        annotations:
+          summary: "rSwitch has recently restarted"
+          description: "rSwitch uptime is {{ $value }}s (<5 minutes). The system recently restarted. Check logs for restart reason and validate functionality."
+
+      # Module counter reset detected - may indicate module reload
+      - alert: RSwitchModuleReloaded
+        expr: |
+          resets(rswitch_module_packets_processed_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: info
+          component: module
+        annotations:
+          summary: "rSwitch module {{ $labels.module }} counter reset detected"
+          description: "Module {{ $labels.module }} packet processing counter has reset in the last 10 minutes. The module may have been reloaded or restarted."

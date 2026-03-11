@@ -1,0 +1,62 @@
+policy:
+  name: "campus-network-policy"
+  description: "Verify campus network segmentation and access control"
+
+  assertions:
+    - type: reachable
+      from: { vlan: 100 }
+      to: { vlan: 100 }
+      protocol: any
+      expect: allow
+      description: "Same-VLAN traffic should be allowed"
+
+    - type: reachable
+      from: { vlan: 100 }
+      to: { vlan: 200 }
+      protocol: any
+      expect: deny
+      description: "Inter-VLAN traffic should be denied without routing"
+
+    - type: reachable
+      from: { subnet: "10.0.1.0/24" }
+      to: { host: "10.0.0.10" }
+      protocol: { tcp: 443 }
+      expect: allow
+      description: "HTTPS to app server should be allowed"
+
+    - type: reachable
+      from: { subnet: "10.0.1.0/24" }
+      to: { host: "10.0.0.10" }
+      protocol: { tcp: 22 }
+      expect: deny
+      description: "SSH to app server should be blocked"
+
+    - type: reachable
+      from: { subnet: "10.0.2.0/24" }
+      to: { subnet: "10.0.3.0/24" }
+      protocol: any
+      expect: deny
+      description: "Cross-subnet traffic denied without L3 routing"
+
+    - type: module_loaded
+      module: acl
+      expect: true
+      description: "ACL module must be loaded"
+
+    - type: module_loaded
+      module: conntrack
+      expect: true
+      description: "Connection tracking should be enabled"
+
+    - type: stage_order
+      before: acl
+      after: route
+      description: "ACL stage must execute before route"
+
+    - type: vlan_exists
+      vlan: 100
+      description: "Student VLAN must exist"
+
+    - type: vlan_exists
+      vlan: 200
+      description: "Faculty VLAN must exist"

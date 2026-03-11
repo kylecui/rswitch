@@ -20,6 +20,11 @@
 #include <errno.h>
 #include <net/if.h>
 #include <bpf/libbpf.h>
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 #include <bpf/bpf.h>
 
 #define PIN_PATH "/sys/fs/bpf"
@@ -89,7 +94,7 @@ static int parse_vlan_list(const char *str, __u16 *vlans, __u16 *count, __u16 ma
     while (token && *count < max_count) {
         int vlan = atoi(token);
         if (vlan < 1 || vlan > 4094) {
-            fprintf(stderr, "Invalid VLAN ID: %d (must be 1-4094)\n", vlan);
+            RS_LOG_ERROR("Invalid VLAN ID: %d (must be 1-4094)", vlan);
             free(buf);
             return -1;
         }
@@ -168,6 +173,8 @@ static void usage(const char *prog)
 
 int main(int argc, char **argv)
 {
+    rs_log_init("rsportctl", RS_LOG_LEVEL_INFO);
+
     char map_path[256];
     int map_fd;
     __u32 ifindex;
@@ -185,7 +192,7 @@ int main(int argc, char **argv)
     /* Get interface index */
     ifindex = if_nametoindex(ifname);
     if (ifindex == 0) {
-        fprintf(stderr, "Interface %s not found\n", ifname);
+        RS_LOG_ERROR("Interface %s not found", ifname);
         return 1;
     }
     
@@ -193,15 +200,15 @@ int main(int argc, char **argv)
     snprintf(map_path, sizeof(map_path), "%s/rs_port_config_map", PIN_PATH);
     map_fd = bpf_obj_get(map_path);
     if (map_fd < 0) {
-        fprintf(stderr, "Failed to open %s: %s\n", map_path, strerror(errno));
-        fprintf(stderr, "Is rSwitch loader running?\n");
+        RS_LOG_ERROR("Failed to open %s: %s", map_path, strerror(errno));
+        RS_LOG_ERROR("Is rSwitch loader running?");
         return 1;
     }
     
     /* Get current config */
     ret = bpf_map_lookup_elem(map_fd, &ifindex, &cfg);
     if (ret < 0) {
-        fprintf(stderr, "Port %s not configured in rSwitch\n", ifname);
+        RS_LOG_ERROR("Port %s not configured in rSwitch", ifname);
         close(map_fd);
         return 1;
     }
@@ -217,7 +224,7 @@ int main(int argc, char **argv)
         if (strcmp(key, "vlan-mode") == 0) {
             int mode = parse_vlan_mode(value);
             if (mode < 0) {
-                fprintf(stderr, "Invalid VLAN mode: %s\n", value);
+                RS_LOG_ERROR("Invalid VLAN mode: %s", value);
                 close(map_fd);
                 return 1;
             }
@@ -227,7 +234,7 @@ int main(int argc, char **argv)
         } else if (strcmp(key, "access-vlan") == 0) {
             int vlan = atoi(value);
             if (vlan < 1 || vlan > 4094) {
-                fprintf(stderr, "Invalid VLAN ID: %d\n", vlan);
+                RS_LOG_ERROR("Invalid VLAN ID: %d", vlan);
                 close(map_fd);
                 return 1;
             }
@@ -238,7 +245,7 @@ int main(int argc, char **argv)
         } else if (strcmp(key, "native-vlan") == 0) {
             int vlan = atoi(value);
             if (vlan < 1 || vlan > 4094) {
-                fprintf(stderr, "Invalid VLAN ID: %d\n", vlan);
+                RS_LOG_ERROR("Invalid VLAN ID: %d", vlan);
                 close(map_fd);
                 return 1;
             }
@@ -248,7 +255,7 @@ int main(int argc, char **argv)
         } else if (strcmp(key, "pvid") == 0) {
             int vlan = atoi(value);
             if (vlan < 1 || vlan > 4094) {
-                fprintf(stderr, "Invalid VLAN ID: %d\n", vlan);
+                RS_LOG_ERROR("Invalid VLAN ID: %d", vlan);
                 close(map_fd);
                 return 1;
             }
@@ -272,7 +279,7 @@ int main(int argc, char **argv)
             modified = 1;
             printf("Set %d allowed VLANs\n", cfg.allowed_vlan_count);
         } else {
-            fprintf(stderr, "Unknown setting: %s\n", key);
+            RS_LOG_ERROR("Unknown setting: %s", key);
             close(map_fd);
             usage(argv[0]);
             return 1;
@@ -281,7 +288,7 @@ int main(int argc, char **argv)
         if (modified) {
             ret = bpf_map_update_elem(map_fd, &ifindex, &cfg, BPF_EXIST);
             if (ret < 0) {
-                fprintf(stderr, "Failed to update port config: %s\n", strerror(errno));
+                RS_LOG_ERROR("Failed to update port config: %s", strerror(errno));
                 close(map_fd);
                 return 1;
             }

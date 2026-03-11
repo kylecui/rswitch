@@ -21,14 +21,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <getopt.h>
 #include <errno.h>
 #include <signal.h>
 #include <time.h>
+#include <arpa/inet.h>
 #include <sys/resource.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <linux/perf_event.h>
-#include <linux/ring_buffer.h>
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 
 // Event types from BPF modules
 enum rs_event_type {
@@ -233,12 +239,12 @@ static void process_mac_learned_event(struct event_ctx *ctx, struct rs_event_mac
     if (ctx->json_output) {
         fprintf(ctx->output_fp, 
             "{"
-            "\\"timestamp\\": \\"%s\\", "
-            "\\"type\\": \\"MAC_LEARNED\\", "
-            "\\"ifindex\\": %u, "
-            "\\"mac\\": \\"%02x:%02x:%02x:%02x:%02x:%02x\\", "
-            "\\"vlan\\": %u, "
-            "\\"moved\\": %s"
+            "\"timestamp\": \"%s\", "
+            "\"type\": \"MAC_LEARNED\", "
+            "\"ifindex\": %u, "
+            "\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", "
+            "\"vlan\": %u, "
+            "\"moved\": %s"
             "}\n",
             timestamp, event->hdr.ifindex,
             event->mac[0], event->mac[1], event->mac[2],
@@ -272,15 +278,15 @@ static void process_acl_drop_event(struct event_ctx *ctx, struct rs_event_acl_dr
     if (ctx->json_output) {
         fprintf(ctx->output_fp,
             "{"
-            "\\"timestamp\\": \\"%s\\", "
-            "\\"type\\": \\"ACL_DROP\\", "
-            "\\"ifindex\\": %u, "
-            "\\"proto\\": %u, "
-            "\\"src_ip\\": \\"%s\\", "
-            "\\"dst_ip\\": \\"%s\\", "
-            "\\"sport\\": %u, "
-            "\\"dport\\": %u, "
-            "\\"acl_level\\": %u"
+            "\"timestamp\": \"%s\", "
+            "\"type\": \"ACL_DROP\", "
+            "\"ifindex\": %u, "
+            "\"proto\": %u, "
+            "\"src_ip\": \"%s\", "
+            "\"dst_ip\": \"%s\", "
+            "\"sport\": %u, "
+            "\"dport\": %u, "
+            "\"acl_level\": %u"
             "}\n",
             timestamp, event->hdr.ifindex, event->proto,
             src_ip, dst_ip, ntohs(event->sport), ntohs(event->dport), 
@@ -303,13 +309,13 @@ static void process_qos_rate_limited_event(struct event_ctx *ctx, struct rs_even
     if (ctx->json_output) {
         fprintf(ctx->output_fp,
             "{"
-            "\\"timestamp\\": \\"%s\\", "
-            "\\"type\\": \\"QOS_RATE_LIMITED\\", "
-            "\\"ifindex\\": %u, "
-            "\\"priority\\": %u, "
-            "\\"packet_len\\": %u, "
-            "\\"rate_bps\\": %u, "
-            "\\"tokens_remaining\\": %llu"
+            "\"timestamp\": \"%s\", "
+            "\"type\": \"QOS_RATE_LIMITED\", "
+            "\"ifindex\": %u, "
+            "\"priority\": %u, "
+            "\"packet_len\": %u, "
+            "\"rate_bps\": %u, "
+            "\"tokens_remaining\": %llu"
             "}\n",
             timestamp, event->hdr.ifindex, event->priority, 
             event->packet_len, event->rate_bps, 
@@ -336,12 +342,12 @@ static void process_arp_learned_event(struct event_ctx *ctx, struct rs_event_arp
     if (ctx->json_output) {
         fprintf(ctx->output_fp,
             "{"
-            "\\"timestamp\\": \\"%s\\", "
-            "\\"type\\": \\"ARP_LEARNED\\", "
-            "\\"ifindex\\": %u, "
-            "\\"ip\\": \\"%s\\", "
-            "\\"mac\\": \\"%02x:%02x:%02x:%02x:%02x:%02x\\", "
-            "\\"is_update\\": %s"
+            "\"timestamp\": \"%s\", "
+            "\"type\": \"ARP_LEARNED\", "
+            "\"ifindex\": %u, "
+            "\"ip\": \"%s\", "
+            "\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", "
+            "\"is_update\": %s"
             "}\n",
             timestamp, event->hdr.ifindex, ip,
             event->mac[0], event->mac[1], event->mac[2],
@@ -365,12 +371,12 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     struct rs_event_header *hdr = data;
     
     if (data_sz < sizeof(*hdr)) {
-        fprintf(stderr, "Invalid event: size %zu < header size %zu\n", data_sz, sizeof(*hdr));
+        RS_LOG_ERROR("Invalid event: size %zu < header size %zu", data_sz, sizeof(*hdr));
         return 0;
     }
     
     if (hdr->size > data_sz) {
-        fprintf(stderr, "Invalid event: declared size %u > actual size %zu\n", hdr->size, data_sz);
+        RS_LOG_ERROR("Invalid event: declared size %u > actual size %zu", hdr->size, data_sz);
         return 0;
     }
     
@@ -472,6 +478,8 @@ static void show_stats(struct event_ctx *ctx)
 
 int main(int argc, char **argv)
 {
+    rs_log_init("rswitch-events", RS_LOG_LEVEL_INFO);
+
     int opt;
     const char *output_file = NULL;
     
@@ -502,6 +510,9 @@ int main(int argc, char **argv)
             return 1;
         }
     }
+
+    if (g_ctx.verbose)
+        rs_log_set_level(RS_LOG_LEVEL_DEBUG);
     
     // Open output file or use stdout
     if (output_file) {
@@ -522,14 +533,14 @@ int main(int argc, char **argv)
     // Open BPF ringbuf
     int ringbuf_fd = bpf_obj_get("/sys/fs/bpf/rs_event_ringbuf");
     if (ringbuf_fd < 0) {
-        fprintf(stderr, "Failed to open event ringbuf: %s\n", strerror(errno));
-        fprintf(stderr, "Make sure rSwitch loader is running and events are enabled\n");
+        RS_LOG_ERROR("Failed to open event ringbuf: %s", strerror(errno));
+        RS_LOG_ERROR("Make sure rSwitch loader is running and events are enabled");
         goto cleanup;
     }
     
     g_ctx.rb = ring_buffer__new(ringbuf_fd, handle_event, &g_ctx, NULL);
     if (!g_ctx.rb) {
-        fprintf(stderr, "Failed to create ring buffer\n");
+        RS_LOG_ERROR("Failed to create ring buffer");
         close(ringbuf_fd);
         goto cleanup;
     }
@@ -547,7 +558,7 @@ int main(int argc, char **argv)
         if (ret == -EINTR) {
             break;  // Interrupted by signal
         } else if (ret < 0) {
-            fprintf(stderr, "Error polling ring buffer: %d\n", ret);
+            RS_LOG_ERROR("Error polling ring buffer: %d", ret);
             break;
         }
     }

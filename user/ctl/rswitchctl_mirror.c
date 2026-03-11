@@ -12,6 +12,11 @@
 #include <net/if.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 
 #define DEFAULT_MIRROR_CONFIG_MAP   "/sys/fs/bpf/mirror_config_map"
 #define DEFAULT_PORT_MIRROR_MAP     "/sys/fs/bpf/port_mirror_map"
@@ -125,7 +130,7 @@ int cmd_mirror_enable(int enable, uint32_t span_port)
 {
     int fd = bpf_obj_get(DEFAULT_MIRROR_CONFIG_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open mirror config map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open mirror config map: %s", strerror(errno));
         return -1;
     }
 
@@ -142,7 +147,7 @@ int cmd_mirror_enable(int enable, uint32_t span_port)
     config.egress_enabled = enable ? 1 : 0;
 
     if (bpf_map_update_elem(fd, &key, &config, BPF_ANY) < 0) {
-        fprintf(stderr, "Failed to update config: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to update config: %s", strerror(errno));
         close(fd);
         return -1;
     }
@@ -162,7 +167,7 @@ int cmd_mirror_set_span_port(uint32_t span_port)
 {
     int fd = bpf_obj_get(DEFAULT_MIRROR_CONFIG_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open mirror config map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open mirror config map: %s", strerror(errno));
         return -1;
     }
 
@@ -175,7 +180,7 @@ int cmd_mirror_set_span_port(uint32_t span_port)
     config.span_port = span_port;
 
     if (bpf_map_update_elem(fd, &key, &config, BPF_ANY) < 0) {
-        fprintf(stderr, "Failed to update config: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to update config: %s", strerror(errno));
         close(fd);
         return -1;
     }
@@ -189,7 +194,7 @@ int cmd_mirror_set_pcap(int enable)
 {
     int fd = bpf_obj_get(DEFAULT_MIRROR_CONFIG_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open mirror config map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open mirror config map: %s", strerror(errno));
         return -1;
     }
 
@@ -202,7 +207,7 @@ int cmd_mirror_set_pcap(int enable)
     config.pcap_enabled = enable ? 1 : 0;
 
     if (bpf_map_update_elem(fd, &key, &config, BPF_ANY) < 0) {
-        fprintf(stderr, "Failed to update config: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to update config: %s", strerror(errno));
         close(fd);
         return -1;
     }
@@ -216,7 +221,7 @@ int cmd_mirror_set_port(uint32_t ifindex, int ingress, int egress)
 {
     int fd = bpf_obj_get(DEFAULT_PORT_MIRROR_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open port mirror map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open port mirror map: %s", strerror(errno));
         return -1;
     }
 
@@ -231,7 +236,7 @@ int cmd_mirror_set_port(uint32_t ifindex, int ingress, int egress)
         port_config.mirror_egress = egress ? 1 : 0;
 
     if (bpf_map_update_elem(fd, &ifindex, &port_config, BPF_ANY) < 0) {
-        fprintf(stderr, "Failed to update port config: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to update port config: %s", strerror(errno));
         close(fd);
         return -1;
     }
@@ -250,12 +255,12 @@ int cmd_mirror_add_filter(uint32_t id, uint8_t type, uint8_t direction,
 {
     int fd = bpf_obj_get(DEFAULT_MIRROR_FILTER_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open filter map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open filter map: %s", strerror(errno));
         return -1;
     }
 
     if (id >= MIRROR_MAX_RULES) {
-        fprintf(stderr, "Rule ID must be < %d\n", MIRROR_MAX_RULES);
+        RS_LOG_ERROR("Rule ID must be < %d", MIRROR_MAX_RULES);
         close(fd);
         return -1;
     }
@@ -273,7 +278,7 @@ int cmd_mirror_add_filter(uint32_t id, uint8_t type, uint8_t direction,
     case MIRROR_FILTER_SRC_IP:
     case MIRROR_FILTER_DST_IP:
         if (inet_pton(AF_INET, value, &rule.match.ip) != 1) {
-            fprintf(stderr, "Invalid IP address: %s\n", value);
+            RS_LOG_ERROR("Invalid IP address: %s", value);
             close(fd);
             return -1;
         }
@@ -296,19 +301,19 @@ int cmd_mirror_add_filter(uint32_t id, uint8_t type, uint8_t direction,
         if (sscanf(value, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
                    &rule.match.mac[0], &rule.match.mac[1], &rule.match.mac[2],
                    &rule.match.mac[3], &rule.match.mac[4], &rule.match.mac[5]) != 6) {
-            fprintf(stderr, "Invalid MAC address: %s\n", value);
+            RS_LOG_ERROR("Invalid MAC address: %s", value);
             close(fd);
             return -1;
         }
         break;
     default:
-        fprintf(stderr, "Unsupported filter type: %d\n", type);
+        RS_LOG_ERROR("Unsupported filter type: %d", type);
         close(fd);
         return -1;
     }
 
     if (bpf_map_update_elem(fd, &id, &rule, BPF_ANY) < 0) {
-        fprintf(stderr, "Failed to add filter: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to add filter: %s", strerror(errno));
         close(fd);
         return -1;
     }
@@ -325,7 +330,7 @@ int cmd_mirror_del_filter(uint32_t id)
 {
     int fd = bpf_obj_get(DEFAULT_MIRROR_FILTER_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open filter map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open filter map: %s", strerror(errno));
         return -1;
     }
 
@@ -335,7 +340,7 @@ int cmd_mirror_del_filter(uint32_t id)
     rule.enabled = 0;
 
     if (bpf_map_update_elem(fd, &id, &rule, BPF_ANY) < 0) {
-        fprintf(stderr, "Failed to delete filter: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to delete filter: %s", strerror(errno));
         close(fd);
         return -1;
     }
@@ -349,7 +354,7 @@ int cmd_mirror_show_filters(void)
 {
     int fd = bpf_obj_get(DEFAULT_MIRROR_FILTER_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open filter map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open filter map: %s", strerror(errno));
         return -1;
     }
 
@@ -413,7 +418,7 @@ int cmd_mirror_show_config(void)
 {
     int fd = bpf_obj_get(DEFAULT_MIRROR_CONFIG_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open mirror config map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open mirror config map: %s", strerror(errno));
         return -1;
     }
 
@@ -421,7 +426,7 @@ int cmd_mirror_show_config(void)
     uint32_t key = 0;
 
     if (bpf_map_lookup_elem(fd, &key, &config) < 0) {
-        fprintf(stderr, "Failed to read config: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to read config: %s", strerror(errno));
         close(fd);
         return -1;
     }
@@ -472,7 +477,7 @@ int cmd_mirror_show_stats(void)
 {
     int fd = bpf_obj_get(DEFAULT_MIRROR_CONFIG_MAP);
     if (fd < 0) {
-        fprintf(stderr, "Failed to open mirror config map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to open mirror config map: %s", strerror(errno));
         return -1;
     }
 
@@ -480,7 +485,7 @@ int cmd_mirror_show_stats(void)
     uint32_t key = 0;
 
     if (bpf_map_lookup_elem(fd, &key, &config) < 0) {
-        fprintf(stderr, "Failed to read config: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to read config: %s", strerror(errno));
         close(fd);
         return -1;
     }

@@ -139,6 +139,91 @@ static __always_inline int validate_vlan_peers(struct rs_ctx *ctx, __u16 vlan_id
     return 0;
 }
 
+static __always_inline int process_qinq_ingress(struct xdp_md *xdp_ctx,
+                                                struct rs_ctx *ctx)
+{
+    void *data = (void *)(long)xdp_ctx->data;
+    void *data_end = (void *)(long)xdp_ctx->data_end;
+    struct ethhdr *eth = data;
+    struct rs_qinq_config *qinq_cfg;
+    __u32 ifindex = ctx->ifindex;
+
+    struct rs_vlan_hdr {
+        __be16 h_vlan_TCI;
+        __be16 h_vlan_encapsulated_proto;
+    };
+
+    if ((void *)(eth + 1) > data_end)
+        return XDP_DROP;
+
+    qinq_cfg = bpf_map_lookup_elem(&qinq_config_map, &ifindex);
+    if (!qinq_cfg) {
+        rs_debug("QinQ mode enabled but no QinQ config for port %d", ctx->ifindex);
+        ctx->error = RS_ERROR_INVALID_VLAN;
+        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        return XDP_DROP;
+    }
+
+    if (bpf_ntohs(eth->h_proto) != ETH_P_8021AD) {
+        rs_debug("QinQ port %d received non-802.1ad frame", ctx->ifindex);
+        ctx->error = RS_ERROR_INVALID_VLAN;
+        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        return XDP_DROP;
+    }
+
+    struct rs_vlan_hdr *outer = (void *)(eth + 1);
+    if ((void *)(outer + 1) > data_end)
+        return XDP_DROP;
+
+    if (bpf_ntohs(outer->h_vlan_encapsulated_proto) != ETH_P_8021Q) {
+        rs_debug("QinQ port %d missing inner 802.1Q tag", ctx->ifindex);
+        ctx->error = RS_ERROR_INVALID_VLAN;
+        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        return XDP_DROP;
+    }
+
+    struct rs_vlan_hdr *inner = outer + 1;
+    if ((void *)(inner + 1) > data_end)
+        return XDP_DROP;
+
+    __u16 outer_tci = bpf_ntohs(outer->h_vlan_TCI);
+    __u16 inner_tci = bpf_ntohs(inner->h_vlan_TCI);
+    __u16 s_vlan = outer_tci & 0x0FFF;
+    __u16 c_vlan = inner_tci & 0x0FFF;
+
+    if (s_vlan != qinq_cfg->s_vlan) {
+        rs_debug("QinQ port %d S-VLAN mismatch: got=%u cfg=%u",
+                 ctx->ifindex, s_vlan, qinq_cfg->s_vlan);
+        ctx->error = RS_ERROR_INVALID_VLAN;
+        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        return XDP_DROP;
+    }
+
+    if (c_vlan < qinq_cfg->c_vlan_start || c_vlan > qinq_cfg->c_vlan_end) {
+        rs_debug("QinQ port %d C-VLAN %u outside allowed range %u-%u",
+                 ctx->ifindex, c_vlan, qinq_cfg->c_vlan_start, qinq_cfg->c_vlan_end);
+        ctx->error = RS_ERROR_INVALID_VLAN;
+        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        return XDP_DROP;
+    }
+
+    if (validate_vlan_peers(ctx, c_vlan, 1) < 0)
+        return XDP_DROP;
+
+    ctx->ingress_vlan = c_vlan;
+    ctx->layers.vlan_ids[0] = s_vlan;
+    ctx->layers.vlan_ids[1] = c_vlan;
+    ctx->layers.vlan_depth = 2;
+
+    ctx->prio = (outer_tci >> 13) & 0x07;
+    ctx->ecn = ((outer_tci >> 12) & 0x01) ? 0x03 : 0x00;
+
+    rs_debug("QinQ ingress pass: port=%d svlan=%u cvlan=%u", ctx->ifindex, s_vlan, c_vlan);
+
+    RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+    return XDP_DROP;
+}
+
 // Main VLAN processing function
 SEC("xdp")
 int vlan_ingress(struct xdp_md *xdp_ctx)
@@ -166,6 +251,9 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
         ctx->drop_reason = RS_DROP_VLAN_FILTER;
         return XDP_DROP;
     }
+
+    if (port->vlan_mode == RS_VLAN_MODE_QINQ)
+        return process_qinq_ingress(xdp_ctx, ctx);
     
     // Check if packet is VLAN-tagged
     int is_tagged = (ctx->layers.vlan_depth > 0 && ctx->layers.vlan_ids[0] > 0);

@@ -14,6 +14,11 @@
 #include <arpa/inet.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 
 #define RS_VLAN_MAX_DEPTH 2
 
@@ -90,6 +95,8 @@ static const char *eth_proto_name(__u16 proto)
 
 int main(int argc, char **argv)
 {
+    rs_log_init("rs-packet-trace", RS_LOG_LEVEL_INFO);
+
     int map_fd;
     __u32 key = 0;  // per-CPU map key
     struct rs_ctx ctx;
@@ -104,15 +111,15 @@ int main(int argc, char **argv)
     /* Open rs_ctx_map */
     map_fd = bpf_obj_get("/sys/fs/bpf/rs_ctx_map");
     if (map_fd < 0) {
-        fprintf(stderr, "Failed to open rs_ctx_map: %s\n", strerror(errno));
-        fprintf(stderr, "Make sure rSwitch is loaded.\n");
+        RS_LOG_ERROR("Failed to open rs_ctx_map: %s", strerror(errno));
+        RS_LOG_ERROR("Make sure rSwitch is loaded.");
         return 1;
     }
     
     /* Allocate per-CPU value array */
     values = calloc(num_cpus, sizeof(struct rs_ctx));
     if (!values) {
-        fprintf(stderr, "Failed to allocate memory\n");
+        RS_LOG_ERROR("Failed to allocate memory");
         close(map_fd);
         return 1;
     }
@@ -120,7 +127,7 @@ int main(int argc, char **argv)
     /* Allocate timestamp tracking array */
     last_timestamps = calloc(num_cpus, sizeof(__u32));
     if (!last_timestamps) {
-        fprintf(stderr, "Failed to allocate timestamp array\n");
+        RS_LOG_ERROR("Failed to allocate timestamp array");
         free(values);
         close(map_fd);
         return 1;

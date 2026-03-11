@@ -16,6 +16,8 @@ Getting started and day-to-day operation guides.
 | [How To Use](usage/How_To_Use.md) | Practical usage examples — L2/L3 switching, QoS, firewall, and common workflows |
 | [Scenario Profiles](usage/Scenario_Profiles.md) | All 18 YAML profiles explained — purpose, module pipeline, and when to use each |
 | [CLI Reference](usage/CLI_Reference.md) | Complete reference for `rswitchctl`, `rsvlanctl`, `rsaclctl`, `rsqosctl`, `rsvoqctl` |
+| [Intent Engine](usage/Intent_Engine.md) | Intent-based networking — translate high-level YAML intents into profiles |
+| [Policy Verification](usage/Policy_Verification.md) | Policy compliance checking for profiles |
 | [Troubleshooting](usage/Troubleshooting.md) | Common issues, diagnostic commands, cleanup procedures, and NIC-specific notes |
 
 ---
@@ -40,11 +42,15 @@ Architecture deep-dives, module development, and API reference.
 
 | Document | Description |
 |----------|-------------|
+| [Platform Architecture](development/Platform_Architecture.md) | **Comprehensive** platform design — philosophy, data/control plane, module classification, stage map |
 | [Architecture](development/Architecture.md) | Dual-pipeline architecture, module system, shared context, data structures |
 | [Module Developer Guide](development/Module_Developer_Guide.md) | Step-by-step guide to writing BPF modules — from template to production |
 | [API Reference](development/API_Reference.md) | Complete API — macros, structs, maps, helpers, flags, error codes |
+| [API Reference (Generated)](development/API_Reference_Generated.md) | Auto-generated API documentation from source headers |
 | [CO-RE Guide](development/CO-RE_Guide.md) | CO-RE portability — `BPF_CORE_READ()`, offset masking, cross-kernel testing |
+| [Distributed State Sync](development/Distributed_State_Sync.md) | Multi-switch state synchronization design document |
 | [Contributing](development/Contributing.md) | Contribution workflow, coding standards, PR process, licensing |
+| [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) | External module development kit — build, test, package, deploy |
 
 ---
 
@@ -70,6 +76,8 @@ docs/
 │   ├── How_To_Use.md
 │   ├── Scenario_Profiles.md
 │   ├── CLI_Reference.md
+│   ├── Intent_Engine.md
+│   ├── Policy_Verification.md
 │   └── Troubleshooting.md
 ├── deployment/                # Installation and deployment
 │   ├── Installation.md
@@ -78,16 +86,24 @@ docs/
 │   ├── NIC_Configuration.md
 │   └── Systemd_Integration.md
 ├── development/               # Developer documentation
+│   ├── Platform_Architecture.md
 │   ├── Architecture.md
 │   ├── Module_Developer_Guide.md
 │   ├── API_Reference.md
+│   ├── API_Reference_Generated.md
 │   ├── CO-RE_Guide.md
+│   ├── Distributed_State_Sync.md
 │   └── Contributing.md
 ├── backlog/                   # Development roadmap
 │   ├── platform-backlog.md
 │   ├── api-backlog.md
 │   ├── product-backlog.md
 │   └── ecosystem-backlog.md
+├── marketplace/               # Module marketplace portal
+│   ├── index.html
+│   ├── style.css
+│   ├── modules.json
+│   └── README.md
 ├── zh-CN/                     # Chinese translations
 ├── archive/                   # Historical documents (preserved)
 └── paperwork/                 # Administrative records (preserved)
@@ -98,9 +114,11 @@ docs/
 ## 🔗 Quick Links
 
 - **Just want to run it?** → [Quick Start](usage/Quick_Start.md)
-- **Building a module?** → [Module Developer Guide](development/Module_Developer_Guide.md)
+- **Platform overview?** → [Platform Architecture](development/Platform_Architecture.md)
+- **Building a module?** → [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) or [Module Developer Guide](development/Module_Developer_Guide.md)
 - **Deploying to production?** → [Systemd Integration](deployment/Systemd_Integration.md)
 - **Need API details?** → [API Reference](development/API_Reference.md)
+- **Intent-based config?** → [Intent Engine](usage/Intent_Engine.md)
 - **What's coming next?** → [Product Backlog](backlog/product-backlog.md)
 
 ---
@@ -126,4 +144,4 @@ The following original documents are preserved for reference. Their content has 
 
 ---
 
-*Last updated: 2026-03-10*
+*Last updated: 2026-03-11*

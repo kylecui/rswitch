@@ -144,6 +144,92 @@ static __always_inline int egress_remove_vlan_tag(struct xdp_md *ctx)
     return 0;
 }
 
+static __always_inline int egress_packet_is_vlan_tagged(struct xdp_md *ctx)
+{
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = data;
+
+    if ((void *)(eth + 1) > data_end)
+        return 0;
+
+    return bpf_ntohs(eth->h_proto) == ETH_P_8021Q ||
+           bpf_ntohs(eth->h_proto) == ETH_P_8021AD;
+}
+
+static __always_inline int egress_add_vlan_tag_with_tpid(struct xdp_md *ctx,
+                                                          __u16 vlan_id,
+                                                          __u8 pcp,
+                                                          __u16 tpid)
+{
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = data;
+    struct ethhdr eth_cpy;
+    struct vlan_hdr *vhdr;
+    __u16 tci = ((__u16)(pcp & 0x07) << 13) | (vlan_id & 0x0FFF);
+
+    if ((void *)(eth + 1) > data_end)
+        return -1;
+
+    __builtin_memcpy(&eth_cpy, eth, sizeof(eth_cpy));
+
+    if (bpf_xdp_adjust_head(ctx, -4))
+        return -1;
+
+    data = (void *)(long)ctx->data;
+    data_end = (void *)(long)ctx->data_end;
+    eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return -1;
+
+    __builtin_memcpy(eth, &eth_cpy, sizeof(*eth));
+
+    vhdr = (void *)(eth + 1);
+    if ((void *)(vhdr + 1) > data_end)
+        return -1;
+
+    vhdr->h_vlan_TCI = bpf_htons(tci);
+    vhdr->h_vlan_encapsulated_proto = eth->h_proto;
+    eth->h_proto = bpf_htons(tpid);
+
+    return 0;
+}
+
+static __always_inline int egress_process_qinq(struct xdp_md *ctx,
+                                               struct rs_ctx *rs_ctx,
+                                               __u32 egress_ifindex,
+                                               __u16 c_vlan)
+{
+    struct rs_qinq_config *qcfg = bpf_map_lookup_elem(&qinq_config_map, &egress_ifindex);
+    __u8 pcp = rs_ctx->prio;
+
+    if (!qcfg)
+        return -1;
+
+    if (c_vlan < qcfg->c_vlan_start || c_vlan > qcfg->c_vlan_end)
+        return -1;
+
+    #pragma unroll
+    for (int i = 0; i < 2; i++) {
+        if (!egress_packet_is_vlan_tagged(ctx))
+            break;
+        if (egress_remove_vlan_tag(ctx) < 0)
+            return -1;
+    }
+
+    if (egress_add_vlan_tag_with_tpid(ctx, c_vlan, pcp, ETH_P_8021Q) < 0)
+        return -1;
+    if (egress_add_vlan_tag_with_tpid(ctx, qcfg->s_vlan, pcp, ETH_P_8021AD) < 0)
+        return -1;
+
+    rs_ctx->layers.vlan_depth = 2;
+    rs_ctx->layers.vlan_ids[0] = qcfg->s_vlan;
+    rs_ctx->layers.vlan_ids[1] = c_vlan;
+
+    return 0;
+}
+
 // Main egress VLAN processing (XDP tail-call module)
 SEC("xdp/devmap")
 int egress_vlan_xdp(struct xdp_md *ctx)
@@ -227,6 +313,28 @@ int egress_vlan_xdp(struct xdp_md *ctx)
     if (egress_vlan == 0 || port->vlan_mode == RS_VLAN_MODE_OFF) {
         // No VLAN processing needed
         rs_debug("egress_vlan: No VLAN info or mode OFF, skipping");
+        RS_TAIL_CALL_EGRESS(ctx, rs_ctx);
+        return XDP_PASS;
+    }
+
+    if (port->vlan_mode == RS_VLAN_MODE_QINQ) {
+        __u8 old_depth = rs_ctx->layers.vlan_depth;
+        if (old_depth > 2)
+            old_depth = 2;
+
+        if (egress_process_qinq(ctx, rs_ctx, egress_ifindex, egress_vlan) < 0) {
+            rs_debug("egress_vlan: QinQ tag processing failed on port %u", egress_ifindex);
+            return XDP_DROP;
+        }
+
+        int delta = (2 - old_depth) * 4;
+        if (delta != 0) {
+            if (rs_ctx->layers.l3_offset != 0)
+                rs_ctx->layers.l3_offset += delta;
+            if (rs_ctx->layers.l4_offset != 0)
+                rs_ctx->layers.l4_offset += delta;
+        }
+
         RS_TAIL_CALL_EGRESS(ctx, rs_ctx);
         return XDP_PASS;
     }

@@ -14,10 +14,16 @@
 #include <getopt.h>
 #include <errno.h>
 
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 #include "voq.h"
 #include "ringbuf_consumer.h"
 #include "state_ctrl.h"
 #include "voqd_dataplane.h"
+#include "shaper.h"
 #include "../../bpf/core/afxdp_common.h"
 
 #define DEFAULT_RINGBUF_PIN    "/sys/fs/bpf/voq_ringbuf"
@@ -68,12 +74,12 @@ static int handle_voq_meta(void *ctx, const struct voq_meta *meta)
 	
 	/* Validate metadata */
 	if (meta->eg_port >= daemon->num_ports) {
-		fprintf(stderr, "Invalid eg_port: %u\n", meta->eg_port);
+		RS_LOG_ERROR("Invalid eg_port: %u", meta->eg_port);
 		return -EINVAL;
 	}
 	
 	if (meta->prio >= MAX_PRIORITIES) {
-		fprintf(stderr, "Invalid priority: %u\n", meta->prio);
+		RS_LOG_ERROR("Invalid priority: %u", meta->prio);
 		return -EINVAL;
 	}
 	
@@ -81,8 +87,8 @@ static int handle_voq_meta(void *ctx, const struct voq_meta *meta)
 	switch (daemon->mode) {
 	case VOQD_MODE_BYPASS:
 		/* BYPASS mode: Should not receive meta events, but handle gracefully */
-		fprintf(stderr, "WARNING: Received voq_meta in BYPASS mode (eg_port=%u prio=%u)\n",
-		        meta->eg_port, meta->prio);
+		RS_LOG_WARN("Received voq_meta in BYPASS mode (eg_port=%u prio=%u)",
+		            meta->eg_port, meta->prio);
 		return 0;  /* Don't enqueue */
 		
 	case VOQD_MODE_SHADOW:
@@ -117,11 +123,11 @@ static int handle_voq_meta(void *ctx, const struct voq_meta *meta)
 			if (ret < 0) {
 				if (ret == -ENOSPC) {
 					/* Queue full - drop packet */
-					fprintf(stderr, "VOQ enqueue dropped: port=%u prio=%u (queue full)\n", 
-					        meta->eg_port, meta->prio);
+					RS_LOG_WARN("VOQ enqueue dropped: port=%u prio=%u (queue full)",
+					            meta->eg_port, meta->prio);
 					/* Note: Drop statistics are tracked in VOQ manager */
 				} else {
-					fprintf(stderr, "VOQ enqueue failed: %s\n", strerror(-ret));
+					RS_LOG_ERROR("VOQ enqueue failed: %s", strerror(-ret));
 				}
 			}
 			
@@ -129,7 +135,7 @@ static int handle_voq_meta(void *ctx, const struct voq_meta *meta)
 		}
 		
 	default:
-		fprintf(stderr, "Invalid mode: %u\n", daemon->mode);
+		RS_LOG_ERROR("Invalid mode: %u", daemon->mode);
 		return -EINVAL;
 	}
 }
@@ -230,6 +236,25 @@ static void setup_voq_params(struct voqd_ctx *ctx)
 	}
 }
 
+static void setup_shaper_control(struct voqd_ctx *ctx)
+{
+	struct rs_shaper_shared_cfg *cfg = NULL;
+	int ret = rs_shaper_shared_open(&cfg, 1);
+
+	if (ret < 0 || !cfg) {
+		RS_LOG_WARN("Shaper control shared memory unavailable: %d", ret);
+		return;
+	}
+
+	if (cfg->num_ports != ctx->num_ports) {
+		cfg->num_ports = ctx->num_ports;
+		cfg->generation++;
+		RS_LOG_INFO("Initialized shaper control for %u ports", ctx->num_ports);
+	}
+
+	rs_shaper_shared_close(cfg);
+}
+
 /* Initialize daemon */
 static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 {
@@ -272,7 +297,7 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 		case 'p':
 			ctx->num_ports = atoi(optarg);
 			if (ctx->num_ports == 0 || ctx->num_ports > MAX_PORTS) {
-				fprintf(stderr, "Invalid num_ports: %s\n", optarg);
+				RS_LOG_ERROR("Invalid num_ports: %s", optarg);
 				return -EINVAL;
 			}
 			break;
@@ -284,7 +309,7 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 			else if (strcmp(optarg, "active") == 0)
 				ctx->mode = VOQD_MODE_ACTIVE;
 			else {
-				fprintf(stderr, "Invalid mode: %s (use bypass/shadow/active)\n", optarg);
+				RS_LOG_ERROR("Invalid mode: %s (use bypass/shadow/active)", optarg);
 				return -EINVAL;
 			}
 			break;
@@ -313,7 +338,7 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 		case 'Q':
 			ctx->sw_queue_depth = atoi(optarg);
 			if (ctx->sw_queue_depth == 0) {
-				fprintf(stderr, "Invalid queue depth: %s\n", optarg);
+				RS_LOG_ERROR("Invalid queue depth: %s", optarg);
 				return -EINVAL;
 			}
 			break;
@@ -349,16 +374,17 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 	/* Initialize VOQ manager */
 	ret = voq_mgr_init(&ctx->voq, ctx->num_ports);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to initialize VOQ manager: %s\n", strerror(-ret));
+		RS_LOG_ERROR("Failed to initialize VOQ manager: %s", strerror(-ret));
 		return ret;
 	}
 	
 	setup_voq_params(ctx);
+	setup_shaper_control(ctx);
 	
 	/* Initialize state controller */
 	ret = state_ctrl_init(&ctx->state, DEFAULT_STATE_MAP_PIN, DEFAULT_QOS_MAP_PIN);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to initialize state controller: %s\n", strerror(-ret));
+		RS_LOG_ERROR("Failed to initialize state controller: %s", strerror(-ret));
 		voq_mgr_destroy(&ctx->voq);
 		return ret;
 	}
@@ -368,7 +394,7 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 	/* Set initial mode */
 	ret = state_ctrl_set_mode(&ctx->state, ctx->mode, ctx->prio_mask);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to set mode: %s\n", strerror(-ret));
+		RS_LOG_ERROR("Failed to set mode: %s", strerror(-ret));
 		state_ctrl_destroy(&ctx->state);
 		voq_mgr_destroy(&ctx->voq);
 		return ret;
@@ -413,7 +439,7 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 	
 	ret = voqd_dataplane_init(&ctx->dataplane, &ctx->voq, &dp_config);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to initialize data plane: %s\n", strerror(-ret));
+		RS_LOG_ERROR("Failed to initialize data plane: %s", strerror(-ret));
 		state_ctrl_destroy(&ctx->state);
 		voq_mgr_destroy(&ctx->voq);
 		return ret;
@@ -423,7 +449,7 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 	if (ctx->enable_afxdp) {
 		for (uint32_t p = 0; p < ctx->num_ports; p++) {
 			if (!ctx->ifnames[p]) {
-				fprintf(stderr, "ACTIVE mode requires interface names (-i option)\n");
+				RS_LOG_ERROR("ACTIVE mode requires interface names (-i option)");
 				voqd_dataplane_destroy(&ctx->dataplane);
 				state_ctrl_destroy(&ctx->state);
 				voq_mgr_destroy(&ctx->voq);
@@ -432,9 +458,9 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 			
 			ret = voqd_dataplane_add_port(&ctx->dataplane, ctx->ifnames[p], p, 0);
 			if (ret < 0) {
-				fprintf(stderr, "Warning: Failed to add AF_XDP socket for %s: %s\n",
-				        ctx->ifnames[p], strerror(-ret));
-				fprintf(stderr, "Continuing with software queues only (no hardware AF_XDP support)\n");
+				RS_LOG_WARN("Failed to add AF_XDP socket for %s: %s",
+				            ctx->ifnames[p], strerror(-ret));
+				RS_LOG_WARN("Continuing with software queues only (no hardware AF_XDP support)");
 				/* Don't fail - continue with software queue simulation */
 			}
 		}
@@ -443,7 +469,7 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 	/* Initialize ringbuf consumer */
 	ret = rb_consumer_init(&ctx->ringbuf, DEFAULT_RINGBUF_PIN, handle_voq_meta, ctx);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to initialize ringbuf consumer: %s\n", strerror(-ret));
+		RS_LOG_ERROR("Failed to initialize ringbuf consumer: %s", strerror(-ret));
 		state_ctrl_destroy(&ctx->state);
 		voq_mgr_destroy(&ctx->voq);
 		return ret;
@@ -452,7 +478,7 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 	/* Start heartbeat */
 	ret = state_ctrl_start_heartbeat(&ctx->state);
 	if (ret < 0) {
-		fprintf(stderr, "Failed to start heartbeat: %s\n", strerror(-ret));
+		RS_LOG_ERROR("Failed to start heartbeat: %s", strerror(-ret));
 		rb_consumer_destroy(&ctx->ringbuf);
 		state_ctrl_destroy(&ctx->state);
 		voq_mgr_destroy(&ctx->voq);
@@ -463,7 +489,7 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 	if (ctx->enable_afxdp || ctx->enable_sw_queues) {
 		ret = voqd_dataplane_start(&ctx->dataplane);
 		if (ret < 0) {
-			fprintf(stderr, "Failed to start data plane: %s\n", strerror(-ret));
+			RS_LOG_ERROR("Failed to start data plane: %s", strerror(-ret));
 			state_ctrl_stop_heartbeat(&ctx->state);
 			rb_consumer_destroy(&ctx->ringbuf);
 			voqd_dataplane_destroy(&ctx->dataplane);
@@ -477,7 +503,7 @@ static int voqd_init(struct voqd_ctx *ctx, int argc, char **argv)
 	if (ctx->scheduler_enabled && !ctx->enable_afxdp) {
 		ret = voq_start_scheduler(&ctx->voq);
 		if (ret < 0) {
-			fprintf(stderr, "Failed to start scheduler: %s\n", strerror(-ret));
+			RS_LOG_ERROR("Failed to start scheduler: %s", strerror(-ret));
 			state_ctrl_stop_heartbeat(&ctx->state);
 			rb_consumer_destroy(&ctx->ringbuf);
 			voqd_dataplane_destroy(&ctx->dataplane);
@@ -561,7 +587,7 @@ static int voqd_run(struct voqd_ctx *ctx)
 		int ret = rb_consumer_poll(&ctx->ringbuf, 100);  /* 100ms timeout */
 		
 		if (ret < 0 && ret != -EINTR) {
-			fprintf(stderr, "Ringbuf poll error: %d\n", ret);
+			RS_LOG_ERROR("Ringbuf poll error: %d", ret);
 			break;
 		}
 		
@@ -578,6 +604,8 @@ static int voqd_run(struct voqd_ctx *ctx)
 int main(int argc, char **argv)
 {
 	int ret;
+
+	rs_log_init("rswitch-voqd", RS_LOG_LEVEL_INFO);
 	
 	/* Install signal handlers */
 	signal(SIGINT, signal_handler);

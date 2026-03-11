@@ -24,7 +24,15 @@ enum rs_vlan_mode {
     RS_VLAN_MODE_OFF = 0,       /* No VLAN processing */
     RS_VLAN_MODE_ACCESS = 1,    /* Access port (untagged only) */
     RS_VLAN_MODE_TRUNK = 2,     /* Trunk port (tagged + native) */
-    RS_VLAN_MODE_HYBRID = 3     /* Hybrid port (complex rules) */
+    RS_VLAN_MODE_HYBRID = 3,    /* Hybrid port (complex rules) */
+    RS_VLAN_MODE_QINQ = 4
+};
+
+struct rs_qinq_config {
+    __u16 s_vlan;
+    __u16 c_vlan_start;
+    __u16 c_vlan_end;
+    __u16 pad;
 };
 
 /* Port configuration
@@ -72,6 +80,14 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);    /* Pin to /sys/fs/bpf/ */
 } rs_port_config_map SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, RS_MAX_INTERFACES);
+    __type(key, __u32);                     /* ifindex */
+    __type(value, struct rs_qinq_config);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} qinq_config_map SEC(".maps");
+
 /* Interface index to port index mapping
  * 
  * Maps real ifindex (e.g., 4) to consecutive port_idx (0, 1, 2, ...)
@@ -84,6 +100,32 @@ struct {
     __type(value, __u32);                   /* port_idx (0-based) */
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_ifindex_to_port_map SEC(".maps");
+
+#define RS_MODULE_CONFIG_KEY_LEN 32
+#define RS_MODULE_CONFIG_VAL_LEN 64
+#define RS_MAX_MODULE_CONFIG_ENTRIES 256
+
+struct rs_module_config_key {
+    char module_name[RS_MODULE_CONFIG_KEY_LEN];
+    char param_name[RS_MODULE_CONFIG_KEY_LEN];
+};
+
+struct rs_module_config_value {
+    __u32 type;
+    union {
+        __s64 int_val;
+        __u32 bool_val;
+        char str_val[56];
+    };
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, struct rs_module_config_key);
+    __type(value, struct rs_module_config_value);
+    __uint(max_entries, RS_MAX_MODULE_CONFIG_ENTRIES);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_module_config_map SEC(".maps");
 
 
 
@@ -193,6 +235,25 @@ struct {
     __type(value, struct rs_stats);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_stats_map SEC(".maps");
+
+struct rs_module_stats {
+    __u64 packets_processed;
+    __u64 packets_forwarded;
+    __u64 packets_dropped;
+    __u64 packets_error;
+    __u64 bytes_processed;
+    __u64 last_seen_ns;
+    __u32 module_id;
+    char  name[32];
+} __attribute__((aligned(8)));
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, struct rs_module_stats);
+    __uint(max_entries, 64);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_module_stats_map SEC(".maps");
 
 /* Helper functions for map operations */
 

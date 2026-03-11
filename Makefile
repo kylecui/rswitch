@@ -27,10 +27,20 @@ CORE_DIR = $(BPF_DIR)/core
 MODULES_DIR = $(BPF_DIR)/modules
 INCLUDE_DIR = $(BPF_DIR)/include
 USER_DIR = ./user
+COMMON_DIR = $(USER_DIR)/common
 BUILD_DIR = ./build
 OBJ_DIR = $(BUILD_DIR)/bpf
 
+RS_LOG_OBJ = $(BUILD_DIR)/rs_log.o
+LIFECYCLE_OBJ = $(BUILD_DIR)/lifecycle.o
+REGISTRY_OBJ = $(BUILD_DIR)/registry.o
+RESOURCE_LIMITS_OBJ = $(BUILD_DIR)/resource_limits.o
+ROLLBACK_OBJ = $(BUILD_DIR)/rollback.o
+AUDIT_OBJ = $(BUILD_DIR)/audit.o
+TOPOLOGY_OBJ = $(BUILD_DIR)/topology.o
+
 INCLUDES = $(LIBBPF_UAPI_INCLUDES) $(LIBBPF_INCLUDES) -I$(INCLUDE_DIR) -I$(CORE_DIR)
+USER_INCLUDES = -I$(COMMON_DIR)
 
 # Clang BPF system includes
 CLANG_BPF_SYS_INCLUDES = $(shell $(CLANG) -v -E - </dev/null 2>&1 \
@@ -40,37 +50,61 @@ CLANG_BPF_SYS_INCLUDES = $(shell $(CLANG) -v -E - </dev/null 2>&1 \
 LOADER = $(BUILD_DIR)/rswitch_loader
 HOT_RELOAD = $(BUILD_DIR)/hot_reload
 VOQD = $(BUILD_DIR)/rswitch-voqd
+STPD = $(BUILD_DIR)/rswitch-stpd
+LLDPD = $(BUILD_DIR)/rswitch-lldpd
+LACPD = $(BUILD_DIR)/rswitch-lacpd
 RSWITCHCTL = $(BUILD_DIR)/rswitchctl
 RSPORTCTL = $(BUILD_DIR)/rsportctl
 RSVLANCTL = $(BUILD_DIR)/rsvlanctl
 RSACLCTL = $(BUILD_DIR)/rsaclctl
 RSROUTECTL = $(BUILD_DIR)/rsroutectl
 RSQOSCTL = $(BUILD_DIR)/rsqosctl
+RSFLOWCTL = $(BUILD_DIR)/rsflowctl
+RSNATCTL = $(BUILD_DIR)/rsnatctl
 RSVOQCTL = $(BUILD_DIR)/rsvoqctl
+RSTUNNELCTL = $(BUILD_DIR)/rstunnelctl
 TELEMETRY = $(BUILD_DIR)/rswitch-telemetry
 EVENT_CONSUMER = $(BUILD_DIR)/rswitch-events
 PACKET_TRACE = $(BUILD_DIR)/rs_packet_trace
+SFLOW_EXPORT = $(BUILD_DIR)/rswitch-sflow
+PROMETHEUS_EXPORTER = $(BUILD_DIR)/rswitch-prometheus
+WATCHDOG = $(BUILD_DIR)/rswitch-watchdog
+CONTROLLER = $(BUILD_DIR)/rswitch-controller
+AGENT = $(BUILD_DIR)/rswitch-agent
+SNMPAGENT = $(BUILD_DIR)/rswitch-snmpagent
 # AFXDP_TEST = $(BUILD_DIR)/afxdp_test  # Requires libbpf with xsk.h support
 CORE_OBJS = $(patsubst $(CORE_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(CORE_DIR)/*.bpf.c))
 MODULE_OBJS = $(patsubst $(MODULES_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(MODULES_DIR)/*.bpf.c))
 ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS)
 
-.PHONY: all clean dirs vmlinux help
+.PHONY: all clean dirs vmlinux help test test-bpf fuzz integration-test benchmark gen-docs
 
-all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSVOQCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(ALL_BPF_OBJS)
+all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSFLOWCTL) $(RSNATCTL) $(RSVOQCTL) $(RSTUNNELCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(SFLOW_EXPORT) $(PROMETHEUS_EXPORTER) $(WATCHDOG) $(CONTROLLER) $(AGENT) $(SNMPAGENT) $(ALL_BPF_OBJS)
 	@echo "✓ Build complete"
 	@echo "  Loader: $(LOADER)"
 	@echo "  Reload: $(HOT_RELOAD)"
 	@echo "  VOQd: $(VOQD)"
+	@echo "  STPd: $(STPD)"
+	@echo "  LLDPd: $(LLDPD)"
+	@echo "  LACPd: $(LACPD)"
 	@echo "  Control: $(RSWITCHCTL)"
 	@echo "  PortCtl: $(RSPORTCTL)"
 	@echo "  VLANCtl: $(RSVLANCTL)"
 	@echo "  ACLCtl: $(RSACLCTL)"
 	@echo "  RouteCtl: $(RSROUTECTL)"
 	@echo "  QoSCtl: $(RSQOSCTL)"
+	@echo "  FlowCtl: $(RSFLOWCTL)"
+	@echo "  NATCtl: $(RSNATCTL)"
 	@echo "  VOQCtl: $(RSVOQCTL)"
+	@echo "  TunnelCtl: $(RSTUNNELCTL)"
 	@echo "  Telemetry: $(TELEMETRY)"
 	@echo "  Event Consumer: $(EVENT_CONSUMER)"
+	@echo "  sFlow: $(SFLOW_EXPORT)"
+	@echo "  Prometheus: $(PROMETHEUS_EXPORTER)"
+	@echo "  Watchdog: $(WATCHDOG)"
+	@echo "  Controller: $(CONTROLLER)"
+	@echo "  Agent: $(AGENT)"
+	@echo "  SNMP Agent: $(SNMPAGENT)"
 	@echo "  BPF objects: $(words $(ALL_BPF_OBJS)) modules"
 	@echo "  Note: AF_XDP requires libxdp (xsk.h moved from libbpf)"
 
@@ -99,113 +133,242 @@ $(OBJ_DIR)/%.bpf.o: $(MODULES_DIR)/%.bpf.c $(INCLUDE_DIR)/vmlinux.h $(wildcard $
 		-c $< -o $@
 	@$(LLVM_STRIP) -g $@
 
-# Build user-space loader
-$(LOADER): $(USER_DIR)/loader/rswitch_loader.c $(USER_DIR)/loader/profile_parser.c $(wildcard $(USER_DIR)/loader/*.h)
+$(RS_LOG_OBJ): $(COMMON_DIR)/rs_log.c $(COMMON_DIR)/rs_log.h
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 $(USER_INCLUDES) -c $< -o $@
+
+$(LIFECYCLE_OBJ): $(USER_DIR)/lifecycle/lifecycle.c $(USER_DIR)/lifecycle/lifecycle.h $(COMMON_DIR)/rs_log.h
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-c $< -o $@
+
+$(REGISTRY_OBJ): $(USER_DIR)/registry/registry.c $(USER_DIR)/registry/registry.h $(COMMON_DIR)/rs_log.h
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/registry $(USER_INCLUDES) \
+		-c $< -o $@
+
+$(RESOURCE_LIMITS_OBJ): $(USER_DIR)/resource/resource_limits.c $(USER_DIR)/resource/resource_limits.h $(COMMON_DIR)/rs_log.h
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-c $< -o $@
+
+$(ROLLBACK_OBJ): $(USER_DIR)/rollback/rollback.c $(USER_DIR)/rollback/rollback.h $(COMMON_DIR)/rs_log.h
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-c $< -o $@
+
+$(AUDIT_OBJ): $(USER_DIR)/audit/audit.c $(USER_DIR)/audit/audit.h $(COMMON_DIR)/rs_log.h
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-c $< -o $@
+
+$(TOPOLOGY_OBJ): $(USER_DIR)/topology/topology.c $(USER_DIR)/topology/topology.h $(COMMON_DIR)/rs_log.h
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-c $< -o $@
+
+# Build user-space loader
+$(LOADER): $(USER_DIR)/loader/rswitch_loader.c $(USER_DIR)/loader/profile_parser.c $(wildcard $(USER_DIR)/loader/*.h) $(USER_DIR)/lifecycle/lifecycle.h $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(RESOURCE_LIMITS_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/loader/rswitch_loader.c $(USER_DIR)/loader/profile_parser.c \
-		$(LIBBPF_LIBS) -lelf -lz
+		$(LIFECYCLE_OBJ) $(RESOURCE_LIMITS_OBJ) $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 # Build hot-reload tool
-$(HOT_RELOAD): $(USER_DIR)/reload/hot_reload.c $(USER_DIR)/loader/profile_parser.h
+$(HOT_RELOAD): $(USER_DIR)/reload/hot_reload.c $(USER_DIR)/loader/profile_parser.h $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/loader \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/loader $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/reload/hot_reload.c \
-		$(LIBBPF_LIBS) -lelf -lz
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 # Build VOQd daemon
-$(VOQD): $(USER_DIR)/voqd/voqd.c $(USER_DIR)/voqd/voq.c $(USER_DIR)/voqd/ringbuf_consumer.c $(USER_DIR)/voqd/state_ctrl.c $(USER_DIR)/voqd/nic_queue.c $(USER_DIR)/voqd/afxdp_socket.c $(USER_DIR)/voqd/voqd_dataplane.c $(wildcard $(USER_DIR)/voqd/*.h)
+$(VOQD): $(USER_DIR)/voqd/voqd.c $(USER_DIR)/voqd/voq.c $(USER_DIR)/voqd/shaper.c $(USER_DIR)/voqd/ringbuf_consumer.c $(USER_DIR)/voqd/state_ctrl.c $(USER_DIR)/voqd/nic_queue.c $(USER_DIR)/voqd/afxdp_socket.c $(USER_DIR)/voqd/voqd_dataplane.c $(wildcard $(USER_DIR)/voqd/*.h) $(RS_LOG_OBJ) $(RESOURCE_LIMITS_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) -DHAVE_LIBBPF_XSK \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(LIBXDP_CFLAGS) -I$(USER_DIR)/voqd \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(LIBXDP_CFLAGS) -I$(USER_DIR)/voqd $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/voqd/voqd.c $(USER_DIR)/voqd/voq.c \
+		$(USER_DIR)/voqd/shaper.c \
 		$(USER_DIR)/voqd/ringbuf_consumer.c $(USER_DIR)/voqd/state_ctrl.c \
 		$(USER_DIR)/voqd/nic_queue.c $(USER_DIR)/voqd/afxdp_socket.c \
 		$(USER_DIR)/voqd/voqd_dataplane.c \
-		$(LIBBPF_LIBS) $(LIBXDP_LIBS) -lelf -lz -lpthread
+		$(RESOURCE_LIMITS_OBJ) $(RS_LOG_OBJ) $(LIBBPF_LIBS) $(LIBXDP_LIBS) -lelf -lz -lpthread
+
+$(STPD): $(USER_DIR)/stpd/stpd.c $(USER_DIR)/stpd/stpd.h $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/stpd $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/stpd/stpd.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
+
+$(LLDPD): $(USER_DIR)/lldpd/lldpd.c $(USER_DIR)/lldpd/lldpd.h $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/lldpd $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/lldpd/lldpd.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
+
+$(LACPD): $(USER_DIR)/lacpd/lacpd.c $(USER_DIR)/lacpd/lacpd.h $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/lacpd $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/lacpd/lacpd.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
+
+$(WATCHDOG): $(USER_DIR)/watchdog/watchdog.c $(USER_DIR)/watchdog/watchdog.h $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) -DRSWITCH_WATCHDOG_STANDALONE \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/watchdog $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/watchdog/watchdog.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
+
+$(CONTROLLER): $(USER_DIR)/controller/controller.c $(USER_DIR)/controller/controller.h $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/controller $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/controller/controller.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
+
+$(AGENT): $(USER_DIR)/agent/agent.c $(USER_DIR)/agent/agent.h $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/agent $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/agent/agent.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
+
+$(SNMPAGENT): $(USER_DIR)/snmpagent/snmpagent.c $(USER_DIR)/snmpagent/snmpagent.h $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/snmpagent $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/snmpagent/snmpagent.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 # Build rswitchctl
-$(RSWITCHCTL): $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_extended.c $(USER_DIR)/ctl/rswitchctl_acl.c $(USER_DIR)/ctl/rswitchctl_mirror.c
+$(RSWITCHCTL): $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_dev.c $(USER_DIR)/ctl/rswitchctl_extended.c $(USER_DIR)/ctl/rswitchctl_acl.c $(USER_DIR)/ctl/rswitchctl_mirror.c $(USER_DIR)/loader/profile_parser.c $(USER_DIR)/watchdog/watchdog.c $(USER_DIR)/watchdog/watchdog.h $(USER_DIR)/lifecycle/lifecycle.h $(USER_DIR)/registry/registry.c $(USER_DIR)/rollback/rollback.h $(USER_DIR)/audit/audit.h $(USER_DIR)/topology/topology.h $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(REGISTRY_OBJ) $(ROLLBACK_OBJ) $(AUDIT_OBJ) $(TOPOLOGY_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/ctl \
-		-o $@ $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_extended.c \
-		$(USER_DIR)/ctl/rswitchctl_acl.c $(USER_DIR)/ctl/rswitchctl_mirror.c \
-		$(LIBBPF_LIBS) -lelf -lz
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) 		-I$(USER_DIR)/ctl -I$(USER_DIR)/loader -I$(USER_DIR)/watchdog -I$(USER_DIR)/registry -I$(USER_DIR)/rollback -I$(USER_DIR)/audit -I$(USER_DIR)/topology $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_dev.c $(USER_DIR)/ctl/rswitchctl_extended.c \
+		$(USER_DIR)/ctl/rswitchctl_acl.c $(USER_DIR)/ctl/rswitchctl_mirror.c $(USER_DIR)/loader/profile_parser.c \
+		$(USER_DIR)/watchdog/watchdog.c \
+		$(REGISTRY_OBJ) $(ROLLBACK_OBJ) $(AUDIT_OBJ) $(TOPOLOGY_OBJ) $(LIFECYCLE_OBJ) $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 # Build rsportctl
-$(RSPORTCTL): $(USER_DIR)/tools/rsportctl.c
+$(RSPORTCTL): $(USER_DIR)/tools/rsportctl.c $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/tools/rsportctl.c \
-		$(LIBBPF_LIBS) -lelf -lz
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 # Build rsvlanctl
-$(RSVLANCTL): $(USER_DIR)/tools/rsvlanctl.c
+$(RSVLANCTL): $(USER_DIR)/tools/rsvlanctl.c $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/tools/rsvlanctl.c \
-		$(LIBBPF_LIBS) -lelf -lz
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 # Build rsaclctl
-$(RSACLCTL): $(USER_DIR)/tools/rsaclctl.c
+$(RSACLCTL): $(USER_DIR)/tools/rsaclctl.c $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/tools/rsaclctl.c \
-		$(LIBBPF_LIBS) -lelf -lz
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 # Build rsroutectl
-$(RSROUTECTL): $(USER_DIR)/tools/rsroutectl.c
+$(RSROUTECTL): $(USER_DIR)/tools/rsroutectl.c $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/tools/rsroutectl.c \
-		$(LIBBPF_LIBS) -lelf -lz
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 # Build rsqosctl
-$(RSQOSCTL): $(USER_DIR)/tools/rsqosctl.c
+$(RSQOSCTL): $(USER_DIR)/tools/rsqosctl.c $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/tools/rsqosctl.c \
-		$(LIBBPF_LIBS) -lelf -lz
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+# Build rsflowctl
+$(RSFLOWCTL): $(USER_DIR)/tools/rsflowctl.c $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/tools/rsflowctl.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+# Build rsnatctl
+$(RSNATCTL): $(USER_DIR)/tools/rsnatctl.c $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/tools/rsnatctl.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 # Build rsvoqctl
-$(RSVOQCTL): $(USER_DIR)/tools/rsvoqctl.c
+$(RSVOQCTL): $(USER_DIR)/tools/rsvoqctl.c $(USER_DIR)/voqd/shaper.c $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
-		-o $@ $(USER_DIR)/tools/rsvoqctl.c \
-		$(LIBBPF_LIBS) -lelf -lz
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/tools/rsvoqctl.c $(USER_DIR)/voqd/shaper.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+# Build rstunnelctl
+$(RSTUNNELCTL): $(USER_DIR)/tools/rstunnelctl.c $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/tools/rstunnelctl.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 # Build telemetry exporter
-$(TELEMETRY): $(USER_DIR)/telemetry/telemetry.c $(wildcard $(USER_DIR)/telemetry/*.h)
+$(TELEMETRY): $(USER_DIR)/telemetry/telemetry.c $(wildcard $(USER_DIR)/telemetry/*.h) $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/telemetry \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/telemetry $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/telemetry/telemetry.c \
-		$(LIBBPF_LIBS) -lelf -lz -lpthread
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
 
 # Build event consumer daemon
-$(EVENT_CONSUMER): $(USER_DIR)/events/event_consumer.c $(wildcard $(USER_DIR)/events/*.h)
+$(EVENT_CONSUMER): $(USER_DIR)/events/event_consumer.c $(wildcard $(USER_DIR)/events/*.h) $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/events \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/events $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/events/event_consumer.c \
-		$(LIBBPF_LIBS) -lelf -lz -lpthread
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
 
 # Build packet trace utility
-$(PACKET_TRACE): $(USER_DIR)/tools/rs_packet_trace.c
+$(PACKET_TRACE): $(USER_DIR)/tools/rs_packet_trace.c $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
-		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/tools/rs_packet_trace.c \
-		$(LIBBPF_LIBS) -lelf -lz
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(SFLOW_EXPORT): $(USER_DIR)/sflow/sflow_export.c $(USER_DIR)/sflow/sflow_export.h $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/sflow $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/sflow/sflow_export.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
+
+$(PROMETHEUS_EXPORTER): $(USER_DIR)/exporter/prometheus_exporter.c $(USER_DIR)/exporter/prometheus_exporter.h $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/exporter $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/exporter/prometheus_exporter.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
 
 # Build packet trace v2 (ringbuf-based)
 $(BUILD_DIR)/rs_packet_trace_v2: $(USER_DIR)/tools/rs_packet_trace_v2.c $(BPF_DIR)/tools/packet_trace.bpf.o
@@ -223,6 +386,7 @@ $(BPF_DIR)/tools/packet_trace.bpf.o: bpf/tools/packet_trace.bpf.c
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
 		-c $< -o $@
 
+
 # Build AF_XDP test program
 $(AFXDP_TEST): $(USER_DIR)/afxdp/afxdp_socket.c $(USER_DIR)/afxdp/afxdp_test.c $(wildcard $(USER_DIR)/afxdp/*.h)
 	@echo "  CC [USER] $@"
@@ -231,10 +395,85 @@ $(AFXDP_TEST): $(USER_DIR)/afxdp/afxdp_socket.c $(USER_DIR)/afxdp/afxdp_test.c $
 		-o $@ $(USER_DIR)/afxdp/afxdp_socket.c $(USER_DIR)/afxdp/afxdp_test.c \
 		$(LIBBPF_LIBS) -lelf -lz
 
+# Test targets
+TEST_DIR = ./test/unit
+TEST_DISPATCHER = $(BUILD_DIR)/test_dispatcher
+TEST_ACL = $(BUILD_DIR)/test_acl
+TEST_VLAN = $(BUILD_DIR)/test_vlan
+TEST_ACL_BPF = $(BUILD_DIR)/test_acl_bpf
+FUZZ_MODULES = $(BUILD_DIR)/fuzz_modules
+
+$(TEST_DISPATCHER): $(TEST_DIR)/test_dispatcher.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_ACL): $(TEST_DIR)/test_acl.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_VLAN): $(TEST_DIR)/test_vlan.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_ACL_BPF): $(TEST_DIR)/test_acl_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $(TEST_DIR)/test_acl_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(FUZZ_MODULES): test/fuzz/fuzz_modules.c $(RS_LOG_OBJ)
+	@echo "  CC [FUZZ] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ test/fuzz/fuzz_modules.c $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+test: $(TEST_DISPATCHER) $(TEST_ACL) $(TEST_VLAN)
+	@echo "✓ Test binaries built"
+	@echo "  Run: sudo ./test/unit/run_tests.sh"
+
+test-bpf: $(TEST_ACL_BPF)
+	@echo "Running BPF_PROG_RUN ACL test harness (requires root)"
+	@sudo ./build/test_acl_bpf ./build/bpf/acl.bpf.o ./build/test_acl_bpf.junit.xml
+
+fuzz: $(FUZZ_MODULES)
+	@echo "Running module fuzz harness (requires root)"
+	@sudo ./build/fuzz_modules ./build/bpf/acl.bpf.o acl_filter 10000
+
+integration-test:
+	@echo "Running integration tests..."
+	@sudo bash ./test/integration/run_all.sh
+
+benchmark:
+	@echo "Running benchmarks..."
+	@bash test/benchmark/run_all.sh
+
+gen-docs:
+	@python3 scripts/gen_api_docs.py
+
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
 	@echo "✓ Clean complete"
+
+install-sdk:
+	@echo "Generating rSwitch SDK..."
+	@mkdir -p sdk/include
+	@cp bpf/include/rswitch_bpf.h sdk/include/
+	@cp bpf/include/rswitch_common.h sdk/include/
+	@cp bpf/core/module_abi.h sdk/include/
+	@cp bpf/core/uapi.h sdk/include/
+	@cp bpf/core/map_defs.h sdk/include/
+	@if [ -f bpf/include/vmlinux.h ]; then cp bpf/include/vmlinux.h sdk/include/; fi
+	@echo "SDK generated in sdk/"
+	@echo "  Headers: sdk/include/"
+	@echo "  Templates: sdk/templates/"
+	@echo "  Build: make -f sdk/Makefile.module MODULE=your_module"
 
 help:
 	@echo "rSwitch Build System"

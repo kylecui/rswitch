@@ -38,11 +38,22 @@
 #include <bpf/bpf.h>
 
 #include "profile_parser.h"
+#include "rs_log.h"
+#include "../lifecycle/lifecycle.h"
+
+extern int profile_load_with_inheritance(const char *path, struct rs_profile *profile) __attribute__((weak));
 
 /* Copy necessary structure definitions (user-space safe versions) */
-#define RS_ABI_VERSION 1
+#define RS_ABI_VERSION_MAJOR 1
+#define RS_ABI_VERSION_MINOR 0
+#define RS_ABI_VERSION ((RS_ABI_VERSION_MAJOR << 16) | RS_ABI_VERSION_MINOR)
+#define RS_ABI_VERSION_1 1
+#define RS_ABI_MAJOR(v) ((v) >> 16)
+#define RS_ABI_MINOR(v) ((v) & 0xFFFF)
 #define RS_HOOK_XDP_INGRESS 0
 #define RS_HOOK_XDP_EGRESS 1
+#define RS_MAX_DEPS 4
+#define RS_DEP_NAME_LEN 32
 
 /* VLAN mode enumeration (must match bpf/core/map_defs.h) */
 #define RS_VLAN_MODE_OFF    0
@@ -59,6 +70,11 @@ struct rs_module_desc {
     char  name[32];         /* Module name (for logging/debug) */
     char  description[64];  /* Human-readable description */
     __u32 reserved[4];      /* Reserved for future use */
+} __attribute__((aligned(8)));
+
+struct rs_module_deps {
+    __u32 dep_count;
+    char deps[RS_MAX_DEPS][RS_DEP_NAME_LEN];
 } __attribute__((aligned(8)));
 
 struct rs_port_config {
@@ -94,6 +110,23 @@ struct rs_vlan_members {
     __u32 reserved[4];
 };
 
+#define RS_MODULE_CONFIG_KEY_LEN 32
+#define RS_MODULE_CONFIG_VAL_LEN 64
+
+struct rs_module_config_key {
+    char module_name[RS_MODULE_CONFIG_KEY_LEN];
+    char param_name[RS_MODULE_CONFIG_KEY_LEN];
+};
+
+struct rs_module_config_value {
+    __u32 type;
+    union {
+        __s64 int_val;
+        __u32 bool_val;
+        char str_val[56];
+    };
+};
+
 #define MAX_MODULES 64
 #define MAX_INTERFACES 64
 #define BPF_PIN_PATH "/sys/fs/bpf"
@@ -108,6 +141,7 @@ struct loaded_module {
     char name[64];
     char path[256];
     struct rs_module_desc desc;
+    struct rs_module_deps deps;
     struct bpf_object *obj;
     struct bpf_program *prog;
     int prog_fd;
@@ -140,6 +174,7 @@ struct loader_ctx {
     int rs_event_bus_fd;
     int rs_mac_table_fd;
     int rs_vlan_map_fd;
+    int rs_module_config_map_fd;
     
     /* Configuration */
     __u32 interfaces[MAX_INTERFACES];
@@ -166,23 +201,19 @@ struct loader_ctx {
 
 static volatile int keep_running = 1;
 static volatile int shutdown_in_progress = 0;
+static volatile sig_atomic_t shutdown_requested = 0;
 
-/* Signal handler for graceful shutdown */
-static void sig_handler(int sig)
+static int profile_load_compat(const char *path, struct rs_profile *profile)
 {
-    if (shutdown_in_progress) {
-        /* Already shutting down, ignore duplicate signals */
-        return;
-    }
-    
-    shutdown_in_progress = 1;
-    keep_running = 0;
-    
-    /* Print signal info for debugging */
-    const char *sig_name = (sig == SIGINT) ? "SIGINT" : 
-                           (sig == SIGTERM) ? "SIGTERM" : 
-                           (sig == SIGHUP) ? "SIGHUP" : "Unknown";
-    fprintf(stderr, "\n\nReceived %s, initiating shutdown...\n", sig_name);
+    if (profile_load_with_inheritance)
+        return profile_load_with_inheritance(path, profile);
+    return profile_load(path, profile);
+}
+
+static void handle_signal(int sig)
+{
+    (void)sig;
+    shutdown_requested = 1;
 }
 
 /* Set RLIMIT_MEMLOCK to unlimited for BPF operations */
@@ -194,8 +225,8 @@ static int bump_memlock_rlimit(void)
     };
 
     if (setrlimit(RLIMIT_MEMLOCK, &rlim_new)) {
-        fprintf(stderr, "Failed to increase RLIMIT_MEMLOCK limit: %s\n", 
-                strerror(errno));
+        RS_LOG_ERROR("Failed to increase RLIMIT_MEMLOCK limit: %s",
+                     strerror(errno));
         return -1;
     }
     return 0;
@@ -208,15 +239,15 @@ static int create_pin_dir(const char *path)
     
     if (stat(path, &st) == 0) {
         if (!S_ISDIR(st.st_mode)) {
-            fprintf(stderr, "%s exists but is not a directory\n", path);
+            RS_LOG_ERROR("%s exists but is not a directory", path);
             return -1;
         }
         return 0;
     }
     
     if (mkdir(path, 0755) && errno != EEXIST) {
-        fprintf(stderr, "Failed to create directory %s: %s\n", 
-                path, strerror(errno));
+        RS_LOG_ERROR("Failed to create directory %s: %s",
+                     path, strerror(errno));
         return -1;
     }
     
@@ -240,7 +271,7 @@ static int read_module_metadata(const char *path, struct rs_module_desc *desc)
     obj = bpf_object__open(path);
     err = libbpf_get_error(obj);
     if (err) {
-        fprintf(stderr, "Failed to open %s: %s\n", path, strerror(-err));
+        RS_LOG_ERROR("Failed to open %s: %s", path, strerror(-err));
         return -1;
     }
     
@@ -252,7 +283,7 @@ static int read_module_metadata(const char *path, struct rs_module_desc *desc)
             
             /* BTF might show size=0 for .rodata.mod, but data should be valid */
             if (!data) {
-                fprintf(stderr, "No data in .rodata.mod section of %s\n", path);
+                RS_LOG_ERROR("No data in .rodata.mod section of %s", path);
                 bpf_object__close(obj);
                 return -1;
             }
@@ -265,11 +296,29 @@ static int read_module_metadata(const char *path, struct rs_module_desc *desc)
             memcpy(desc, data, sizeof(*desc));
             bpf_object__close(obj);
             
-            /* Validate ABI version */
-            if (desc->abi_version != RS_ABI_VERSION) {
-                fprintf(stderr, "Module %s ABI mismatch: expected %u, got %u\n",
-                        path, RS_ABI_VERSION, desc->abi_version);
-                return -1;
+            {
+                __u32 mod_major = RS_ABI_MAJOR(desc->abi_version);
+                __u32 mod_minor = RS_ABI_MINOR(desc->abi_version);
+                __u32 plat_major = RS_ABI_VERSION_MAJOR;
+                __u32 plat_minor = RS_ABI_VERSION_MINOR;
+
+                if (mod_major == 0 && desc->abi_version == RS_ABI_VERSION_1) {
+                    mod_major = 1;
+                    mod_minor = 0;
+                }
+
+                if (mod_major != plat_major) {
+                    RS_LOG_ERROR("Module %s ABI major mismatch: platform %u.%u, module %u.%u (raw=%u)",
+                                 path, plat_major, plat_minor, mod_major, mod_minor,
+                                 desc->abi_version);
+                    return -1;
+                }
+
+                if (mod_minor > plat_minor) {
+                    RS_LOG_WARN("Module %s requires newer ABI minor: platform %u.%u, module %u.%u",
+                                path, plat_major, plat_minor, mod_major, mod_minor);
+                    return -1;
+                }
             }
             
             return 0;
@@ -277,8 +326,80 @@ static int read_module_metadata(const char *path, struct rs_module_desc *desc)
     }
     
     bpf_object__close(obj);
-    fprintf(stderr, "No .rodata.mod section found in %s\n", path);
+    RS_LOG_WARN("No .rodata.mod section found in %s (not a module?)", path);
     return -1;
+}
+
+static int read_module_deps(const char *path, struct rs_module_deps *deps)
+{
+    struct bpf_object *obj;
+    struct bpf_map *map;
+    const void *data;
+    size_t size;
+    int err;
+
+    memset(deps, 0, sizeof(*deps));
+
+    obj = bpf_object__open(path);
+    err = libbpf_get_error(obj);
+    if (err) {
+        RS_LOG_ERROR("Failed to open %s for dependency read: %s", path, strerror(-err));
+        return -1;
+    }
+
+    bpf_object__for_each_map(map, obj) {
+        const char *map_name = bpf_map__name(map);
+        if (!strstr(map_name, ".rodata.moddep"))
+            continue;
+
+        data = bpf_map__initial_value(map, &size);
+        if (!data) {
+            RS_LOG_ERROR("No data in .rodata.moddep section of %s", path);
+            bpf_object__close(obj);
+            return -1;
+        }
+
+        if (size == 0 || size < sizeof(*deps))
+            size = sizeof(*deps);
+
+        memcpy(deps, data, sizeof(*deps));
+        if (deps->dep_count > RS_MAX_DEPS)
+            deps->dep_count = RS_MAX_DEPS;
+
+        for (int i = 0; i < (int)deps->dep_count; i++)
+            deps->deps[i][RS_DEP_NAME_LEN - 1] = '\0';
+
+        bpf_object__close(obj);
+        return 0;
+    }
+
+    bpf_object__close(obj);
+    return 0;
+}
+
+/* Check if module is in profile's ingress or egress list */
+static const struct rs_profile_module_entry *find_module_profile_entry(
+    const struct rs_profile *profile, const char *module_name)
+{
+    if (!profile || (profile->ingress_count == 0 && profile->egress_count == 0)) {
+        return NULL;
+    }
+
+    /* Check ingress modules */
+    for (int i = 0; i < profile->ingress_count; i++) {
+        if (strcmp(module_name, profile->ingress_modules[i].name) == 0) {
+            return &profile->ingress_modules[i];
+        }
+    }
+
+    /* Check egress modules */
+    for (int i = 0; i < profile->egress_count; i++) {
+        if (strcmp(module_name, profile->egress_modules[i].name) == 0) {
+            return &profile->egress_modules[i];
+        }
+    }
+
+    return NULL;
 }
 
 /* Check if module is in profile's ingress or egress list */
@@ -288,21 +409,61 @@ static int is_module_in_profile(const char *module_name, struct rs_profile *prof
         /* No profile - load all modules (backward compatibility) */
         return 1;
     }
-    
-    /* Check ingress modules */
-    for (int i = 0; i < profile->ingress_count; i++) {
-        if (strcmp(module_name, profile->ingress_modules[i]) == 0) {
-            return 1;
+
+    if (find_module_profile_entry(profile, module_name)) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static int evaluate_module_condition(const char *condition,
+                                     const struct rs_profile_settings *settings)
+{
+    if (!condition || condition[0] == '\0') {
+        return 1;
+    }
+
+    if (!settings) {
+        return 1;
+    }
+
+    if (strcmp(condition, "debug_mode") == 0 || strcmp(condition, "debug") == 0) {
+        return settings->debug;
+    }
+    if (strcmp(condition, "stats_enabled") == 0) {
+        return settings->stats_enabled;
+    }
+    if (strcmp(condition, "ringbuf_enabled") == 0) {
+        return settings->ringbuf_enabled;
+    }
+    if (strcmp(condition, "mac_learning") == 0) {
+        return settings->mac_learning;
+    }
+    if (strcmp(condition, "vlan_enforcement") == 0) {
+        return settings->vlan_enforcement;
+    }
+
+    RS_LOG_WARN("Unknown condition '%s' - loading module anyway", condition);
+    return 1;
+}
+
+static int validate_stage_for_hook(const char *module_name, __u32 hook, int stage)
+{
+    if (hook == RS_HOOK_XDP_INGRESS) {
+        if (stage < 10 || stage > 99) {
+            RS_LOG_ERROR("Invalid ingress stage %d for module %s (valid range: 10-99)",
+                         stage, module_name);
+            return -1;
+        }
+    } else if (hook == RS_HOOK_XDP_EGRESS) {
+        if (stage < 100 || stage > 199) {
+            RS_LOG_ERROR("Invalid egress stage %d for module %s (valid range: 100-199)",
+                         stage, module_name);
+            return -1;
         }
     }
-    
-    /* Check egress modules */
-    for (int i = 0; i < profile->egress_count; i++) {
-        if (strcmp(module_name, profile->egress_modules[i]) == 0) {
-            return 1;
-        }
-    }
-    
+
     return 0;
 }
 
@@ -317,7 +478,7 @@ static int discover_modules(struct loader_ctx *ctx)
     /* Scan build/bpf directory for .bpf.o files */
     dir = opendir(BUILD_DIR);
     if (!dir) {
-        fprintf(stderr, "Failed to open %s: %s\n", BUILD_DIR, strerror(errno));
+        RS_LOG_ERROR("Failed to open %s: %s", BUILD_DIR, strerror(errno));
         return -1;
     }
     
@@ -339,6 +500,16 @@ static int discover_modules(struct loader_ctx *ctx)
         /* Try to read module metadata */
         struct rs_module_desc desc;
         if (read_module_metadata(path, &desc) == 0) {
+            struct rs_module_deps deps = {};
+            const struct rs_profile_module_entry *profile_entry = NULL;
+            int effective_stage = desc.stage;
+
+            if (read_module_deps(path, &deps) < 0) {
+                RS_LOG_ERROR("Failed to read dependency metadata from %s", path);
+                closedir(dir);
+                return -1;
+            }
+
             /* Check if module is in profile (if profile is used)
              * Exception: egress_final is infrastructure, always load it
              */
@@ -350,15 +521,81 @@ static int discover_modules(struct loader_ctx *ctx)
                 }
                 continue;
             }
+
+            if (ctx->use_profile) {
+                profile_entry = find_module_profile_entry(&ctx->profile, desc.name);
+
+                if (profile_entry && profile_entry->optional) {
+                    const char *condition = profile_entry->condition[0] != '\0' ?
+                        profile_entry->condition : "(none)";
+                    int condition_met = evaluate_module_condition(profile_entry->condition,
+                                                                  &ctx->profile.settings);
+                    if (!condition_met) {
+                        RS_LOG_INFO("Skipping optional module %s (condition '%s' not met)",
+                                    desc.name, condition);
+                        continue;
+                    }
+
+                    RS_LOG_INFO("Loading optional module %s (condition '%s' met)",
+                                desc.name, condition);
+                }
+
+                if (profile_entry && profile_entry->stage_override >= 0) {
+                    effective_stage = profile_entry->stage_override;
+                }
+            }
+
+            if (validate_stage_for_hook(desc.name, desc.hook, effective_stage) < 0) {
+                closedir(dir);
+                return -1;
+            }
+
+            for (int i = 0; i < count; i++) {
+                if (ctx->modules[i].desc.hook == desc.hook &&
+                    ctx->modules[i].stage == effective_stage) {
+                    RS_LOG_ERROR("Stage conflict: modules %s and %s both use stage %d",
+                                 ctx->modules[i].name, desc.name, effective_stage);
+                    closedir(dir);
+                    return -1;
+                }
+            }
             
             strncpy(ctx->modules[count].name, desc.name, sizeof(ctx->modules[count].name) - 1);
             strncpy(ctx->modules[count].path, path, sizeof(ctx->modules[count].path) - 1);
             memcpy(&ctx->modules[count].desc, &desc, sizeof(desc));
-            ctx->modules[count].stage = desc.stage;
+            memcpy(&ctx->modules[count].deps, &deps, sizeof(deps));
+            ctx->modules[count].stage = effective_stage;
             
             if (ctx->verbose) {
-                printf("Discovered module: %s (stage=%u, hook=%u, flags=0x%x)\n",
-                       desc.name, desc.stage, desc.hook, desc.flags);
+                const int optional_module = profile_entry && profile_entry->optional;
+                const char *condition = optional_module && profile_entry->condition[0] != '\0' ?
+                    profile_entry->condition : "(none)";
+                if (effective_stage != (int)desc.stage) {
+                    if (optional_module) {
+                        printf("Discovered module: %s (stage=%d override from %u, hook=%u, flags=0x%x) [optional, condition: %s]\n",
+                               desc.name, effective_stage, desc.stage, desc.hook, desc.flags,
+                               condition);
+                    } else {
+                        printf("Discovered module: %s (stage=%d override from %u, hook=%u, flags=0x%x)\n",
+                               desc.name, effective_stage, desc.stage, desc.hook, desc.flags);
+                    }
+                } else {
+                    if (optional_module) {
+                        printf("Discovered module: %s (stage=%d, hook=%u, flags=0x%x) [optional, condition: %s]\n",
+                               desc.name, effective_stage, desc.hook, desc.flags, condition);
+                    } else {
+                        printf("Discovered module: %s (stage=%d, hook=%u, flags=0x%x)\n",
+                               desc.name, effective_stage, desc.hook, desc.flags);
+                    }
+                }
+
+                if (ctx->modules[count].deps.dep_count > 0) {
+                    printf("  Dependencies:");
+                    for (int d = 0; d < (int)ctx->modules[count].deps.dep_count; d++) {
+                        printf(" %s", ctx->modules[count].deps.deps[d]);
+                    }
+                    printf("\n");
+                }
             }
             
             count++;
@@ -370,6 +607,121 @@ static int discover_modules(struct loader_ctx *ctx)
     
     printf("Discovered %d modules\n", count);
     return count;
+}
+
+static int validate_dependencies(struct loader_ctx *ctx)
+{
+    int edges[MAX_MODULES][MAX_MODULES] = {{0}};
+    int indegree[MAX_MODULES] = {0};
+    int queue[MAX_MODULES] = {0};
+    int topo_order[MAX_MODULES] = {0};
+    int num_edges = 0;
+    int q_head = 0;
+    int q_tail = 0;
+    int topo_count = 0;
+
+    for (int i = 0; i < ctx->num_modules; i++) {
+        struct loaded_module *mod = &ctx->modules[i];
+
+        if (mod->deps.dep_count > RS_MAX_DEPS) {
+            RS_LOG_ERROR("Module %s declares too many dependencies (%u > %u)",
+                         mod->name, mod->deps.dep_count, RS_MAX_DEPS);
+            return -1;
+        }
+
+        for (int d = 0; d < (int)mod->deps.dep_count; d++) {
+            const char *dep_name = mod->deps.deps[d];
+            int dep_idx = -1;
+
+            if (dep_name[0] == '\0') {
+                RS_LOG_ERROR("Module %s has empty dependency at index %d", mod->name, d);
+                return -1;
+            }
+
+            for (int j = 0; j < ctx->num_modules; j++) {
+                if (strcmp(ctx->modules[j].name, dep_name) == 0) {
+                    dep_idx = j;
+                    break;
+                }
+            }
+
+            if (dep_idx < 0) {
+                RS_LOG_ERROR("Module %s requires %s, which is not loaded", mod->name, dep_name);
+                return -1;
+            }
+
+            if (dep_idx == i) {
+                RS_LOG_ERROR("Module %s cannot depend on itself", mod->name);
+                return -1;
+            }
+
+            if (!edges[dep_idx][i]) {
+                edges[dep_idx][i] = 1;
+                indegree[i]++;
+                num_edges++;
+            }
+
+            if (ctx->modules[dep_idx].stage >= mod->stage) {
+                RS_LOG_WARN("Module %s depends on %s, but %s stage=%d and %s stage=%d",
+                            mod->name, dep_name,
+                            dep_name, ctx->modules[dep_idx].stage,
+                            mod->name, mod->stage);
+            }
+        }
+    }
+
+    for (int i = 0; i < ctx->num_modules; i++) {
+        if (indegree[i] == 0)
+            queue[q_tail++] = i;
+    }
+
+    while (q_head < q_tail) {
+        int u = queue[q_head++];
+        topo_order[topo_count++] = u;
+
+        for (int v = 0; v < ctx->num_modules; v++) {
+            if (!edges[u][v])
+                continue;
+            indegree[v]--;
+            if (indegree[v] == 0)
+                queue[q_tail++] = v;
+        }
+    }
+
+    if (topo_count != ctx->num_modules) {
+        RS_LOG_ERROR("Dependency cycle detected across discovered modules");
+        return -1;
+    }
+
+    if (ctx->verbose && num_edges > 0) {
+        printf("Dependency order:");
+        for (int i = 0; i < topo_count; i++)
+            printf(" %s", ctx->modules[topo_order[i]].name);
+        printf("\n");
+    }
+
+    for (int i = 0; i < ctx->num_modules; i++) {
+        int has_incoming = 0;
+        int has_outgoing = 0;
+
+        if (strcmp(ctx->modules[i].name, "lastcall") == 0 ||
+            strcmp(ctx->modules[i].name, "egress_final") == 0) {
+            continue;
+        }
+
+        for (int j = 0; j < ctx->num_modules; j++) {
+            if (edges[j][i])
+                has_incoming = 1;
+            if (edges[i][j])
+                has_outgoing = 1;
+        }
+
+        if (!has_incoming && !has_outgoing) {
+            RS_LOG_WARN("Module %s is not connected in dependency graph", ctx->modules[i].name);
+        }
+    }
+
+    return 0;
 }
 
 /* Compare function for qsort - sort modules by stage number */
@@ -391,26 +743,26 @@ static int load_core_programs(struct loader_ctx *ctx)
     ctx->dispatcher_obj = bpf_object__open(path);
     err = libbpf_get_error(ctx->dispatcher_obj);
     if (err) {
-        fprintf(stderr, "Failed to open dispatcher: %s\n", strerror(-err));
+        RS_LOG_ERROR("Failed to open dispatcher: %s", strerror(-err));
         return -1;
     }
     
     err = bpf_object__load(ctx->dispatcher_obj);
     if (err) {
-        fprintf(stderr, "Failed to load dispatcher: %s\n", strerror(-err));
+        RS_LOG_ERROR("Failed to load dispatcher: %s", strerror(-err));
         return -1;
     }
     
     ctx->dispatcher_prog = bpf_object__find_program_by_name(ctx->dispatcher_obj, 
                                                              "rswitch_dispatcher");
     if (!ctx->dispatcher_prog) {
-        fprintf(stderr, "Failed to find rswitch_dispatcher program\n");
+        RS_LOG_ERROR("Failed to find rswitch_dispatcher program");
         return -1;
     }
     
     ctx->dispatcher_fd = bpf_program__fd(ctx->dispatcher_prog);
     if (ctx->dispatcher_fd < 0) {
-        fprintf(stderr, "Failed to get dispatcher FD\n");
+        RS_LOG_ERROR("Failed to get dispatcher FD");
         return -1;
     }
     
@@ -424,26 +776,26 @@ static int load_core_programs(struct loader_ctx *ctx)
     ctx->egress_obj = bpf_object__open(path);
     err = libbpf_get_error(ctx->egress_obj);
     if (err) {
-        fprintf(stderr, "Failed to open egress: %s\n", strerror(-err));
+        RS_LOG_ERROR("Failed to open egress: %s", strerror(-err));
         return -1;
     }
     
     err = bpf_object__load(ctx->egress_obj);
     if (err) {
-        fprintf(stderr, "Failed to load egress: %s\n", strerror(-err));
+        RS_LOG_ERROR("Failed to load egress: %s", strerror(-err));
         return -1;
     }
     
     ctx->egress_prog = bpf_object__find_program_by_name(ctx->egress_obj, 
                                                          "rswitch_egress");
     if (!ctx->egress_prog) {
-        fprintf(stderr, "Failed to find rswitch_egress program\n");
+        RS_LOG_ERROR("Failed to find rswitch_egress program");
         return -1;
     }
     
     ctx->egress_fd = bpf_program__fd(ctx->egress_prog);
     if (ctx->egress_fd < 0) {
-        fprintf(stderr, "Failed to get egress FD\n");
+        RS_LOG_ERROR("Failed to get egress FD");
         return -1;
     }
     
@@ -495,9 +847,12 @@ static int get_pinned_maps(struct loader_ctx *ctx)
     
     snprintf(path, sizeof(path), "%s/rs_vlan_map", BPF_PIN_PATH);
     ctx->rs_vlan_map_fd = bpf_obj_get(path);
+
+    snprintf(path, sizeof(path), "%s/rs_module_config_map", BPF_PIN_PATH);
+    ctx->rs_module_config_map_fd = bpf_obj_get(path);
     
     if (ctx->rs_progs_fd < 0) {
-        fprintf(stderr, "Warning: Failed to get rs_progs from /sys/fs/bpf/rs_progs\n");
+        RS_LOG_WARN("Failed to get rs_progs from /sys/fs/bpf/rs_progs");
         /* Try to get from dispatcher object */
         struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_progs");
         if (map) {
@@ -534,6 +889,13 @@ static int get_pinned_maps(struct loader_ctx *ctx)
             ctx->rs_vlan_map_fd = bpf_map__fd(map);
         }
     }
+
+    if (ctx->rs_module_config_map_fd < 0) {
+        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_module_config_map");
+        if (map) {
+            ctx->rs_module_config_map_fd = bpf_map__fd(map);
+        }
+    }
     
     if (ctx->rs_stats_map_fd < 0) {
         struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_stats_map");
@@ -542,9 +904,10 @@ static int get_pinned_maps(struct loader_ctx *ctx)
         }
     }
     
-    printf("Map FDs: rs_progs=%d, port_config=%d, ctx=%d, chain=%d, event_bus=%d, vlan=%d, stats=%d, devmap=%d\n",
+    printf("Map FDs: rs_progs=%d, port_config=%d, ctx=%d, chain=%d, event_bus=%d, vlan=%d, module_cfg=%d, stats=%d, devmap=%d\n",
            ctx->rs_progs_fd, ctx->rs_port_config_map_fd, ctx->rs_ctx_map_fd, 
            ctx->rs_prog_chain_fd, ctx->rs_event_bus_fd, ctx->rs_vlan_map_fd,
+           ctx->rs_module_config_map_fd,
            ctx->rs_stats_map_fd, ctx->rs_devmap_fd);
     
     return 0;
@@ -570,13 +933,13 @@ static int reuse_shared_maps(struct bpf_object *obj, struct loader_ctx *ctx)
     const char *names_to_reuse[] = {
         "rs_ctx_map", "rs_progs", "rs_prog_chain", "rs_port_config_map",
         "rs_ifindex_to_port_map", "rs_stats_map", "rs_event_bus", 
-        "rs_vlan_map", "rs_devmap", "rs_xdp_devmap"
+        "rs_vlan_map", "rs_module_config_map", "rs_devmap", "rs_xdp_devmap"
     };
     int fds_to_reuse[] = {
         ctx->rs_ctx_map_fd, ctx->rs_progs_fd, ctx->rs_prog_chain_fd, 
         ctx->rs_port_config_map_fd, ctx->rs_ifindex_to_port_map_fd, 
-        ctx->rs_stats_map_fd, ctx->rs_event_bus_fd, ctx->rs_vlan_map_fd, 
-        ctx->rs_devmap_fd, ctx->rs_devmap_fd
+        ctx->rs_stats_map_fd, ctx->rs_event_bus_fd, ctx->rs_vlan_map_fd,
+        ctx->rs_module_config_map_fd, ctx->rs_devmap_fd, ctx->rs_devmap_fd
     };
     int num_maps = sizeof(names_to_reuse) / sizeof(names_to_reuse[0]);
     
@@ -590,13 +953,13 @@ static int reuse_shared_maps(struct bpf_object *obj, struct loader_ctx *ctx)
         
         err = bpf_map__reuse_fd(map, fds_to_reuse[i]);
         if (err) {
-            fprintf(stderr, "  reuse_fd failed for %s (fd=%d): %s\n",
-                    names_to_reuse[i], fds_to_reuse[i], strerror(-err));
+            RS_LOG_WARN("reuse_fd failed for %s (fd=%d): %s",
+                        names_to_reuse[i], fds_to_reuse[i], strerror(-err));
             continue;
         }
         
-        fprintf(stderr, "  Reusing %s with fd=%d (map_fd after=%d)\n", 
-                names_to_reuse[i], fds_to_reuse[i], bpf_map__fd(map));
+        RS_LOG_DEBUG("Reusing %s with fd=%d (map_fd after=%d)",
+                     names_to_reuse[i], fds_to_reuse[i], bpf_map__fd(map));
     }
     
     return 0;
@@ -617,8 +980,8 @@ static int load_modules(struct loader_ctx *ctx)
         mod->obj = bpf_object__open_file(mod->path, &opts);
         err = libbpf_get_error(mod->obj);
         if (err) {
-            fprintf(stderr, "Failed to open module %s: %s\n", 
-                    mod->name, strerror(-err));
+            RS_LOG_ERROR("Failed to open module %s: %s",
+                         mod->name, strerror(-err));
             continue;
         }
         
@@ -626,18 +989,18 @@ static int load_modules(struct loader_ctx *ctx)
          * Without this, each module creates its own copies of rs_ctx_map, rs_progs, etc.
          * which breaks the tail-call pipeline since modules aren't in the dispatcher's prog_array.
          */
-        fprintf(stderr, "[%s] Calling reuse_shared_maps...\n", mod->name);
+        RS_LOG_DEBUG("[%s] Calling reuse_shared_maps", mod->name);
         err = reuse_shared_maps(mod->obj, ctx);
         if (err) {
-            fprintf(stderr, "Warning: Failed to reuse shared maps for %s\n", mod->name);
+            RS_LOG_WARN("Failed to reuse shared maps for %s", mod->name);
             /* Continue anyway - module may work with its own maps */
         }
         
         /* Load BPF object */
         err = bpf_object__load(mod->obj);
         if (err) {
-            fprintf(stderr, "Failed to load module %s: %s\n", 
-                    mod->name, strerror(-err));
+            RS_LOG_ERROR("Failed to load module %s: %s",
+                         mod->name, strerror(-err));
             bpf_object__close(mod->obj);
             mod->obj = NULL;
             continue;
@@ -653,7 +1016,7 @@ static int load_modules(struct loader_ctx *ctx)
         }
         
         if (mod->prog_fd < 0) {
-            fprintf(stderr, "Failed to find XDP program in module %s\n", mod->name);
+            RS_LOG_ERROR("Failed to find XDP program in module %s", mod->name);
             bpf_object__close(mod->obj);
             mod->obj = NULL;
             continue;
@@ -675,7 +1038,7 @@ static int build_prog_array(struct loader_ctx *ctx)
     __u32 idx = 0;
     
     if (ctx->rs_progs_fd < 0) {
-        fprintf(stderr, "rs_progs map FD not available\n");
+        RS_LOG_ERROR("rs_progs map FD not available");
         return -1;
     }
     
@@ -719,8 +1082,8 @@ static int build_prog_array(struct loader_ctx *ctx)
         /* Insert into prog_array at ingress_idx */
         err = bpf_map_update_elem(ctx->rs_progs_fd, &ingress_idx, &mod->prog_fd, BPF_ANY);
         if (err) {
-            fprintf(stderr, "Failed to insert %s into prog_array[%u]: %s\n",
-                    mod->name, ingress_idx, strerror(errno));
+            RS_LOG_ERROR("Failed to insert %s into prog_array[%u]: %s",
+                         mod->name, ingress_idx, strerror(errno));
             return -1;
         }
         
@@ -738,8 +1101,8 @@ static int build_prog_array(struct loader_ctx *ctx)
             /* Not last ingress module */
             err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &ingress_idx, &next_ingress_idx, BPF_ANY);
             if (err) {
-                fprintf(stderr, "Failed to set prog_chain[%u]=%u: %s\n",
-                        ingress_idx, next_ingress_idx, strerror(errno));
+                RS_LOG_ERROR("Failed to set prog_chain[%u]=%u: %s",
+                             ingress_idx, next_ingress_idx, strerror(errno));
                 return -1;
             }
             printf("  [%3u] stage=%3u hook=ingress: %s (fd=%d) → next=%u\n", 
@@ -767,8 +1130,8 @@ static int build_prog_array(struct loader_ctx *ctx)
         /* Insert into prog_array at egress_slot (255, 254, 253, ...) */
         err = bpf_map_update_elem(ctx->rs_progs_fd, &egress_slot, &mod->prog_fd, BPF_ANY);
         if (err) {
-            fprintf(stderr, "Failed to insert %s into prog_array[%u]: %s\n",
-                    mod->name, egress_slot, strerror(errno));
+            RS_LOG_ERROR("Failed to insert %s into prog_array[%u]: %s",
+                         mod->name, egress_slot, strerror(errno));
             return -1;
         }
         
@@ -799,8 +1162,8 @@ static int build_prog_array(struct loader_ctx *ctx)
             /* Not last egress module - link to next */
             err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &egress_slot, &next_egress_slot, BPF_ANY);
             if (err) {
-                fprintf(stderr, "Failed to set prog_chain[%u]=%u: %s\n",
-                        egress_slot, next_egress_slot, strerror(errno));
+                RS_LOG_ERROR("Failed to set prog_chain[%u]=%u: %s",
+                             egress_slot, next_egress_slot, strerror(errno));
                 return -1;
             }
             printf("  [%3u] stage=%3u hook=egress : %s (fd=%d) → next=%u\n", 
@@ -824,8 +1187,8 @@ static int build_prog_array(struct loader_ctx *ctx)
         int key = 0;  /* RS_ONLYKEY - devmap egress uses key 0 */
         err = bpf_map_update_elem(ctx->rs_prog_chain_fd, &key, &first_egress_prog_idx, BPF_ANY);
         if (err) {
-            fprintf(stderr, "Failed to set egress entry point prog_chain[0]=%u: %s\n",
-                    first_egress_prog_idx, strerror(errno));
+            RS_LOG_ERROR("Failed to set egress entry point prog_chain[0]=%u: %s",
+                         first_egress_prog_idx, strerror(errno));
             return -1;
         }
         printf("\nEgress entry point: prog_chain[0] = %u (devmap→first egress module)\n",
@@ -843,7 +1206,7 @@ static int configure_ports(struct loader_ctx *ctx)
     int i, err;
     
     if (ctx->rs_port_config_map_fd < 0) {
-        fprintf(stderr, "Warning: port_config_map not available, skipping config\n");
+        RS_LOG_WARN("port_config_map not available, skipping config");
         return 0;
     }
     
@@ -858,7 +1221,7 @@ static int configure_ports(struct loader_ctx *ctx)
             __u32 ifindex = if_nametoindex(pport->interface);
             
             if (ifindex == 0) {
-                fprintf(stderr, "  Warning: interface %s not found, skipping\n", pport->interface);
+                RS_LOG_WARN("Interface %s not found, skipping", pport->interface);
                 continue;
             }
             
@@ -866,8 +1229,8 @@ static int configure_ports(struct loader_ctx *ctx)
             __u32 port_idx = i;  /* Use array index as port_idx */
             err = bpf_map_update_elem(ctx->rs_ifindex_to_port_map_fd, &ifindex, &port_idx, BPF_ANY);
             if (err) {
-                fprintf(stderr, "  Warning: Failed to create ifindex->port_idx mapping for %s: %s\n", 
-                        pport->interface, strerror(errno));
+                RS_LOG_WARN("Failed to create ifindex->port_idx mapping for %s: %s",
+                            pport->interface, strerror(errno));
             }
             
             struct rs_port_config cfg = {
@@ -886,14 +1249,16 @@ static int configure_ports(struct loader_ctx *ctx)
             
             /* Copy allowed VLANs */
             if (ctx->verbose) {
-                fprintf(stderr, "DEBUG: configure_ports() port=%s, allowed_vlan_count=%d\n",
-                        pport->interface, pport->allowed_vlan_count);
-                fprintf(stderr, "DEBUG: allowed_vlans=[");
+                RS_LOG_DEBUG("configure_ports() port=%s, allowed_vlan_count=%d",
+                             pport->interface, pport->allowed_vlan_count);
+                char vlan_buf[256] = "";
+                int pos = 0;
                 for (int j = 0; j < pport->allowed_vlan_count && j < 10; j++) {
-                    fprintf(stderr, "%d%s", pport->allowed_vlans[j], 
-                            j < pport->allowed_vlan_count-1 ? ", " : "");
+                    pos += snprintf(vlan_buf + pos, sizeof(vlan_buf) - pos, "%d%s",
+                                    pport->allowed_vlans[j],
+                                    j < pport->allowed_vlan_count - 1 ? ", " : "");
                 }
-                fprintf(stderr, "]\n");
+                RS_LOG_DEBUG("allowed_vlans=[%s]", vlan_buf);
             }
             
             for (int j = 0; j < pport->allowed_vlan_count && j < 128; j++) {
@@ -902,8 +1267,8 @@ static int configure_ports(struct loader_ctx *ctx)
             
             err = bpf_map_update_elem(ctx->rs_port_config_map_fd, &ifindex, &cfg, BPF_ANY);
             if (err) {
-                fprintf(stderr, "  Failed to configure port %s: %s\n", 
-                        pport->interface, strerror(errno));
+                RS_LOG_ERROR("Failed to configure port %s: %s",
+                             pport->interface, strerror(errno));
                 continue;
             }
             
@@ -940,8 +1305,8 @@ static int configure_ports(struct loader_ctx *ctx)
         __u32 port_idx = i;  /* Use array index as port_idx */
         err = bpf_map_update_elem(ctx->rs_ifindex_to_port_map_fd, &ifindex, &port_idx, BPF_ANY);
         if (err) {
-            fprintf(stderr, "  Warning: Failed to create ifindex->port_idx mapping for ifindex %u: %s\n", 
-                    ifindex, strerror(errno));
+            RS_LOG_WARN("Failed to create ifindex->port_idx mapping for ifindex %u: %s",
+                        ifindex, strerror(errno));
         }
         
         struct rs_port_config cfg = {
@@ -959,8 +1324,8 @@ static int configure_ports(struct loader_ctx *ctx)
         
         err = bpf_map_update_elem(ctx->rs_port_config_map_fd, &ifindex, &cfg, BPF_ANY);
         if (err) {
-            fprintf(stderr, "  Failed to configure port %u: %s\n", 
-                    ifindex, strerror(errno));
+            RS_LOG_ERROR("Failed to configure port %u: %s",
+                         ifindex, strerror(errno));
             continue;
         }
         
@@ -973,6 +1338,75 @@ static int configure_ports(struct loader_ctx *ctx)
                cfg.learning ? "on" : "off");
     }
     
+    return 0;
+}
+
+static int parse_int64_value(const char *str, __s64 *out)
+{
+    char *end = NULL;
+    long long parsed;
+
+    if (!str || !out || str[0] == '\0')
+        return 0;
+
+    errno = 0;
+    parsed = strtoll(str, &end, 10);
+    if (errno != 0 || end == str || *end != '\0')
+        return 0;
+
+    *out = (__s64)parsed;
+    return 1;
+}
+
+static int write_module_configs(struct loader_ctx *ctx)
+{
+    int map_fd;
+
+    map_fd = bpf_obj_get("/sys/fs/bpf/rs_module_config_map");
+    if (map_fd < 0) {
+        RS_LOG_WARN("Module config map unavailable, skipping module config write");
+        return 0;
+    }
+
+    for (int i = 0; i < ctx->num_modules; i++) {
+        const struct rs_profile_module_entry *entry;
+
+        entry = find_module_profile_entry(&ctx->profile, ctx->modules[i].name);
+        if (!entry || entry->config_count <= 0)
+            continue;
+
+        for (int j = 0; j < entry->config_count; j++) {
+            struct rs_module_config_key key = {};
+            struct rs_module_config_value val = {};
+            const char *cfg_value = entry->config[j].value;
+            __s64 int_value = 0;
+            int err;
+
+            strncpy(key.module_name, ctx->modules[i].name, sizeof(key.module_name) - 1);
+            strncpy(key.param_name, entry->config[j].key, sizeof(key.param_name) - 1);
+
+            if (strcmp(cfg_value, "true") == 0 || strcmp(cfg_value, "false") == 0) {
+                val.type = 1;
+                val.bool_val = (strcmp(cfg_value, "true") == 0) ? 1 : 0;
+            } else if (parse_int64_value(cfg_value, &int_value)) {
+                val.type = 0;
+                val.int_val = int_value;
+            } else {
+                val.type = 2;
+                strncpy(val.str_val, cfg_value, sizeof(val.str_val) - 1);
+            }
+
+            err = bpf_map_update_elem(map_fd, &key, &val, BPF_ANY);
+            if (err) {
+                RS_LOG_WARN("Failed to write module config %s.%s: %s",
+                            key.module_name,
+                            key.param_name,
+                            strerror(errno));
+            }
+        }
+    }
+
+    close(map_fd);
     return 0;
 }
 
@@ -1031,7 +1465,7 @@ static int initialize_vlan_map(struct loader_ctx *ctx)
             for (j = 0; j < pvlan->tagged_count; j++) {
                 __u32 ifindex = if_nametoindex(pvlan->tagged_ports[j]);
                 if (ifindex == 0) {
-                    fprintf(stderr, "  Warning: tagged port %s not found\n", pvlan->tagged_ports[j]);
+                    RS_LOG_WARN("Tagged port %s not found", pvlan->tagged_ports[j]);
                     continue;
                 }
                 
@@ -1044,7 +1478,7 @@ static int initialize_vlan_map(struct loader_ctx *ctx)
             for (j = 0; j < pvlan->untagged_count; j++) {
                 __u32 ifindex = if_nametoindex(pvlan->untagged_ports[j]);
                 if (ifindex == 0) {
-                    fprintf(stderr, "  Warning: untagged port %s not found\n", pvlan->untagged_ports[j]);
+                    RS_LOG_WARN("Untagged port %s not found", pvlan->untagged_ports[j]);
                     continue;
                 }
                 
@@ -1056,7 +1490,7 @@ static int initialize_vlan_map(struct loader_ctx *ctx)
             __u16 vlan_id = pvlan->vlan_id;
             err = bpf_map_update_elem(vlan_map_fd, &vlan_id, &vlan, BPF_ANY);
             if (err) {
-                fprintf(stderr, "  Failed to create VLAN %d: %s\n", vlan_id, strerror(errno));
+                RS_LOG_ERROR("Failed to create VLAN %d: %s", vlan_id, strerror(errno));
                 continue;
             }
             
@@ -1101,7 +1535,7 @@ static int initialize_vlan_map(struct loader_ctx *ctx)
     __u16 vlan_key = 1;
     err = bpf_map_update_elem(vlan_map_fd, &vlan_key, &vlan1, BPF_ANY);
     if (err) {
-        fprintf(stderr, "Failed to create default VLAN 1: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to create default VLAN 1: %s", strerror(errno));
         return -1;
     }
     
@@ -1168,7 +1602,7 @@ static int initialize_qos_config(struct loader_ctx *ctx)
     __u32 key = 0;
     err = bpf_map_update_elem(qos_config_ext_fd, &key, &cfg_ext, BPF_ANY);
     if (err) {
-        fprintf(stderr, "  Failed to initialize qos_config_ext_map: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to initialize qos_config_ext_map: %s", strerror(errno));
         close(qos_config_ext_fd);
         if (qos_config_fd >= 0) close(qos_config_fd);
         return -1;
@@ -1218,7 +1652,7 @@ static int initialize_qos_config(struct loader_ctx *ctx)
         
         err = bpf_map_update_elem(qos_config_fd, &key, &cfg, BPF_ANY);
         if (err) {
-            fprintf(stderr, "  Warning: Failed to initialize qos_config_map: %s\n", strerror(errno));
+            RS_LOG_WARN("Failed to initialize qos_config_map: %s", strerror(errno));
         } else {
             printf("  ✓ DSCP->priority mapping initialized\n");
             printf("  ✓ ECN threshold: %u packets\n", cfg.ecn_threshold);
@@ -1245,7 +1679,7 @@ static int populate_devmaps(struct loader_ctx *ctx)
     char path[256];
     
     if (egress_prog_fd < 0) {
-        fprintf(stderr, "Warning: Egress program not loaded - VLAN isolation will NOT work!\n");
+        RS_LOG_WARN("Egress program not loaded - VLAN isolation will NOT work!");
     }
     
     /* Find rs_xdp_devmap from lastcall module (owner)
@@ -1281,7 +1715,7 @@ static int populate_devmaps(struct loader_ctx *ctx)
     }
     
     if (xdp_devmap_fd < 0 && afxdp_devmap_fd < 0) {
-        fprintf(stderr, "Warning: No devmaps found, skipping devmap population\n");
+        RS_LOG_WARN("No devmaps found, skipping devmap population");
         return 0;
     }
     
@@ -1304,8 +1738,8 @@ static int populate_devmaps(struct loader_ctx *ctx)
             
             err = bpf_map_update_elem(xdp_devmap_fd, &ifindex, &xdp_val, BPF_ANY);
             if (err) {
-                fprintf(stderr, "Warning: Failed to add %s to XDP devmap: %s\n",
-                        ifname, strerror(errno));
+                RS_LOG_WARN("Failed to add %s to XDP devmap: %s",
+                            ifname, strerror(errno));
             } else {
                 if (egress_prog_fd >= 0) {
                     printf("  XDP devmap: %s (ifindex=%u) with egress hook\n", ifname, ifindex);
@@ -1326,8 +1760,8 @@ static int populate_devmaps(struct loader_ctx *ctx)
             
             err = bpf_map_update_elem(afxdp_devmap_fd, &ifindex, &afxdp_val, BPF_ANY);
             if (err) {
-                fprintf(stderr, "Warning: Failed to add %s to AF_XDP devmap: %s\n",
-                        ifname, strerror(errno));
+                RS_LOG_WARN("Failed to add %s to AF_XDP devmap: %s",
+                            ifname, strerror(errno));
             } else {
                 printf("  AF_XDP devmap: %s (ifindex=%u)\n", ifname, ifindex);
             }
@@ -1348,7 +1782,7 @@ static int setup_veth_egress(struct loader_ctx *ctx)
     
     ctx->veth_out_ifindex = if_nametoindex("veth_voq_out");
     if (ctx->veth_out_ifindex == 0) {
-        fprintf(stderr, "Warning: veth_voq_out not found. Run setup_veth_egress.sh first.\n");
+        RS_LOG_WARN("veth_voq_out not found. Run setup_veth_egress.sh first.");
         ctx->veth_egress_enabled = 0;
         return 0;
     }
@@ -1357,14 +1791,14 @@ static int setup_veth_egress(struct loader_ctx *ctx)
     ctx->veth_egress_obj = bpf_object__open(path);
     err = libbpf_get_error(ctx->veth_egress_obj);
     if (err) {
-        fprintf(stderr, "Warning: Failed to open veth_egress.bpf.o: %s\n", strerror(-err));
+        RS_LOG_WARN("Failed to open veth_egress.bpf.o: %s", strerror(-err));
         ctx->veth_egress_enabled = 0;
         return 0;
     }
     
     err = bpf_object__load(ctx->veth_egress_obj);
     if (err) {
-        fprintf(stderr, "Warning: Failed to load veth_egress.bpf.o: %s\n", strerror(-err));
+        RS_LOG_WARN("Failed to load veth_egress.bpf.o: %s", strerror(-err));
         bpf_object__close(ctx->veth_egress_obj);
         ctx->veth_egress_obj = NULL;
         ctx->veth_egress_enabled = 0;
@@ -1374,7 +1808,7 @@ static int setup_veth_egress(struct loader_ctx *ctx)
     ctx->veth_egress_prog = bpf_object__find_program_by_name(ctx->veth_egress_obj,
                                                              "veth_egress_redirect");
     if (!ctx->veth_egress_prog) {
-        fprintf(stderr, "Warning: veth_egress_redirect program not found\n");
+        RS_LOG_WARN("veth_egress_redirect program not found");
         bpf_object__close(ctx->veth_egress_obj);
         ctx->veth_egress_obj = NULL;
         ctx->veth_egress_enabled = 0;
@@ -1417,8 +1851,8 @@ static int setup_veth_egress(struct loader_ctx *ctx)
             if (err) {
                 char ifname[IF_NAMESIZE];
                 if_indextoname(ifindex, ifname);
-                fprintf(stderr, "Warning: Failed to add %s to voq_egress_devmap: %s\n",
-                        ifname, strerror(errno));
+                RS_LOG_WARN("Failed to add %s to voq_egress_devmap: %s",
+                            ifname, strerror(errno));
             }
         }
     }
@@ -1430,8 +1864,8 @@ static int setup_veth_egress(struct loader_ctx *ctx)
         err = bpf_xdp_attach(ctx->veth_out_ifindex, ctx->veth_egress_fd,
                              XDP_FLAGS_SKB_MODE, &opts);
         if (err) {
-            fprintf(stderr, "Warning: Failed to attach XDP to veth_voq_out: %s\n",
-                    strerror(-err));
+            RS_LOG_WARN("Failed to attach XDP to veth_voq_out: %s",
+                        strerror(-err));
             ctx->veth_egress_enabled = 0;
             return 0;
         }
@@ -1455,14 +1889,14 @@ static int prepare_interface(const char *ifname)
     snprintf(cmd, sizeof(cmd), "ip link set dev %s promisc on 2>/dev/null", ifname);
     ret = system(cmd);
     if (ret != 0) {
-        fprintf(stderr, "Warning: Failed to enable promiscuous mode on %s\n", ifname);
+        RS_LOG_WARN("Failed to enable promiscuous mode on %s", ifname);
     }
     
     /* Disable hardware VLAN offload so XDP can see VLAN tags */
     snprintf(cmd, sizeof(cmd), "ethtool -K %s rx-vlan-offload off 2>/dev/null", ifname);
     ret = system(cmd);
     if (ret != 0) {
-        fprintf(stderr, "Warning: Failed to disable VLAN offload on %s\n", ifname);
+        RS_LOG_WARN("Failed to disable VLAN offload on %s", ifname);
     }
     
     return 0;
@@ -1485,8 +1919,8 @@ static int attach_xdp(struct loader_ctx *ctx)
         
         err = bpf_xdp_attach(ifindex, ctx->dispatcher_fd, ctx->xdp_flags, NULL);
         if (err) {
-            fprintf(stderr, "Failed to attach XDP to %s (ifindex=%u): %s\n",
-                    ifname, ifindex, strerror(-err));
+            RS_LOG_ERROR("Failed to attach XDP to %s (ifindex=%u): %s",
+                         ifname, ifindex, strerror(-err));
             return -1;
         }
         
@@ -1507,8 +1941,8 @@ static int start_voqd(struct loader_ctx *ctx)
     
     /* Check if rswitch-voqd binary exists */
     if (access("./build/rswitch-voqd", X_OK) != 0) {
-        fprintf(stderr, "VOQd binary not found: ./build/rswitch-voqd\n");
-        fprintf(stderr, "Build VOQd first or disable voqd_config in profile\n");
+        RS_LOG_ERROR("VOQd binary not found: ./build/rswitch-voqd");
+        RS_LOG_ERROR("Build VOQd first or disable voqd_config in profile");
         return -1;
     }
     
@@ -1524,8 +1958,8 @@ static int start_voqd(struct loader_ctx *ctx)
     /* Build VOQd command from profile configuration */
     struct rs_profile_voqd *voqd = &ctx->profile.voqd;
     
-    fprintf(stderr, "DEBUG: start_voqd() voqd->mode=%d, voqd->enabled=%d, voqd->prio_mask=0x%x\n",
-            voqd->mode, voqd->enabled, voqd->prio_mask);
+    RS_LOG_DEBUG("start_voqd() voqd->mode=%d, voqd->enabled=%d, voqd->prio_mask=0x%x",
+                 voqd->mode, voqd->enabled, voqd->prio_mask);
     
     snprintf(cmd, sizeof(cmd),
              "./build/rswitch-voqd -i %s -p %d -m %s -P 0x%x %s%s%s",
@@ -1545,7 +1979,7 @@ static int start_voqd(struct loader_ctx *ctx)
     /* Fork and exec VOQd */
     pid_t pid = fork();
     if (pid < 0) {
-        fprintf(stderr, "Failed to fork VOQd process: %s\n", strerror(errno));
+        RS_LOG_ERROR("Failed to fork VOQd process: %s", strerror(errno));
         return -1;
     }
     
@@ -1577,8 +2011,8 @@ static int start_voqd(struct loader_ctx *ctx)
     /* Check if VOQd is still running */
     int status;
     if (waitpid(pid, &status, WNOHANG) != 0) {
-        fprintf(stderr, "VOQd process exited prematurely\n");
-        fprintf(stderr, "Check /tmp/rswitch-voqd.log for errors\n");
+        RS_LOG_ERROR("VOQd process exited prematurely");
+        RS_LOG_ERROR("Check /tmp/rswitch-voqd.log for errors");
         ctx->voqd_pid = 0;
         ctx->voqd_enabled = 0;
         return -1;
@@ -1606,8 +2040,8 @@ static void detach_xdp(struct loader_ctx *ctx)
         
         /* Detach XDP program */
         if (bpf_xdp_detach(ifindex, ctx->xdp_flags, NULL) < 0) {
-            fprintf(stderr, "  Warning: Failed to detach from %s (ifindex=%u): %s\n",
-                    ifname, ifindex, strerror(errno));
+            RS_LOG_WARN("Failed to detach from %s (ifindex=%u): %s",
+                        ifname, ifindex, strerror(errno));
             
             /* Try force detach as fallback */
             snprintf(cmd, sizeof(cmd), "ip link set %s xdp off 2>/dev/null", ifname);
@@ -1658,6 +2092,10 @@ static void close_map_fds(struct loader_ctx *ctx)
         close(ctx->rs_event_bus_fd);
         printf("  Closed rs_event_bus_fd\n");
     }
+    if (ctx->rs_module_config_map_fd >= 0) {
+        close(ctx->rs_module_config_map_fd);
+        printf("  Closed rs_module_config_map_fd\n");
+    }
     
     if (ctx->rs_mac_table_fd >= 0) {
         close(ctx->rs_mac_table_fd);
@@ -1677,7 +2115,7 @@ static void unpin_maps(void)
     
     dir = opendir("/sys/fs/bpf");
     if (!dir) {
-        fprintf(stderr, "  Warning: Failed to open /sys/fs/bpf: %s\n", strerror(errno));
+        RS_LOG_WARN("Failed to open /sys/fs/bpf: %s", strerror(errno));
         return;
     }
     
@@ -1710,8 +2148,8 @@ static void unpin_maps(void)
         struct stat st;
         if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
             if (unlink(path) < 0) {
-                fprintf(stderr, "  Warning: Failed to unpin %s: %s\n",
-                        entry->d_name, strerror(errno));
+                RS_LOG_WARN("Failed to unpin %s: %s",
+                            entry->d_name, strerror(errno));
                 failed++;
             } else {
                 printf("  Unpinned %s\n", entry->d_name);
@@ -1758,7 +2196,7 @@ static void cleanup(struct loader_ctx *ctx)
                 printf("  ✓ VOQd killed\n");
             }
         } else {
-            fprintf(stderr, "  Warning: Failed to stop VOQd: %s\n", strerror(errno));
+            RS_LOG_WARN("Failed to stop VOQd: %s", strerror(errno));
         }
         
         ctx->voqd_pid = 0;
@@ -1848,7 +2286,7 @@ static int parse_interfaces(struct loader_ctx *ctx, const char *iface_str)
             /* Try as numeric ifindex */
             ifindex = atoi(token);
             if (ifindex == 0) {
-                fprintf(stderr, "Invalid interface: %s\n", token);
+                RS_LOG_ERROR("Invalid interface: %s", token);
                 free(str);
                 return -1;
             }
@@ -1893,8 +2331,17 @@ static void usage(const char *prog)
 int main(int argc, char **argv)
 {
     struct loader_ctx ctx = {0};
+    struct rs_lifecycle_config lifecycle_cfg = {
+        .state_dir = "/var/lib/rswitch/",
+        .drain_timeout_sec = 30,
+        .save_mac_table = 1,
+        .save_routes = 1,
+        .save_acl_counters = 1,
+    };
     int opt, err;
     char *iface_list = NULL;
+
+    rs_log_init("rswitch-loader", RS_LOG_LEVEL_INFO);
     
     /* Initialize map FDs to -1 */
     ctx.rs_ctx_map_fd = -1;
@@ -1904,6 +2351,7 @@ int main(int argc, char **argv)
     ctx.rs_ifindex_to_port_map_fd = -1;
     ctx.rs_devmap_fd = -1;
     ctx.rs_stats_map_fd = -1;
+    ctx.rs_module_config_map_fd = -1;
     ctx.veth_egress_fd = -1;
     ctx.voq_egress_devmap_fd = -1;
     ctx.veth_out_ifindex = 0;
@@ -1943,12 +2391,16 @@ int main(int argc, char **argv)
             return opt == 'h' ? 0 : 1;
         }
     }
+
+    if (ctx.verbose) {
+        rs_log_set_level(RS_LOG_LEVEL_DEBUG);
+    }
     
     /* Load profile if specified, otherwise use mode-based profile */
     if (ctx.use_profile) {
         /* Load custom profile */
-        if (profile_load(ctx.profile_path, &ctx.profile) < 0) {
-            fprintf(stderr, "Failed to load profile: %s\n", ctx.profile_path);
+        if (profile_load_compat(ctx.profile_path, &ctx.profile) < 0) {
+            RS_LOG_ERROR("Failed to load profile: %s", ctx.profile_path);
             return 1;
         }
         if (ctx.verbose) {
@@ -1964,7 +2416,7 @@ int main(int argc, char **argv)
         snprintf(ctx.profile_path, sizeof(ctx.profile_path), 
                  "./etc/profiles/%s.yaml", ctx.mode);
         
-        if (profile_load(ctx.profile_path, &ctx.profile) == 0) {
+        if (profile_load_compat(ctx.profile_path, &ctx.profile) == 0) {
             ctx.use_profile = 1;
             if (ctx.verbose) {
                 printf("Loaded built-in profile: %s\n\n", ctx.mode);
@@ -1984,13 +2436,13 @@ int main(int argc, char **argv)
     
     /* Parse interfaces */
     if (!iface_list) {
-        fprintf(stderr, "Error: -i/--ifaces required\n");
+        RS_LOG_ERROR("-i/--ifaces required");
         usage(argv[0]);
         return 1;
     }
     
     if (parse_interfaces(&ctx, iface_list) <= 0) {
-        fprintf(stderr, "No valid interfaces specified\n");
+        RS_LOG_ERROR("No valid interfaces specified");
         return 1;
     }
     
@@ -2006,9 +2458,12 @@ int main(int argc, char **argv)
     printf("\n");
     
     /* Setup signal handlers for graceful shutdown */
-    signal(SIGINT, sig_handler);
-    signal(SIGTERM, sig_handler);
-    signal(SIGHUP, sig_handler);
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+    signal(SIGHUP, handle_signal);
+
+    if (rs_lifecycle_init(&lifecycle_cfg) != 0)
+        RS_LOG_WARN("Lifecycle init failed, continuing without persistence");
     
     if (bump_memlock_rlimit()) {
         return 1;
@@ -2020,7 +2475,12 @@ int main(int argc, char **argv)
     
     /* Discovery phase */
     if (discover_modules(&ctx) < 0) {
-        fprintf(stderr, "Module discovery failed\n");
+        RS_LOG_ERROR("Module discovery failed");
+        return 1;
+    }
+
+    if (validate_dependencies(&ctx) < 0) {
+        RS_LOG_ERROR("Dependency validation failed");
         return 1;
     }
     
@@ -2044,7 +2504,7 @@ int main(int argc, char **argv)
     if (ctx.rs_event_bus_fd >= 0) {
         printf("Got unified event bus: fd=%d\n", ctx.rs_event_bus_fd);
     } else {
-        fprintf(stderr, "Warning: Failed to open rs_event_bus (not critical)\n");
+        RS_LOG_WARN("Failed to open rs_event_bus (not critical)");
     }
     
     /* Get rs_mac_table from l2learn module (pinned by l2learn) */
@@ -2065,12 +2525,16 @@ int main(int argc, char **argv)
             break;
         }
     }
+
+    rs_lifecycle_restore_state();
     
     /* Build tail-call pipeline */
     if (build_prog_array(&ctx) < 0) {
         cleanup(&ctx);
         return 1;
     }
+
+    write_module_configs(&ctx);
     
     /* Configure ports */
     configure_ports(&ctx);
@@ -2099,7 +2563,7 @@ int main(int argc, char **argv)
     /* Start VOQd if configured in profile */
     if (ctx.use_profile && ctx.profile.voqd.enabled) {
         if (start_voqd(&ctx) < 0) {
-            fprintf(stderr, "Warning: Failed to start VOQd, continuing with fast-path only\n");
+            RS_LOG_WARN("Failed to start VOQd, continuing with fast-path only");
         }
     }
     
@@ -2114,6 +2578,14 @@ int main(int argc, char **argv)
     int loop_count = 0;
     while (keep_running) {
         usleep(100000);  /* 100ms - much faster response than sleep(1) */
+
+        if (shutdown_requested && !shutdown_in_progress) {
+            shutdown_in_progress = 1;
+            keep_running = 0;
+            RS_LOG_INFO("Initiating graceful shutdown...");
+            rs_lifecycle_shutdown(&lifecycle_cfg);
+            continue;
+        }
         
         /* Periodic health check every 10 seconds */
         if (++loop_count >= 100) {  /* 100 * 100ms = 10 seconds */
@@ -2124,7 +2596,7 @@ int main(int argc, char **argv)
                 int status;
                 pid_t result = waitpid(ctx.voqd_pid, &status, WNOHANG);
                 if (result != 0) {
-                    fprintf(stderr, "Warning: VOQd process died unexpectedly\n");
+                    RS_LOG_WARN("VOQd process died unexpectedly");
                     ctx.voqd_pid = 0;
                     ctx.voqd_enabled = 0;
                 }
@@ -2134,6 +2606,7 @@ int main(int argc, char **argv)
     
     /* Cleanup */
     cleanup(&ctx);
+    rs_lifecycle_cleanup();
     
     return 0;
 }

@@ -6,6 +6,12 @@
 #include <errno.h>
 #include <unistd.h>
 
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
+
 /*
  * VOQ Manager Implementation
  * 
@@ -21,6 +27,56 @@ static uint64_t get_time_ns(void)
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (uint64_t)ts.tv_sec * NSEC_PER_SEC + ts.tv_nsec;
+}
+
+static void voq_apply_shaper_config(struct voq_mgr *mgr, uint64_t now_ns)
+{
+	if (!mgr || !mgr->shaper_cfg) {
+		return;
+	}
+
+	struct rs_shaper_shared_cfg *cfg = mgr->shaper_cfg;
+	uint32_t max_ports = mgr->num_ports;
+
+	if (cfg->version != RS_SHAPER_CFG_VERSION) {
+		return;
+	}
+
+	if (cfg->generation == mgr->shaper_cfg_generation) {
+		return;
+	}
+
+	if (max_ports > cfg->num_ports) {
+		max_ports = cfg->num_ports;
+	}
+
+	for (uint32_t p = 0; p < max_ports; p++) {
+		struct voq_port *port = &mgr->ports[p];
+		struct rs_shaper_port_cfg *port_cfg = &cfg->ports[p];
+		uint32_t weights[RS_SHAPER_WFQ_MAX_QUEUES] = {0};
+
+		pthread_mutex_lock(&port->lock);
+		rs_shaper_configure(&port->shaper, port_cfg->rate_bps, port_cfg->burst_bytes,
+		                    port_cfg->enabled, now_ns);
+
+		for (int q = 0; q < MAX_PRIORITIES && q < RS_SHAPER_WFQ_MAX_QUEUES; q++) {
+			struct voq_queue *queue = &port->queues[q];
+			struct rs_shaper_queue_cfg *queue_cfg = &port_cfg->queue_cfg[q];
+
+			pthread_mutex_lock(&queue->lock);
+			rs_shaper_configure(&queue->shaper, queue_cfg->rate_bps, queue_cfg->burst_bytes,
+			                    queue_cfg->enabled, now_ns);
+			pthread_mutex_unlock(&queue->lock);
+			weights[q] = port_cfg->wfq.queue_weights[q];
+		}
+
+		rs_wfq_set_weights(&port->wfq, weights, MAX_PRIORITIES);
+		port->wfq.enabled = port_cfg->wfq.enabled;
+		pthread_mutex_unlock(&port->lock);
+	}
+
+	mgr->shaper_cfg_generation = cfg->generation;
+	RS_LOG_INFO("Applied shaper config generation=%u", cfg->generation);
 }
 
 /* Allocate entry from pool */
@@ -84,6 +140,14 @@ int voq_mgr_init(struct voq_mgr *mgr, uint32_t num_ports)
 	
 	/* Initialize pool lock */
 	pthread_mutex_init(&mgr->pool_lock, NULL);
+
+	int shm_ret = rs_shaper_shared_open(&mgr->shaper_cfg, 1);
+	if (shm_ret < 0) {
+		RS_LOG_WARN("Shaper shared memory unavailable: %d", shm_ret);
+		mgr->shaper_cfg = NULL;
+	} else {
+		mgr->shaper_cfg_generation = 0;
+	}
 	
 	/* Default quantum and max_depth per priority */
 	for (int i = 0; i < MAX_PRIORITIES; i++) {
@@ -101,14 +165,13 @@ int voq_mgr_init(struct voq_mgr *mgr, uint32_t num_ports)
 			pthread_mutex_init(&queue->lock, NULL);
 			queue->quantum = mgr->quantum[q];
 			queue->max_depth = mgr->max_depth[q];
+			rs_shaper_init(&queue->shaper, get_time_ns());
 		}
-		
-		/* Default: unlimited rate */
-		port->rate_bps = 0;
-		port->burst_bytes = 0;
-		port->tokens = 0;
-		port->last_refill_ns = get_time_ns();
+		rs_shaper_init(&port->shaper, get_time_ns());
+		rs_wfq_init(&port->wfq, MAX_PRIORITIES);
 	}
+
+	voq_apply_shaper_config(mgr, get_time_ns());
 	
 	return 0;
 }
@@ -120,6 +183,11 @@ void voq_mgr_destroy(struct voq_mgr *mgr)
 		return;
 	
 	mgr->running = false;
+
+	if (mgr->shaper_cfg) {
+		rs_shaper_shared_close(mgr->shaper_cfg);
+		mgr->shaper_cfg = NULL;
+	}
 	
 	/* Free all queued entries */
 	for (uint32_t p = 0; p < mgr->num_ports; p++) {
@@ -182,12 +250,11 @@ int voq_set_port_rate(struct voq_mgr *mgr, uint32_t port_idx, uint64_t rate_bps,
 		return -EINVAL;
 	
 	struct voq_port *port = &mgr->ports[port_idx];
-	
+	uint64_t now_ns = get_time_ns();
+
 	pthread_mutex_lock(&port->lock);
-	port->rate_bps = rate_bps;
-	port->burst_bytes = burst_bytes;
-	port->tokens = burst_bytes;  /* Start with full burst */
-	port->last_refill_ns = get_time_ns();
+	rs_shaper_configure(&port->shaper, rate_bps, burst_bytes,
+	                    (rate_bps > 0 && burst_bytes > 0), now_ns);
 	pthread_mutex_unlock(&port->lock);
 	
 	return 0;
@@ -273,22 +340,6 @@ int voq_enqueue(struct voq_mgr *mgr, uint32_t port_idx, uint32_t prio,
 	return 0;
 }
 
-/* Refill token bucket */
-static void refill_tokens(struct voq_port *port, uint64_t now_ns)
-{
-	if (port->rate_bps == 0)
-		return;  /* Unlimited */
-	
-	uint64_t elapsed_ns = now_ns - port->last_refill_ns;
-	uint64_t tokens_to_add = (port->rate_bps * elapsed_ns) / (8 * NSEC_PER_SEC);
-	
-	port->tokens += tokens_to_add;
-	if (port->tokens > port->burst_bytes)
-		port->tokens = port->burst_bytes;
-	
-	port->last_refill_ns = now_ns;
-}
-
 /* Dequeue packet using DRR scheduler */
 struct voq_entry *voq_dequeue(struct voq_mgr *mgr, uint32_t *out_port_idx)
 {
@@ -297,6 +348,7 @@ struct voq_entry *voq_dequeue(struct voq_mgr *mgr, uint32_t *out_port_idx)
 	
 	uint64_t now_ns = get_time_ns();
 	uint32_t start_port = mgr->current_port;
+	voq_apply_shaper_config(mgr, now_ns);
 	
 	/* Round-robin over ports */
 	for (uint32_t p_iter = 0; p_iter < mgr->num_ports; p_iter++) {
@@ -307,65 +359,69 @@ struct voq_entry *voq_dequeue(struct voq_mgr *mgr, uint32_t *out_port_idx)
 			continue;
 		
 		pthread_mutex_lock(&port->lock);
-		
-		/* Refill token bucket */
-		refill_tokens(port, now_ns);
-		
-		/* DRR over priorities (strict priority: high to low) */
-		for (int prio = MAX_PRIORITIES - 1; prio >= 0; prio--) {
+
+		rs_shaper_refill(&port->shaper, now_ns);
+
+		for (int attempts = 0; attempts < MAX_PRIORITIES; attempts++) {
+			int prio = -1;
+			if (port->wfq.enabled) {
+				uint32_t depths[RS_SHAPER_WFQ_MAX_QUEUES] = {0};
+				for (int q = 0; q < MAX_PRIORITIES; q++) {
+					depths[q] = port->queues[q].depth;
+				}
+				prio = rs_wfq_select_queue(&port->wfq, depths, MAX_PRIORITIES);
+				if (prio < 0) {
+					break;
+				}
+			} else {
+				prio = MAX_PRIORITIES - 1 - attempts;
+			}
+
 			struct voq_queue *queue = &port->queues[prio];
-			
 			pthread_mutex_lock(&queue->lock);
-			
+
 			if (!queue->head) {
 				pthread_mutex_unlock(&queue->lock);
 				continue;
 			}
-			
-			/* Add quantum to deficit */
+
+			rs_shaper_refill(&queue->shaper, now_ns);
 			queue->deficit += queue->quantum;
-			
-			/* Try to dequeue while deficit allows */
-			while (queue->head && queue->deficit >= (int32_t)queue->head->len) {
-				struct voq_entry *entry = queue->head;
-				
-				/* Check token bucket */
-				if (port->rate_bps > 0 && port->tokens < entry->len) {
-					/* Rate limited - try next port */
-					break;
-				}
-				
-				/* Dequeue */
-				queue->head = entry->next;
-				if (!queue->head)
-					queue->tail = NULL;
-				queue->depth--;
-				queue->deficit -= entry->len;
-				
-				/* Update stats */
-				queue->dequeued++;
-				queue->bytes_deq += entry->len;
-				mgr->total_dequeued++;
-				
-				uint64_t latency_ns = now_ns - entry->ts_ns;
-				queue->latency_sum_ns += latency_ns;
-				queue->latency_count++;
-				
-				/* Consume tokens */
-				if (port->rate_bps > 0)
-					port->tokens -= entry->len;
-				
+
+			if (queue->deficit < (int32_t)queue->head->len) {
 				pthread_mutex_unlock(&queue->lock);
-				pthread_mutex_unlock(&port->lock);
-				
-				*out_port_idx = p;
-				mgr->current_port = (p + 1) % mgr->num_ports;
-				mgr->scheduler_rounds++;
-				
-				return entry;
+				continue;
 			}
-			
+
+			if (!rs_shaper_admit(&port->shaper, queue->head->len, now_ns) ||
+			    !rs_shaper_admit(&queue->shaper, queue->head->len, now_ns)) {
+				pthread_mutex_unlock(&queue->lock);
+				continue;
+			}
+
+			struct voq_entry *entry = queue->head;
+			queue->head = entry->next;
+			if (!queue->head) {
+				queue->tail = NULL;
+			}
+			queue->depth--;
+			queue->deficit -= entry->len;
+			queue->dequeued++;
+			queue->bytes_deq += entry->len;
+			mgr->total_dequeued++;
+
+			uint64_t latency_ns = now_ns - entry->ts_ns;
+			queue->latency_sum_ns += latency_ns;
+			queue->latency_count++;
+
 			pthread_mutex_unlock(&queue->lock);
+			pthread_mutex_unlock(&port->lock);
+
+			*out_port_idx = p;
+			mgr->current_port = (p + 1) % mgr->num_ports;
+			mgr->scheduler_rounds++;
+
+			return entry;
 		}
 		
 		pthread_mutex_unlock(&port->lock);
@@ -435,9 +491,9 @@ void voq_print_stats(struct voq_mgr *mgr)
 			continue;
 		
 		printf("\nPort %u (%s, ifindex=%u):\n", p, port->ifname, port->ifindex);
-		if (port->rate_bps > 0) {
+		if (port->shaper.enabled) {
 			printf("  Rate limit: %lu Mbps, burst=%lu KB, tokens=%lu\n",
-			       port->rate_bps / 1000000, port->burst_bytes / 1024, port->tokens);
+			       port->shaper.rate_bps / 1000000, port->shaper.burst_bytes / 1024, port->shaper.tokens);
 		}
 		
 		for (int q = 0; q < MAX_PRIORITIES; q++) {

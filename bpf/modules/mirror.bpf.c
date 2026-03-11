@@ -20,6 +20,7 @@ RS_DECLARE_MODULE(
 );
 
 #define MIRROR_MAX_RULES        64
+#define MIRROR_MAX_SESSIONS     4
 #define MIRROR_PCAP_MAX_SIZE    1514
 
 enum mirror_filter_type {
@@ -40,6 +41,12 @@ enum mirror_direction {
     MIRROR_DIR_BOTH = 0,
     MIRROR_DIR_INGRESS = 1,
     MIRROR_DIR_EGRESS = 2,
+};
+
+enum mirror_type {
+    MIRROR_TYPE_SPAN = 0,
+    MIRROR_TYPE_RSPAN = 1,
+    MIRROR_TYPE_ERSPAN = 2,
 };
 
 struct mirror_filter_rule {
@@ -82,12 +89,23 @@ struct mirror_config {
     __u16 vlan_filter;
     __u16 protocol_filter;
 
+    __u8 mirror_type;
+    __u8 rspan_pad[3];
+    __u16 rspan_vlan_id;
+    __u16 truncate_size;
+
     __u64 ingress_mirrored_packets;
     __u64 ingress_mirrored_bytes;
     __u64 egress_mirrored_packets;
     __u64 egress_mirrored_bytes;
     __u64 mirror_drops;
     __u64 pcap_packets;
+};
+
+struct mirror_session_stats {
+    __u64 pkts;
+    __u64 bytes;
+    __u64 drops;
 };
 
 struct port_mirror_config {
@@ -108,11 +126,19 @@ struct mirror_pcap_event {
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
+    __uint(max_entries, MIRROR_MAX_SESSIONS);
     __type(key, __u32);
     __type(value, struct mirror_config);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } mirror_config_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, MIRROR_MAX_SESSIONS);
+    __type(key, __u32);
+    __type(value, struct mirror_session_stats);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} mirror_session_stats SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -331,6 +357,9 @@ static __always_inline void send_to_pcap_ringbuf(struct xdp_md *ctx,
     if (cap_len > MIRROR_PCAP_MAX_SIZE)
         cap_len = MIRROR_PCAP_MAX_SIZE;
 
+    if (config->truncate_size > 0 && config->truncate_size < cap_len)
+        cap_len = config->truncate_size;
+
     struct mirror_pcap_event *event;
     event = bpf_ringbuf_reserve(&mirror_pcap_rb, sizeof(*event), 0);
     if (!event)
@@ -351,6 +380,22 @@ static __always_inline void send_to_pcap_ringbuf(struct xdp_md *ctx,
 
     bpf_ringbuf_submit(event, 0);
     __sync_fetch_and_add(&config->pcap_packets, 1);
+}
+
+static __always_inline void update_session_stats(__u32 session_id,
+                                                 __u32 packet_len,
+                                                 int dropped)
+{
+    struct mirror_session_stats *stats;
+
+    stats = bpf_map_lookup_elem(&mirror_session_stats, &session_id);
+    if (!stats)
+        return;
+
+    __sync_fetch_and_add(&stats->pkts, 1);
+    __sync_fetch_and_add(&stats->bytes, packet_len);
+    if (dropped)
+        __sync_fetch_and_add(&stats->drops, 1);
 }
 
 static __always_inline void update_mirror_stats(struct mirror_config *config,
@@ -376,16 +421,28 @@ static __always_inline void update_mirror_stats(struct mirror_config *config,
 static __always_inline int do_mirror(struct xdp_md *ctx,
                                       struct mirror_config *config,
                                       int is_ingress,
-                                      __u32 orig_ifindex)
+                                      __u32 orig_ifindex,
+                                      __u32 session_id)
 {
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
     __u32 packet_len = data_end - data;
 
-    if (config->pcap_enabled)
+    if (config->pcap_enabled || config->mirror_type != MIRROR_TYPE_SPAN)
         send_to_pcap_ringbuf(ctx, config, is_ingress, orig_ifindex);
 
     update_mirror_stats(config, is_ingress, packet_len);
+    update_session_stats(session_id, packet_len, 0);
+
+    if (config->mirror_type == MIRROR_TYPE_ERSPAN) {
+        /* ERSPAN: BPF sends packet data to user-space via ringbuf for GRE encap */
+        return 0;
+    }
+
+    if (config->mirror_type == MIRROR_TYPE_RSPAN) {
+        /* RSPAN VLAN rewrite deferred to user-space from ringbuf payload */
+        return 0;
+    }
 
     if (config->span_port == 0)
         return 0;
@@ -393,6 +450,7 @@ static __always_inline int do_mirror(struct xdp_md *ctx,
     long ret = bpf_redirect_map(&tx_port, config->span_port, 0);
     if (ret != XDP_REDIRECT) {
         __sync_fetch_and_add(&config->mirror_drops, 1);
+        update_session_stats(session_id, packet_len, 1);
         return -1;
     }
 
@@ -408,20 +466,6 @@ int mirror_ingress(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
 
-    __u32 cfg_key = 0;
-    struct mirror_config *config;
-
-    config = bpf_map_lookup_elem(&mirror_config_map, &cfg_key);
-    if (!config || !config->enabled || !config->ingress_enabled) {
-        RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);
-        return XDP_DROP;
-    }
-
-    if (config->span_port == 0 && !config->pcap_enabled) {
-        RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);
-        return XDP_DROP;
-    }
-
     __u32 ifindex = xdp_ctx->ingress_ifindex;
     struct port_mirror_config *port_config;
 
@@ -431,19 +475,29 @@ int mirror_ingress(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
 
-    if (ifindex == config->span_port) {
-        RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);
-        return XDP_DROP;
-    }
-
     __u16 vlan_id = 0;
 
-    if (!check_all_filters(xdp_ctx, config, 1, ifindex, vlan_id)) {
-        RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);
-        return XDP_DROP;
-    }
+    #pragma unroll
+    for (__u32 session_id = 0; session_id < MIRROR_MAX_SESSIONS; session_id++) {
+        __u32 cfg_key = session_id;
+        struct mirror_config *config;
 
-    do_mirror(xdp_ctx, config, 1, ifindex);
+        config = bpf_map_lookup_elem(&mirror_config_map, &cfg_key);
+        if (!config || !config->enabled || !config->ingress_enabled)
+            continue;
+
+        if (config->span_port == 0 && !config->pcap_enabled &&
+            config->mirror_type == MIRROR_TYPE_SPAN)
+            continue;
+
+        if (config->mirror_type == MIRROR_TYPE_SPAN && ifindex == config->span_port)
+            continue;
+
+        if (!check_all_filters(xdp_ctx, config, 1, ifindex, vlan_id))
+            continue;
+
+        do_mirror(xdp_ctx, config, 1, ifindex, session_id);
+    }
 
     RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);
     return XDP_DROP;
@@ -452,23 +506,27 @@ int mirror_ingress(struct xdp_md *xdp_ctx)
 SEC("xdp/devmap")
 int mirror_egress(struct xdp_md *ctx)
 {
-    __u32 cfg_key = 0;
-    struct mirror_config *config;
-
-    config = bpf_map_lookup_elem(&mirror_config_map, &cfg_key);
-    if (!config || !config->enabled || !config->egress_enabled)
-        return XDP_PASS;
-
-    if (config->span_port == 0 && !config->pcap_enabled)
-        return XDP_PASS;
-
     __u16 vlan_id = 0;
     __u32 ifindex = ctx->egress_ifindex;
 
-    if (!check_all_filters(ctx, config, 0, ifindex, vlan_id))
-        return XDP_PASS;
+    #pragma unroll
+    for (__u32 session_id = 0; session_id < MIRROR_MAX_SESSIONS; session_id++) {
+        __u32 cfg_key = session_id;
+        struct mirror_config *config;
 
-    do_mirror(ctx, config, 0, ifindex);
+        config = bpf_map_lookup_elem(&mirror_config_map, &cfg_key);
+        if (!config || !config->enabled || !config->egress_enabled)
+            continue;
+
+        if (config->span_port == 0 && !config->pcap_enabled &&
+            config->mirror_type == MIRROR_TYPE_SPAN)
+            continue;
+
+        if (!check_all_filters(ctx, config, 0, ifindex, vlan_id))
+            continue;
+
+        do_mirror(ctx, config, 0, ifindex, session_id);
+    }
 
     return XDP_PASS;
 }

@@ -1,0 +1,29 @@
+intent:
+  name: "simple-l2-bridge"
+  description: "Minimal layer-2 bridge intent for quick connectivity tests"
+
+  segments:
+    - name: "default"
+      vlan: 1
+      ports: [1, 2, 3, 4]
+
+  security:
+    acl: false
+    source_guard: false
+    dhcp_snooping: false
+
+  qos:
+    enabled: false
+    default_class: "best-effort"
+
+  monitoring:
+    sflow: false
+    mirror: false
+    telemetry: false
+
+  routing:
+    enabled: false
+
+  high_availability:
+    stp: false
+    lacp: false

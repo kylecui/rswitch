@@ -6,6 +6,11 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <dirent.h>
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 #include "nic_queue.h"
 
 /*
@@ -25,7 +30,7 @@ static int parse_ethtool_queues(const char *ifname, uint32_t *num_queues)
     snprintf(cmd, sizeof(cmd), "ethtool -l %s 2>/dev/null", ifname);
     fp = popen(cmd, "r");
     if (!fp) {
-        fprintf(stderr, "Failed to run ethtool for %s\n", ifname);
+        RS_LOG_ERROR("Failed to run ethtool for %s", ifname);
         return -1;
     }
     
@@ -46,8 +51,8 @@ static int parse_ethtool_queues(const char *ifname, uint32_t *num_queues)
     pclose(fp);
     
     if (combined == 0) {
-        fprintf(stderr, "Could not determine queue count for %s\n", ifname);
-        fprintf(stderr, "Tip: Run 'sudo ethtool -l %s' manually\n", ifname);
+        RS_LOG_ERROR("Could not determine queue count for %s", ifname);
+        RS_LOG_WARN("Tip: Run 'sudo ethtool -l %s' manually", ifname);
         return -1;
     }
     
@@ -121,7 +126,7 @@ static int set_irq_affinity(int irq, uint32_t cpu)
     
     fp = fopen(path, "w");
     if (!fp) {
-        fprintf(stderr, "Failed to open %s (need root?)\n", path);
+        RS_LOG_ERROR("Failed to open %s (need root?)", path);
         return -1;
     }
     
@@ -163,8 +168,8 @@ int nic_queue_probe(const char *ifname, struct nic_config *config)
     
     /* Check if we have enough queues for isolation */
     if (config->num_queues < NIC_MIN_COMBINED_QUEUES) {
-        fprintf(stderr, "Warning: %s has only %u queues (need %u for isolation)\n",
-                ifname, config->num_queues, NIC_MIN_COMBINED_QUEUES);
+        RS_LOG_WARN("%s has only %u queues (need %u for isolation)",
+                    ifname, config->num_queues, NIC_MIN_COMBINED_QUEUES);
         config->isolation_enabled = 0;
         return 0;
     }
@@ -200,11 +205,11 @@ int nic_queue_setup_isolation(struct nic_config *config)
     /* Get IRQ for AF_XDP queue */
     int irq;
     if (get_queue_irq(config->ifname, config->afxdp_queue, &irq) < 0) {
-        fprintf(stderr, "Warning: Could not find IRQ for queue %u\n",
-                config->afxdp_queue);
-        fprintf(stderr, "Tip: Check /proc/interrupts or /sys/class/net/%s/device/msi_irqs/\n",
-                config->ifname);
-        fprintf(stderr, "Queue isolation enabled, but IRQ affinity not set\n");
+        RS_LOG_WARN("Could not find IRQ for queue %u",
+                    config->afxdp_queue);
+        RS_LOG_WARN("Tip: Check /proc/interrupts or /sys/class/net/%s/device/msi_irqs/",
+                    config->ifname);
+        RS_LOG_WARN("Queue isolation enabled, but IRQ affinity not set");
         return 0;  /* Non-fatal */
     }
     
@@ -212,7 +217,7 @@ int nic_queue_setup_isolation(struct nic_config *config)
     
     /* Set IRQ affinity */
     if (set_irq_affinity(irq, config->afxdp_cpu) < 0) {
-        fprintf(stderr, "Warning: Could not set IRQ affinity (need root)\n");
+        RS_LOG_WARN("Could not set IRQ affinity (need root)");
         return 0;  /* Non-fatal */
     }
     

@@ -16,10 +16,96 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 #include "telemetry.h"
+#if __has_include("rs_log.h")
+#include "rs_log.h"
+#else
+#include "../common/rs_log.h"
+#endif
 
 /* BPF map paths */
 #define BPF_PIN_PATH "/sys/fs/bpf"
+
+struct rs_module_stats {
+    uint64_t packets_processed;
+    uint64_t packets_forwarded;
+    uint64_t packets_dropped;
+    uint64_t packets_error;
+    uint64_t bytes_processed;
+    uint64_t last_seen_ns;
+    uint32_t module_id;
+    char name[32];
+};
+
+static void show_module_stats(void)
+{
+    int map_fd;
+    int ncpus;
+
+    map_fd = bpf_obj_get("/sys/fs/bpf/rs_module_stats_map");
+    if (map_fd < 0) {
+        RS_LOG_WARN("Module stats map not available");
+        return;
+    }
+
+    ncpus = libbpf_num_possible_cpus();
+    if (ncpus <= 0) {
+        close(map_fd);
+        RS_LOG_WARN("Failed to detect possible CPUs");
+        return;
+    }
+
+    printf("\n=== Per-Module Statistics ===\n");
+    printf("%-20s %15s %15s %15s %10s\n",
+           "Module", "Processed", "Forwarded", "Dropped", "Errors");
+    printf("%-20s %15s %15s %15s %10s\n",
+           "------", "---------", "---------", "-------", "------");
+
+    for (uint32_t i = 0; i < 64; i++) {
+        struct rs_module_stats total = {0};
+        const char *name = "(unknown)";
+        struct rs_module_stats *values = calloc((size_t)ncpus, sizeof(*values));
+
+        if (!values)
+            break;
+
+        if (bpf_map_lookup_elem(map_fd, &i, values) < 0) {
+            free(values);
+            continue;
+        }
+
+        for (int c = 0; c < ncpus; c++) {
+            total.packets_processed += values[c].packets_processed;
+            total.packets_forwarded += values[c].packets_forwarded;
+            total.packets_dropped += values[c].packets_dropped;
+            total.packets_error += values[c].packets_error;
+            total.bytes_processed += values[c].bytes_processed;
+        }
+
+        if (total.packets_processed == 0) {
+            free(values);
+            continue;
+        }
+
+        for (int c = 0; c < ncpus; c++) {
+            if (values[c].name[0] != '\0') {
+                name = values[c].name;
+                break;
+            }
+        }
+
+        printf("%-20s %15llu %15llu %15llu %10llu\n",
+               name,
+               (unsigned long long)total.packets_processed,
+               (unsigned long long)total.packets_forwarded,
+               (unsigned long long)total.packets_dropped,
+               (unsigned long long)total.packets_error);
+        free(values);
+    }
+
+    close(map_fd);
+}
 
 /* Get current time in ISO8601 format */
 static void get_iso8601_timestamp(char *buf, size_t size)
@@ -47,7 +133,7 @@ static int collect_bpf_stats(struct telemetry_ctx *ctx)
     snprintf(path, sizeof(path), "%s/rs_stats_map", BPF_PIN_PATH);
     fd = bpf_obj_get(path);
     if (fd < 0) {
-        fprintf(stderr, "Warning: Failed to open rs_stats_map\n");
+        RS_LOG_WARN("Failed to open rs_stats_map");
         return -errno;
     }
     
@@ -413,7 +499,7 @@ int telemetry_start(struct telemetry_ctx *ctx)
     /* Start collection thread for Kafka */
     if (ctx->config.kafka_enabled) {
         /* Kafka implementation would go here */
-        fprintf(stderr, "Warning: Kafka export not yet implemented\n");
+        RS_LOG_WARN("Kafka export not yet implemented");
     }
     
     return 0;
@@ -452,6 +538,8 @@ int telemetry_send_kafka(struct telemetry_ctx *ctx)
 /* Main entry point - standalone telemetry exporter */
 int main(int argc, char **argv)
 {
+    rs_log_init("rswitch-telemetry", RS_LOG_LEVEL_INFO);
+
     struct telemetry_config config = {
         .prometheus_enabled = 1,
         .kafka_enabled = 0,
@@ -498,15 +586,17 @@ int main(int argc, char **argv)
     
     struct telemetry_ctx ctx;
     if (telemetry_init(&ctx, &config) < 0) {
-        fprintf(stderr, "Failed to initialize telemetry\n");
+        RS_LOG_ERROR("Failed to initialize telemetry");
         return 1;
     }
-    
+
     if (telemetry_start(&ctx) < 0) {
-        fprintf(stderr, "Failed to start telemetry exporter\n");
+        RS_LOG_ERROR("Failed to start telemetry exporter");
         telemetry_destroy(&ctx);
         return 1;
     }
+
+    show_module_stats();
     
     printf("Telemetry exporter running. Press Ctrl+C to stop.\n");
     
