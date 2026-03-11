@@ -6,6 +6,7 @@
 <title>rSwitch — Routes</title>
 <link rel="stylesheet" href="style.css">
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="auth.js"></script>
 <script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
 </head>
 <body x-data="routesPage()" x-init="init()">
@@ -15,6 +16,7 @@
   <div class="header-stats">
     <span>Routes: <span class="stat-val" x-text="routes.length"></span></span>
   </div>
+  <button class="btn btn-sm" type="button" onclick="authLogout()">Logout</button>
 </header>
 
 <nav class="sidebar">
@@ -110,14 +112,14 @@ function routesPage() {
 
     async fetchRoutes() {
       try {
-        const d = await (await fetch('/api/routes')).json();
+        const d = await (await apiFetch('/api/routes')).json();
         this.routes = d.routes || d || [];
       } catch {}
     },
 
     async createRoute() {
       try {
-        const r = await fetch('/api/routes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.newRoute) });
+        const r = await apiFetch('/api/routes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.newRoute) });
         if (r.ok) { this.showToast('Route added', 'toast-success'); this.showCreate = false; this.fetchRoutes(); }
         else this.showToast('Failed to add route', 'toast-error');
       } catch { this.showToast('Request failed', 'toast-error'); }
@@ -126,7 +128,7 @@ function routesPage() {
     async deleteRoute(prefix) {
       if (!confirm('Delete route ' + prefix + '?')) return;
       try {
-        const r = await fetch('/api/routes/' + encodeURIComponent(prefix), { method: 'DELETE' });
+        const r = await apiFetch('/api/routes/' + encodeURIComponent(prefix), { method: 'DELETE' });
         if (r.ok) { this.showToast('Route deleted', 'toast-success'); this.fetchRoutes(); }
         else this.showToast('Delete failed', 'toast-error');
       } catch { this.showToast('Request failed', 'toast-error'); }

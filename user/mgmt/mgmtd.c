@@ -178,6 +178,13 @@ static struct {
 static bool method_is(struct mg_str method, const char *s);
 static void json_printf(struct mg_connection *c, int status, const char *fmt, ...);
 
+static struct mg_str mg_http_body(const struct mg_http_message *hm)
+{
+	if (!hm)
+		return mg_str_n("", 0);
+	return hm->body;
+}
+
 static void auth_set_pending_cookie(unsigned long conn_id, const char *token)
 {
 	int i;
@@ -427,6 +434,127 @@ static int check_auth(struct mg_connection *c, struct mg_http_message *hm)
 		      "WWW-Authenticate: Basic realm=\"rSwitch\"\r\n",
 		      "{\"error\":\"authentication required\"}");
 	return 0;
+}
+
+static int auth_parse_json_cred(struct mg_str body, const char *path, char *out, size_t out_len)
+{
+	int off;
+	int tok_len;
+
+	if (!path || !out || out_len == 0)
+		return 0;
+
+	off = mg_json_get(body, path, &tok_len);
+	if (off < 0 || tok_len < 2)
+		return 0;
+
+	if (body.buf[off] != '"' || body.buf[off + tok_len - 1] != '"')
+		return 0;
+
+	mg_snprintf(out, out_len, "%.*s", tok_len - 2, body.buf + off + 1);
+	return 1;
+}
+
+static void handle_auth_login(struct mg_connection *c, struct mg_http_message *hm)
+{
+	char user[64];
+	char pass[128];
+	char remote_ip[64];
+	struct auth_session *session;
+	struct mg_str body;
+	time_t now;
+	int max_fails;
+
+	if (!c || !hm) {
+		json_printf(c, 400, "{\"error\":\"invalid request\"}");
+		return;
+	}
+
+	body = mg_http_body(hm);
+	now = time(NULL);
+
+	if (g_auth.lockout_until > now) {
+		json_printf(c, 429,
+			"{\"error\":\"too many authentication failures\",\"retry_after\":%ld}",
+			(long) (g_auth.lockout_until - now));
+		return;
+	}
+
+	if (!auth_parse_json_cred(body, "$.username", user, sizeof(user)) ||
+	    !auth_parse_json_cred(body, "$.password", pass, sizeof(pass))) {
+		json_printf(c, 400, "{\"error\":\"username and password required\"}");
+		return;
+	}
+
+	if (strcmp(user, g_ctx.cfg.auth_user) == 0 && strcmp(pass, g_ctx.cfg.auth_password) == 0) {
+		session = NULL;
+		memset(remote_ip, 0, sizeof(remote_ip));
+		mg_snprintf(remote_ip, sizeof(remote_ip), "%M", mg_print_ip, &c->rem);
+		session = create_session(remote_ip);
+		if (session)
+			auth_set_pending_cookie(c->id, session->token);
+		g_auth.failed_attempts = 0;
+		g_auth.lockout_until = 0;
+		json_printf(c, 200, "{\"ok\":true}");
+		return;
+	}
+
+	g_auth.failed_attempts++;
+	max_fails = g_ctx.cfg.rate_limit_max_fails > 0 ? g_ctx.cfg.rate_limit_max_fails : 5;
+	if (g_auth.failed_attempts >= max_fails) {
+		int lockout_sec =
+			g_ctx.cfg.rate_limit_lockout_sec > 0 ? g_ctx.cfg.rate_limit_lockout_sec : 300;
+		g_auth.lockout_until = now + lockout_sec;
+		g_auth.failed_attempts = 0;
+	}
+
+	json_printf(c, 401, "{\"error\":\"invalid credentials\"}");
+}
+
+static int remove_session_by_token(const char *token)
+{
+	int i;
+
+	if (!token || token[0] == '\0')
+		return 0;
+
+	for (i = 0; i < g_auth.count; i++) {
+		if (strcmp(g_auth.sessions[i].token, token) == 0) {
+			if (i != g_auth.count - 1)
+				g_auth.sessions[i] = g_auth.sessions[g_auth.count - 1];
+			memset(&g_auth.sessions[g_auth.count - 1], 0, sizeof(g_auth.sessions[g_auth.count - 1]));
+			g_auth.count--;
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+static void handle_auth_logout(struct mg_connection *c, struct mg_http_message *hm)
+{
+	char token[SESSION_TOKEN_LEN * 2 + 1];
+	struct mg_str *cookie_hdr;
+
+	if (!c || !hm) {
+		json_printf(c, 400, "{\"error\":\"invalid request\"}");
+		return;
+	}
+
+	token[0] = '\0';
+	cookie_hdr = mg_http_get_header(hm, "Cookie");
+	if (cookie_hdr)
+		extract_session_cookie(cookie_hdr, token, sizeof(token));
+
+	remove_session_by_token(token);
+
+	mg_http_reply(c, 200,
+		      "Content-Type: application/json\r\n"
+		      "Access-Control-Allow-Origin: *\r\n"
+		      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
+		      "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+		      "Set-Cookie: rs_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax\r\n",
+		      "{\"ok\":true}");
 }
 
 static void json_printf(struct mg_connection *c, int status, const char *fmt, ...)
@@ -1925,6 +2053,15 @@ static bool method_is(struct mg_str method, const char *s)
 
 static void dispatch_api(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
+	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/auth/login"), NULL))
+		return handle_auth_login(c, hm);
+
+	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/auth/logout"), NULL)) {
+		if (!check_auth(c, hm))
+			return;
+		return handle_auth_logout(c, hm);
+	}
+
 	if (!check_auth(c, hm))
 		return;
 

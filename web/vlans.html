@@ -6,6 +6,7 @@
 <title>rSwitch — VLANs</title>
 <link rel="stylesheet" href="style.css">
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="auth.js"></script>
 <script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
 </head>
 <body x-data="vlansPage()" x-init="init()">
@@ -15,6 +16,7 @@
   <div class="header-stats">
     <span>VLANs: <span class="stat-val" x-text="vlans.length"></span></span>
   </div>
+  <button class="btn btn-sm" type="button" onclick="authLogout()">Logout</button>
 </header>
 
 <nav class="sidebar">
@@ -111,7 +113,7 @@ function vlansPage() {
 
     async fetchVlans() {
       try {
-        const d = await (await fetch('/api/vlans')).json();
+        const d = await (await apiFetch('/api/vlans')).json();
         this.vlans = d.vlans || d || [];
       } catch {}
     },
@@ -124,7 +126,7 @@ function vlansPage() {
         untagged_ports: this.newVlan.untagged ? this.newVlan.untagged.split(',').map(Number) : []
       };
       try {
-        const r = await fetch('/api/vlans', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const r = await apiFetch('/api/vlans', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (r.ok) { this.showToast('VLAN ' + body.id + ' created', 'toast-success'); this.showCreate = false; this.fetchVlans(); }
         else this.showToast('Failed to create VLAN', 'toast-error');
       } catch { this.showToast('Request failed', 'toast-error'); }
@@ -133,7 +135,7 @@ function vlansPage() {
     async deleteVlan(id) {
       if (!confirm('Delete VLAN ' + id + '?')) return;
       try {
-        const r = await fetch('/api/vlans/' + id, { method: 'DELETE' });
+        const r = await apiFetch('/api/vlans/' + id, { method: 'DELETE' });
         if (r.ok) { this.showToast('VLAN ' + id + ' deleted', 'toast-success'); this.fetchVlans(); }
         else this.showToast('Delete failed', 'toast-error');
       } catch { this.showToast('Request failed', 'toast-error'); }

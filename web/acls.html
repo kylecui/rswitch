@@ -6,6 +6,7 @@
 <title>rSwitch — ACLs</title>
 <link rel="stylesheet" href="style.css">
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="auth.js"></script>
 <script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
 </head>
 <body x-data="aclsPage()" x-init="init()">
@@ -15,6 +16,7 @@
   <div class="header-stats">
     <span>ACL Rules: <span class="stat-val" x-text="acls.length"></span></span>
   </div>
+  <button class="btn btn-sm" type="button" onclick="authLogout()">Logout</button>
 </header>
 
 <nav class="sidebar">
@@ -140,7 +142,7 @@ function aclsPage() {
 
     async fetchAcls() {
       try {
-        const d = await (await fetch('/api/acls')).json();
+        const d = await (await apiFetch('/api/acls')).json();
         this.acls = d.acls || d || [];
       } catch {}
     },
@@ -150,7 +152,7 @@ function aclsPage() {
       if (body.src_port) body.src_port = parseInt(body.src_port) || body.src_port;
       if (body.dst_port) body.dst_port = parseInt(body.dst_port) || body.dst_port;
       try {
-        const r = await fetch('/api/acls', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const r = await apiFetch('/api/acls', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (r.ok) { this.showToast('ACL rule added', 'toast-success'); this.showCreate = false; this.fetchAcls(); }
         else this.showToast('Failed to add rule', 'toast-error');
       } catch { this.showToast('Request failed', 'toast-error'); }
@@ -159,7 +161,7 @@ function aclsPage() {
     async deleteAcl(id) {
       if (!confirm('Delete ACL rule #' + id + '?')) return;
       try {
-        const r = await fetch('/api/acls/' + id, { method: 'DELETE' });
+        const r = await apiFetch('/api/acls/' + id, { method: 'DELETE' });
         if (r.ok) { this.showToast('Rule deleted', 'toast-success'); this.fetchAcls(); }
         else this.showToast('Delete failed', 'toast-error');
       } catch { this.showToast('Request failed', 'toast-error'); }

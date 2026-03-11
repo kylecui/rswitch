@@ -6,6 +6,7 @@
 <title>rSwitch — Modules</title>
 <link rel="stylesheet" href="style.css">
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="auth.js"></script>
 <script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
 </head>
 <body x-data="modulesPage()" x-init="init()">
@@ -16,6 +17,7 @@
     <span>Modules: <span class="stat-val" x-text="modules.length"></span></span>
     <span>Active: <span class="stat-val stat-up" x-text="modules.filter(m=>m.state==='loaded'||m.loaded).length"></span></span>
   </div>
+  <button class="btn btn-sm" type="button" onclick="authLogout()">Logout</button>
 </header>
 
 <nav class="sidebar">
@@ -122,7 +124,7 @@ function modulesPage() {
 
     async fetchModules() {
       try {
-        const d = await (await fetch('/api/modules')).json();
+        const d = await (await apiFetch('/api/modules')).json();
         this.modules = d.modules || d || [];
       } catch {}
     },
@@ -130,7 +132,7 @@ function modulesPage() {
     async selectModule(name) {
       this.selectedName = name;
       try {
-        const d = await (await fetch('/api/modules/' + encodeURIComponent(name) + '/stats')).json();
+        const d = await (await apiFetch('/api/modules/' + encodeURIComponent(name) + '/stats')).json();
         this.selectedStats = d;
       } catch {}
       this.configPairs = [{ key: '', value: '' }];
@@ -138,7 +140,7 @@ function modulesPage() {
 
     async reloadModule(name) {
       try {
-        const r = await fetch('/api/modules/' + encodeURIComponent(name) + '/reload', { method: 'POST' });
+        const r = await apiFetch('/api/modules/' + encodeURIComponent(name) + '/reload', { method: 'POST' });
         if (r.ok) this.showToast('Module ' + name + ' reloaded', 'toast-success');
         else this.showToast('Reload failed', 'toast-error');
       } catch { this.showToast('Request failed', 'toast-error'); }
@@ -149,7 +151,7 @@ function modulesPage() {
       const cfg = {};
       this.configPairs.forEach(p => { if (p.key) cfg[p.key] = p.value; });
       try {
-        const r = await fetch('/api/modules/' + encodeURIComponent(this.selectedName) + '/config', {
+        const r = await apiFetch('/api/modules/' + encodeURIComponent(this.selectedName) + '/config', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(cfg)

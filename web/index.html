@@ -6,6 +6,7 @@
 <title>rSwitch — Dashboard</title>
 <link rel="stylesheet" href="style.css">
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="auth.js"></script>
 <script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
 </head>
 <body x-data="dashboard()" x-init="init()">
@@ -18,6 +19,7 @@
     <span>Ports: <span class="stat-val" x-text="portCount"></span></span>
     <span>Modules: <span class="stat-val" x-text="moduleCount"></span></span>
   </div>
+  <button class="btn btn-sm" type="button" onclick="authLogout()">Logout</button>
 </header>
 
 <nav class="sidebar">
@@ -121,19 +123,19 @@ function dashboard() {
     },
 
     async fetchInfo() {
-      try { this.sysInfo = await (await fetch('/api/system/info')).json(); } catch {}
+      try { this.sysInfo = await (await apiFetch('/api/system/info')).json(); } catch {}
     },
 
     async fetchHealth() {
       try {
-        const d = await (await fetch('/api/system/health')).json();
+        const d = await (await apiFetch('/api/system/health')).json();
         this.health = d.status || d.health || '—';
       } catch {}
     },
 
     async fetchPorts() {
       try {
-        const d = await (await fetch('/api/ports')).json();
+        const d = await (await apiFetch('/api/ports')).json();
         const ports = d.ports || d || [];
         this.portCount = ports.length;
         this.portsUp = ports.filter(p => p.link_up || p.state === 'up' || p.admin_state === 'up').length;
@@ -144,7 +146,7 @@ function dashboard() {
 
     async fetchModules() {
       try {
-        const d = await (await fetch('/api/modules')).json();
+        const d = await (await apiFetch('/api/modules')).json();
         const mods = d.modules || d || [];
         this.moduleCount = mods.length;
         this.modulesActive = mods.filter(m => m.state === 'loaded' || m.state === 'active' || m.loaded).length;

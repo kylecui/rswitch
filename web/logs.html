@@ -6,6 +6,7 @@
 <title>rSwitch — Logs</title>
 <link rel="stylesheet" href="style.css">
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="auth.js"></script>
 <script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
 </head>
 <body x-data="logsPage()" x-init="init()">
@@ -16,6 +17,7 @@
     <span>Events: <span class="stat-val" x-text="events.length"></span></span>
     <span class="ws-status"><span class="ws-dot" :class="wsState"></span> <span x-text="wsState"></span></span>
   </div>
+  <button class="btn btn-sm" type="button" onclick="authLogout()">Logout</button>
 </header>
 
 <nav class="sidebar">
