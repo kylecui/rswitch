@@ -64,6 +64,24 @@ struct rs_profile_voqd {
     char veth_in_ifname[32]; // Veth inside interface name
 };
 
+/* Management plane configuration */
+struct rs_profile_mgmt {
+    int enabled;
+    int port;                    /* HTTP listen port, default 8080 */
+    char web_root[256];          /* static web root path */
+    int use_namespace;           /* 1 = use mgmt namespace isolation */
+    char namespace_name[64];     /* namespace name, default "rswitch-mgmt" */
+    int iface_mode;              /* 0 = dhcp, 1 = static */
+    char static_ip[46];          /* static IP in CIDR, e.g. "10.0.0.100/24" */
+    int mgmt_vlan;               /* management VLAN (0 = untagged) */
+    int auth_enabled;            /* require HTTP Basic auth */
+    char auth_user[64];          /* username */
+    char auth_password[128];     /* password (plaintext in config, hashed at runtime) */
+    int session_timeout;         /* session timeout in seconds, default 3600 */
+    int rate_limit_max_fails;    /* max auth failures before lockout, default 5 */
+    int rate_limit_lockout_sec;  /* lockout duration in seconds, default 300 */
+};
+
 /* Profile settings structure */
 struct rs_profile_settings {
     /* MAC learning */
@@ -116,6 +134,9 @@ struct rs_profile {
     
     /* VOQd configuration */
     struct rs_profile_voqd voqd;
+
+    /* Management plane configuration */
+    struct rs_profile_mgmt mgmt;
     
     /* Port configurations */
     struct rs_profile_port *ports;

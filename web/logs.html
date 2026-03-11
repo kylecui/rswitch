@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rSwitch — Logs</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+</head>
+<body x-data="logsPage()" x-init="init()">
+
+<header class="header">
+  <div class="header-brand">&#x2B21; rSwitch <span>Management</span></div>
+  <div class="header-stats">
+    <span>Events: <span class="stat-val" x-text="events.length"></span></span>
+    <span class="ws-status"><span class="ws-dot" :class="wsState"></span> <span x-text="wsState"></span></span>
+  </div>
+</header>
+
+<nav class="sidebar">
+  <a href="index.html"><span class="icon">&#x25C8;</span> Dashboard</a>
+  <a href="ports.html"><span class="icon">&#x229E;</span> Ports</a>
+  <a href="modules.html"><span class="icon">&#x25EC;</span> Modules</a>
+  <a href="vlans.html"><span class="icon">&#x2261;</span> VLANs</a>
+  <a href="acls.html"><span class="icon">&#x26CA;</span> ACLs</a>
+  <a href="routes.html"><span class="icon">&#x21C4;</span> Routes</a>
+  <a href="logs.html" class="active"><span class="icon">&#x2630;</span> Logs</a>
+</nav>
+
+<main class="main">
+  <div class="page-title"><span class="icon">&#x2630;</span> Live Event Log</div>
+
+  <div class="log-toolbar">
+    <div class="form-group" style="margin:0;">
+      <select x-model="filter" style="width:120px;">
+        <option value="all">All</option>
+        <option value="info">Info</option>
+        <option value="warn">Warning</option>
+        <option value="error">Error</option>
+      </select>
+    </div>
+    <div class="form-group" style="margin:0;">
+      <input type="text" x-model="search" placeholder="Search events..." style="width:220px;">
+    </div>
+    <button class="btn btn-sm" @click="paused = !paused" x-text="paused ? '&#x25B6; Resume' : '&#x23F8; Pause'"></button>
+    <button class="btn btn-sm" @click="events = []">&#x2715; Clear</button>
+    <span class="text-muted" style="margin-left:auto; font-size:12px;" x-text="'Showing ' + filtered.length + ' / ' + events.length + ' events'"></span>
+  </div>
+
+  <div class="log-container" x-ref="logbox">
+    <template x-for="ev in filtered" :key="ev.id">
+      <div class="log-entry" :class="ev.severity">
+        <span class="log-time" x-text="ev.time"></span>
+        <span class="log-sev" x-text="ev.severity"></span>
+        <span class="log-msg" x-text="ev.message"></span>
+      </div>
+    </template>
+    <div x-show="filtered.length === 0" class="empty-state">
+      <div class="icon">&#x2630;</div>
+      <div x-text="events.length === 0 ? 'Waiting for events...' : 'No events match filter'"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+function logsPage() {
+  return {
+    events: [], wsState: 'disconnected', ws: null,
+    filter: 'all', search: '', paused: false, eventId: 0,
+
+    get filtered() {
+      return this.events.filter(ev => {
+        if (this.filter !== 'all' && ev.severity !== this.filter) return false;
+        if (this.search && !ev.message.toLowerCase().includes(this.search.toLowerCase())) return false;
+        return true;
+      });
+    },
+
+    init() {
+      this.connectWs();
+    },
+
+    connectWs() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      this.ws = new WebSocket(proto + '//' + location.host + '/api/ws');
+      this.ws.onopen = () => { this.wsState = 'connected'; };
+      this.ws.onclose = () => { this.wsState = 'reconnecting'; setTimeout(() => this.connectWs(), 3000); };
+      this.ws.onerror = () => { this.wsState = 'disconnected'; };
+      this.ws.onmessage = (e) => {
+        if (this.paused) return;
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'event') {
+            const ts = msg.timestamp ? new Date(msg.timestamp * 1000) : new Date();
+            this.events.push({
+              id: ++this.eventId,
+              severity: msg.severity || 'info',
+              message: msg.message || '',
+              time: ts.toLocaleTimeString()
+            });
+            if (this.events.length > 1000) this.events = this.events.slice(-500);
+            this.$nextTick(() => {
+              const box = this.$refs.logbox;
+              if (box) box.scrollTop = box.scrollHeight;
+            });
+          }
+        } catch {}
+      };
+    }
+  };
+}
+</script>
+</body>
+</html>

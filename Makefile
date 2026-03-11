@@ -72,6 +72,10 @@ WATCHDOG = $(BUILD_DIR)/rswitch-watchdog
 CONTROLLER = $(BUILD_DIR)/rswitch-controller
 AGENT = $(BUILD_DIR)/rswitch-agent
 SNMPAGENT = $(BUILD_DIR)/rswitch-snmpagent
+MGMTD = $(BUILD_DIR)/rswitch-mgmtd
+MONGOOSE_OBJ = $(BUILD_DIR)/mongoose.o
+MGMT_IFACE_OBJ = $(BUILD_DIR)/mgmt_iface.o
+WATCHDOG_OBJ = $(BUILD_DIR)/watchdog.o
 # AFXDP_TEST = $(BUILD_DIR)/afxdp_test  # Requires libbpf with xsk.h support
 CORE_OBJS = $(patsubst $(CORE_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(CORE_DIR)/*.bpf.c))
 MODULE_OBJS = $(patsubst $(MODULES_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(MODULES_DIR)/*.bpf.c))
@@ -79,7 +83,7 @@ ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS)
 
 .PHONY: all clean dirs vmlinux help test test-bpf fuzz integration-test benchmark gen-docs
 
-all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSFLOWCTL) $(RSNATCTL) $(RSVOQCTL) $(RSTUNNELCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(SFLOW_EXPORT) $(PROMETHEUS_EXPORTER) $(WATCHDOG) $(CONTROLLER) $(AGENT) $(SNMPAGENT) $(ALL_BPF_OBJS)
+all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSFLOWCTL) $(RSNATCTL) $(RSVOQCTL) $(RSTUNNELCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(SFLOW_EXPORT) $(PROMETHEUS_EXPORTER) $(WATCHDOG) $(CONTROLLER) $(AGENT) $(SNMPAGENT) $(MGMTD) $(ALL_BPF_OBJS)
 	@echo "✓ Build complete"
 	@echo "  Loader: $(LOADER)"
 	@echo "  Reload: $(HOT_RELOAD)"
@@ -105,6 +109,7 @@ all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL
 	@echo "  Controller: $(CONTROLLER)"
 	@echo "  Agent: $(AGENT)"
 	@echo "  SNMP Agent: $(SNMPAGENT)"
+	@echo "  Mgmt Daemon: $(MGMTD)"
 	@echo "  BPF objects: $(words $(ALL_BPF_OBJS)) modules"
 	@echo "  Note: AF_XDP requires libxdp (xsk.h moved from libbpf)"
 
@@ -249,6 +254,35 @@ $(SNMPAGENT): $(USER_DIR)/snmpagent/snmpagent.c $(USER_DIR)/snmpagent/snmpagent.
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/snmpagent $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/snmpagent/snmpagent.c \
 		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+# Build mongoose library object
+$(MONGOOSE_OBJ): $(USER_DIR)/mgmt/mongoose.c $(USER_DIR)/mgmt/mongoose.h
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -DMG_ENABLE_LINES=0 -c $(USER_DIR)/mgmt/mongoose.c -o $@
+
+# Build management interface object
+$(MGMT_IFACE_OBJ): $(USER_DIR)/mgmt/mgmt_iface.c $(USER_DIR)/mgmt/mgmt_iface.h $(COMMON_DIR)/rs_log.h
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 $(USER_INCLUDES) -I$(USER_DIR)/mgmt -c $(USER_DIR)/mgmt/mgmt_iface.c -o $@
+
+# Build watchdog library object (non-standalone, for linking into other binaries)
+$(WATCHDOG_OBJ): $(USER_DIR)/watchdog/watchdog.c $(USER_DIR)/watchdog/watchdog.h $(COMMON_DIR)/rs_log.h
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/watchdog $(USER_INCLUDES) \
+		-c $< -o $@
+
+# Build management daemon
+$(MGMTD): $(USER_DIR)/mgmt/mgmtd.c $(USER_DIR)/mgmt/mgmtd.h $(USER_DIR)/mgmt/mgmt_iface.h $(USER_DIR)/mgmt/mongoose.h $(USER_DIR)/loader/profile_parser.c $(USER_DIR)/loader/profile_parser.h $(MONGOOSE_OBJ) $(MGMT_IFACE_OBJ) $(WATCHDOG_OBJ) $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(AUDIT_OBJ) $(ROLLBACK_OBJ) $(TOPOLOGY_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-I$(USER_DIR)/mgmt -I$(USER_DIR)/loader -I$(USER_DIR)/watchdog -I$(USER_DIR)/topology \
+		-I$(USER_DIR)/audit -I$(USER_DIR)/rollback -I$(USER_DIR)/lifecycle \
+		-o $@ $(USER_DIR)/mgmt/mgmtd.c $(USER_DIR)/loader/profile_parser.c \
+		$(MONGOOSE_OBJ) $(MGMT_IFACE_OBJ) $(WATCHDOG_OBJ) \
+		$(LIFECYCLE_OBJ) $(AUDIT_OBJ) $(ROLLBACK_OBJ) $(TOPOLOGY_OBJ) $(RS_LOG_OBJ) \
+		$(LIBBPF_LIBS) -lelf -lz -lpthread
 
 # Build rswitchctl
 $(RSWITCHCTL): $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_dev.c $(USER_DIR)/ctl/rswitchctl_extended.c $(USER_DIR)/ctl/rswitchctl_acl.c $(USER_DIR)/ctl/rswitchctl_mirror.c $(USER_DIR)/loader/profile_parser.c $(USER_DIR)/watchdog/watchdog.c $(USER_DIR)/watchdog/watchdog.h $(USER_DIR)/lifecycle/lifecycle.h $(USER_DIR)/registry/registry.c $(USER_DIR)/rollback/rollback.h $(USER_DIR)/audit/audit.h $(USER_DIR)/topology/topology.h $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(REGISTRY_OBJ) $(ROLLBACK_OBJ) $(AUDIT_OBJ) $(TOPOLOGY_OBJ)

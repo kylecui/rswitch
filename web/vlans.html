@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rSwitch — VLANs</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+</head>
+<body x-data="vlansPage()" x-init="init()">
+
+<header class="header">
+  <div class="header-brand">&#x2B21; rSwitch <span>Management</span></div>
+  <div class="header-stats">
+    <span>VLANs: <span class="stat-val" x-text="vlans.length"></span></span>
+  </div>
+</header>
+
+<nav class="sidebar">
+  <a href="index.html"><span class="icon">&#x25C8;</span> Dashboard</a>
+  <a href="ports.html"><span class="icon">&#x229E;</span> Ports</a>
+  <a href="modules.html"><span class="icon">&#x25EC;</span> Modules</a>
+  <a href="vlans.html" class="active"><span class="icon">&#x2261;</span> VLANs</a>
+  <a href="acls.html"><span class="icon">&#x26CA;</span> ACLs</a>
+  <a href="routes.html"><span class="icon">&#x21C4;</span> Routes</a>
+  <a href="logs.html"><span class="icon">&#x2630;</span> Logs</a>
+</nav>
+
+<main class="main">
+  <div class="page-title flex-between">
+    <span><span class="icon">&#x2261;</span> VLAN Management</span>
+    <button class="btn btn-primary" @click="showCreate = !showCreate">+ Create VLAN</button>
+  </div>
+
+  <div x-show="showCreate" x-transition class="card">
+    <div class="card-header">Create VLAN</div>
+    <form @submit.prevent="createVlan()" class="form-inline mt-12">
+      <div class="form-group">
+        <label>VLAN ID</label>
+        <input type="number" x-model.number="newVlan.id" min="1" max="4094" style="width:100px;" required>
+      </div>
+      <div class="form-group">
+        <label>Name</label>
+        <input type="text" x-model="newVlan.name" placeholder="e.g. servers" style="width:180px;">
+      </div>
+      <div class="form-group">
+        <label>Tagged Ports</label>
+        <input type="text" x-model="newVlan.tagged" placeholder="0,1,2" style="width:140px;">
+      </div>
+      <div class="form-group">
+        <label>Untagged Ports</label>
+        <input type="text" x-model="newVlan.untagged" placeholder="3,4" style="width:140px;">
+      </div>
+      <button type="submit" class="btn btn-primary">Create</button>
+      <button type="button" class="btn" @click="showCreate=false">Cancel</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Tagged Ports</th>
+            <th>Untagged Ports</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="vlan in vlans" :key="vlan.id">
+            <tr>
+              <td>
+                <span class="vlan-color" :style="'background:hsl(' + (vlan.id * 37 % 360) + ',60%,50%)'"></span>
+                <span x-text="vlan.id"></span>
+              </td>
+              <td x-text="vlan.name || '—'"></td>
+              <td class="mono" x-text="(vlan.tagged_ports || vlan.tagged || []).join(', ') || '—'"></td>
+              <td class="mono" x-text="(vlan.untagged_ports || vlan.untagged || []).join(', ') || '—'"></td>
+              <td>
+                <button class="btn btn-sm btn-danger" @click="deleteVlan(vlan.id)" x-text="'Delete'"></button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+    <div x-show="vlans.length === 0" class="empty-state">
+      <div class="icon">&#x2261;</div>
+      <div>No VLANs configured</div>
+    </div>
+  </div>
+</main>
+
+<div x-show="toast" x-transition class="toast" :class="toastClass" x-text="toastMsg"
+     x-init="$watch('toast', v => { if(v) setTimeout(()=>toast=false, 3000) })"></div>
+
+<script>
+function vlansPage() {
+  return {
+    vlans: [], showCreate: false,
+    newVlan: { id: '', name: '', tagged: '', untagged: '' },
+    toast: false, toastMsg: '', toastClass: '',
+
+    init() {
+      this.fetchVlans();
+      setInterval(() => this.fetchVlans(), 5000);
+    },
+
+    async fetchVlans() {
+      try {
+        const d = await (await fetch('/api/vlans')).json();
+        this.vlans = d.vlans || d || [];
+      } catch {}
+    },
+
+    async createVlan() {
+      const body = {
+        id: this.newVlan.id,
+        name: this.newVlan.name,
+        tagged_ports: this.newVlan.tagged ? this.newVlan.tagged.split(',').map(Number) : [],
+        untagged_ports: this.newVlan.untagged ? this.newVlan.untagged.split(',').map(Number) : []
+      };
+      try {
+        const r = await fetch('/api/vlans', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (r.ok) { this.showToast('VLAN ' + body.id + ' created', 'toast-success'); this.showCreate = false; this.fetchVlans(); }
+        else this.showToast('Failed to create VLAN', 'toast-error');
+      } catch { this.showToast('Request failed', 'toast-error'); }
+    },
+
+    async deleteVlan(id) {
+      if (!confirm('Delete VLAN ' + id + '?')) return;
+      try {
+        const r = await fetch('/api/vlans/' + id, { method: 'DELETE' });
+        if (r.ok) { this.showToast('VLAN ' + id + ' deleted', 'toast-success'); this.fetchVlans(); }
+        else this.showToast('Delete failed', 'toast-error');
+      } catch { this.showToast('Request failed', 'toast-error'); }
+    },
+
+    showToast(msg, cls) { this.toastMsg = msg; this.toastClass = cls; this.toast = true; }
+  };
+}
+</script>
+</body>
+</html>

@@ -126,6 +126,17 @@ void profile_init(struct rs_profile *profile)
     profile->voqd.enable_scheduler = 1;
     profile->voqd.use_veth_egress = 1;  // Default enabled when VOQd is on
     strcpy(profile->voqd.veth_in_ifname, "veth_voq_in");
+
+    profile->mgmt.enabled = 0;
+    profile->mgmt.port = 8080;
+    strcpy(profile->mgmt.web_root, "/usr/share/rswitch/web");
+    profile->mgmt.use_namespace = 0;
+    strcpy(profile->mgmt.namespace_name, "rswitch-mgmt");
+    profile->mgmt.iface_mode = 0;
+    profile->mgmt.auth_enabled = 0;
+    profile->mgmt.session_timeout = 3600;
+    profile->mgmt.rate_limit_max_fails = 5;
+    profile->mgmt.rate_limit_lockout_sec = 300;
     
     profile->ports = NULL;
     profile->port_count = 0;
@@ -253,6 +264,40 @@ static void profile_merge(struct rs_profile *child, const struct rs_profile *par
     if (strcmp(child->voqd.veth_in_ifname, defaults.voqd.veth_in_ifname) == 0)
         strncpy(child->voqd.veth_in_ifname, parent->voqd.veth_in_ifname,
                 sizeof(child->voqd.veth_in_ifname) - 1);
+
+    if (child->mgmt.enabled == defaults.mgmt.enabled)
+        child->mgmt.enabled = parent->mgmt.enabled;
+    if (child->mgmt.port == defaults.mgmt.port)
+        child->mgmt.port = parent->mgmt.port;
+    if (strcmp(child->mgmt.web_root, defaults.mgmt.web_root) == 0)
+        strncpy(child->mgmt.web_root, parent->mgmt.web_root,
+                sizeof(child->mgmt.web_root) - 1);
+    if (child->mgmt.use_namespace == defaults.mgmt.use_namespace)
+        child->mgmt.use_namespace = parent->mgmt.use_namespace;
+    if (strcmp(child->mgmt.namespace_name, defaults.mgmt.namespace_name) == 0)
+        strncpy(child->mgmt.namespace_name, parent->mgmt.namespace_name,
+                sizeof(child->mgmt.namespace_name) - 1);
+    if (child->mgmt.iface_mode == defaults.mgmt.iface_mode)
+        child->mgmt.iface_mode = parent->mgmt.iface_mode;
+    if (strcmp(child->mgmt.static_ip, defaults.mgmt.static_ip) == 0)
+        strncpy(child->mgmt.static_ip, parent->mgmt.static_ip,
+                sizeof(child->mgmt.static_ip) - 1);
+    if (child->mgmt.mgmt_vlan == defaults.mgmt.mgmt_vlan)
+        child->mgmt.mgmt_vlan = parent->mgmt.mgmt_vlan;
+    if (child->mgmt.auth_enabled == defaults.mgmt.auth_enabled)
+        child->mgmt.auth_enabled = parent->mgmt.auth_enabled;
+    if (strcmp(child->mgmt.auth_user, defaults.mgmt.auth_user) == 0)
+        strncpy(child->mgmt.auth_user, parent->mgmt.auth_user,
+                sizeof(child->mgmt.auth_user) - 1);
+    if (strcmp(child->mgmt.auth_password, defaults.mgmt.auth_password) == 0)
+        strncpy(child->mgmt.auth_password, parent->mgmt.auth_password,
+                sizeof(child->mgmt.auth_password) - 1);
+    if (child->mgmt.session_timeout == defaults.mgmt.session_timeout)
+        child->mgmt.session_timeout = parent->mgmt.session_timeout;
+    if (child->mgmt.rate_limit_max_fails == defaults.mgmt.rate_limit_max_fails)
+        child->mgmt.rate_limit_max_fails = parent->mgmt.rate_limit_max_fails;
+    if (child->mgmt.rate_limit_lockout_sec == defaults.mgmt.rate_limit_lockout_sec)
+        child->mgmt.rate_limit_lockout_sec = parent->mgmt.rate_limit_lockout_sec;
 
     if (child->port_count == 0 && parent->port_count > 0) {
         child->ports = malloc(parent->port_count * sizeof(struct rs_profile_port));
@@ -893,6 +938,66 @@ static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
     return 0;
 }
 
+static int parse_management(FILE *fp, struct rs_profile_mgmt *mgmt)
+{
+    char line[MAX_LINE_LEN];
+    char key[256], value[256];
+
+    while (fgets(line, sizeof(line), fp)) {
+        char line_copy[MAX_LINE_LEN];
+        strncpy(line_copy, line, sizeof(line_copy) - 1);
+        line_copy[sizeof(line_copy) - 1] = '\0';
+
+        remove_comment(line);
+        char *trimmed = trim(line);
+
+        if (strlen(trimmed) == 0) continue;
+
+        /* Check if we're entering another section (non-indented line with ':') */
+        if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
+            fseek(fp, -(long)strlen(line_copy), SEEK_CUR);
+            break;
+        }
+
+        if (parse_key_value(trimmed, key, value, sizeof(key)) != 0) {
+            continue;
+        }
+
+        if (strcmp(key, "enabled") == 0) {
+            mgmt->enabled = parse_bool(value);
+        } else if (strcmp(key, "port") == 0) {
+            mgmt->port = atoi(value);
+        } else if (strcmp(key, "web_root") == 0) {
+            strncpy(mgmt->web_root, value, sizeof(mgmt->web_root) - 1);
+        } else if (strcmp(key, "use_namespace") == 0) {
+            mgmt->use_namespace = parse_bool(value);
+        } else if (strcmp(key, "namespace_name") == 0) {
+            strncpy(mgmt->namespace_name, value, sizeof(mgmt->namespace_name) - 1);
+        } else if (strcmp(key, "iface_mode") == 0) {
+            if (strcmp(value, "dhcp") == 0) mgmt->iface_mode = 0;
+            else if (strcmp(value, "static") == 0) mgmt->iface_mode = 1;
+        } else if (strcmp(key, "static_ip") == 0) {
+            strncpy(mgmt->static_ip, value, sizeof(mgmt->static_ip) - 1);
+        } else if (strcmp(key, "mgmt_vlan") == 0) {
+            mgmt->mgmt_vlan = atoi(value);
+        } else if (strcmp(key, "auth_enabled") == 0) {
+            mgmt->auth_enabled = parse_bool(value);
+        } else if (strcmp(key, "auth_user") == 0) {
+            strncpy(mgmt->auth_user, value, sizeof(mgmt->auth_user) - 1);
+        } else if (strcmp(key, "auth_password") == 0) {
+            strncpy(mgmt->auth_password, value, sizeof(mgmt->auth_password) - 1);
+        } else if (strcmp(key, "session_timeout") == 0) {
+            mgmt->session_timeout = atoi(value);
+        } else if (strcmp(key, "rate_limit_max_fails") == 0) {
+            mgmt->rate_limit_max_fails = atoi(value);
+        } else if (strcmp(key, "rate_limit_lockout_sec") == 0) {
+            mgmt->rate_limit_lockout_sec = atoi(value);
+        }
+    }
+
+    return 0;
+}
+
 /* Parse vlans section */
 static int parse_vlans(FILE *fp, struct rs_profile *profile)
 {
@@ -1005,6 +1110,9 @@ int profile_load(const char *filename, struct rs_profile *profile)
         } else if (strcmp(key, "voqd_config") == 0) {
             ret = parse_voqd_config(fp, &profile->voqd);
             if (ret < 0) goto error;
+        } else if (strcmp(key, "management") == 0) {
+            ret = parse_management(fp, &profile->mgmt);
+            if (ret < 0) goto error;
         } else if (strcmp(key, "ports") == 0) {
             ret = parse_ports(fp, profile);
             if (ret < 0) goto error;
@@ -1099,4 +1207,19 @@ void profile_print(const struct rs_profile *profile)
                    v->vlan_id, v->name, v->tagged_count, v->untagged_count);
         }
     }
+
+    printf("\nManagement:\n");
+    printf("  Enabled: %s\n", profile->mgmt.enabled ? "yes" : "no");
+    printf("  Port: %d\n", profile->mgmt.port);
+    printf("  Web root: %s\n", profile->mgmt.web_root);
+    printf("  Namespace: %s\n", profile->mgmt.use_namespace ? "enabled" : "disabled");
+    printf("  Namespace name: %s\n", profile->mgmt.namespace_name);
+    printf("  Interface mode: %s\n", profile->mgmt.iface_mode ? "static" : "dhcp");
+    printf("  Static IP: %s\n", profile->mgmt.static_ip[0] ? profile->mgmt.static_ip : "(none)");
+    printf("  Management VLAN: %d\n", profile->mgmt.mgmt_vlan);
+    printf("  Auth enabled: %s\n", profile->mgmt.auth_enabled ? "yes" : "no");
+    printf("  Auth user: %s\n", profile->mgmt.auth_user[0] ? profile->mgmt.auth_user : "(none)");
+    printf("  Session timeout: %d\n", profile->mgmt.session_timeout);
+    printf("  Rate limit max fails: %d\n", profile->mgmt.rate_limit_max_fails);
+    printf("  Rate limit lockout sec: %d\n", profile->mgmt.rate_limit_lockout_sec);
 }

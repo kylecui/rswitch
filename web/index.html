@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rSwitch — Dashboard</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+</head>
+<body x-data="dashboard()" x-init="init()">
+
+<header class="header">
+  <div class="header-brand">&#x2B21; rSwitch <span>Management</span></div>
+  <div class="header-stats">
+    <span>&#x25CF; <span class="stat-val" :class="health === 'healthy' ? 'stat-up' : 'stat-down'" x-text="health"></span></span>
+    <span>Uptime: <span class="stat-val" x-text="uptimeStr"></span></span>
+    <span>Ports: <span class="stat-val" x-text="portCount"></span></span>
+    <span>Modules: <span class="stat-val" x-text="moduleCount"></span></span>
+  </div>
+</header>
+
+<nav class="sidebar">
+  <a href="index.html" class="active"><span class="icon">&#x25C8;</span> Dashboard</a>
+  <a href="ports.html"><span class="icon">&#x229E;</span> Ports</a>
+  <a href="modules.html"><span class="icon">&#x25EC;</span> Modules</a>
+  <a href="vlans.html"><span class="icon">&#x2261;</span> VLANs</a>
+  <a href="acls.html"><span class="icon">&#x26CA;</span> ACLs</a>
+  <a href="routes.html"><span class="icon">&#x21C4;</span> Routes</a>
+  <a href="logs.html"><span class="icon">&#x2630;</span> Logs</a>
+</nav>
+
+<main class="main">
+  <div class="page-title"><span class="icon">&#x25C8;</span> System Dashboard</div>
+
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="label">System Health</div>
+      <div class="value" :class="health === 'healthy' ? 'green' : 'red'" x-text="health"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Uptime</div>
+      <div class="value cyan" x-text="uptimeStr"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Ports Up / Total</div>
+      <div class="value green" x-text="portsUp + ' / ' + portCount"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Active Modules</div>
+      <div class="value blue" x-text="modulesActive + ' / ' + moduleCount"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">RX Total</div>
+      <div class="value cyan" x-text="fmtNum(rxTotal)"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">TX Total</div>
+      <div class="value cyan" x-text="fmtNum(txTotal)"></div>
+    </div>
+  </div>
+
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+    <div class="card">
+      <div class="card-header">System Information</div>
+      <div class="detail-grid">
+        <div class="detail-item"><span class="dlabel">Hostname</span><span class="dvalue" x-text="sysInfo.hostname || '—'"></span></div>
+        <div class="detail-item"><span class="dlabel">Version</span><span class="dvalue" x-text="sysInfo.version || '—'"></span></div>
+        <div class="detail-item"><span class="dlabel">Kernel</span><span class="dvalue" x-text="sysInfo.kernel || '—'"></span></div>
+        <div class="detail-item"><span class="dlabel">CPU Usage</span><span class="dvalue" x-text="(sysInfo.cpu_percent || 0) + '%'"></span></div>
+        <div class="detail-item"><span class="dlabel">Memory</span><span class="dvalue" x-text="sysInfo.memory || '—'"></span></div>
+        <div class="detail-item"><span class="dlabel">Profile</span><span class="dvalue" x-text="sysInfo.profile || '—'"></span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">Quick Actions</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn" hx-post="/api/system/reboot" hx-confirm="Reboot the switch? All traffic will be interrupted.">&#x21BB; Reboot</button>
+        <button class="btn btn-danger" hx-post="/api/system/shutdown" hx-confirm="Shut down the switch? This will stop all forwarding.">&#x23FB; Shutdown</button>
+        <button class="btn btn-primary" hx-post="/api/config/snapshot" hx-swap="none">&#x1F4BE; Save Config</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mt-20">
+    <div class="card-header flex-between">
+      Recent Events
+      <span class="ws-status"><span class="ws-dot" :class="wsState"></span> <span x-text="wsState"></span></span>
+    </div>
+    <div style="max-height:300px; overflow-y:auto; font-family:var(--font-mono); font-size:12px;">
+      <template x-for="ev in events.slice(-50)" :key="ev.ts">
+        <div class="log-entry" :class="ev.severity">
+          <span class="log-time" x-text="ev.time"></span>
+          <span class="log-sev" x-text="ev.severity"></span>
+          <span class="log-msg" x-text="ev.message"></span>
+        </div>
+      </template>
+      <div x-show="events.length === 0" class="empty-state">
+        <div class="icon">&#x2630;</div>
+        <div>No events yet</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+function dashboard() {
+  return {
+    health: '—', uptimeStr: '—', portCount: 0, portsUp: 0,
+    moduleCount: 0, modulesActive: 0, rxTotal: 0, txTotal: 0,
+    sysInfo: {}, events: [], wsState: 'disconnected', ws: null,
+
+    init() {
+      this.fetchInfo();
+      this.fetchHealth();
+      this.fetchPorts();
+      this.fetchModules();
+      this.connectWs();
+      setInterval(() => { this.fetchInfo(); this.fetchHealth(); this.fetchPorts(); this.fetchModules(); }, 5000);
+    },
+
+    async fetchInfo() {
+      try { this.sysInfo = await (await fetch('/api/system/info')).json(); } catch {}
+    },
+
+    async fetchHealth() {
+      try {
+        const d = await (await fetch('/api/system/health')).json();
+        this.health = d.status || d.health || '—';
+      } catch {}
+    },
+
+    async fetchPorts() {
+      try {
+        const d = await (await fetch('/api/ports')).json();
+        const ports = d.ports || d || [];
+        this.portCount = ports.length;
+        this.portsUp = ports.filter(p => p.link_up || p.state === 'up' || p.admin_state === 'up').length;
+        this.rxTotal = ports.reduce((s, p) => s + (p.rx_packets || 0), 0);
+        this.txTotal = ports.reduce((s, p) => s + (p.tx_packets || 0), 0);
+      } catch {}
+    },
+
+    async fetchModules() {
+      try {
+        const d = await (await fetch('/api/modules')).json();
+        const mods = d.modules || d || [];
+        this.moduleCount = mods.length;
+        this.modulesActive = mods.filter(m => m.state === 'loaded' || m.state === 'active' || m.loaded).length;
+      } catch {}
+    },
+
+    connectWs() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      this.ws = new WebSocket(proto + '//' + location.host + '/api/ws');
+      this.ws.onopen = () => { this.wsState = 'connected'; };
+      this.ws.onclose = () => { this.wsState = 'reconnecting'; setTimeout(() => this.connectWs(), 3000); };
+      this.ws.onerror = () => { this.wsState = 'disconnected'; };
+      this.ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'stats') {
+            this.uptimeStr = this.fmtUptime(msg.uptime);
+            this.portCount = msg.port_count || this.portCount;
+            this.moduleCount = msg.module_count || this.moduleCount;
+            this.rxTotal = msg.rx_total || this.rxTotal;
+            this.txTotal = msg.tx_total || this.txTotal;
+          } else if (msg.type === 'event') {
+            const ts = msg.timestamp ? new Date(msg.timestamp * 1000) : new Date();
+            this.events.push({ severity: msg.severity, message: msg.message, time: ts.toLocaleTimeString(), ts: Date.now() });
+            if (this.events.length > 200) this.events = this.events.slice(-100);
+          }
+        } catch {}
+      };
+    },
+
+    fmtUptime(sec) {
+      if (!sec) return '—';
+      const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+      return (d > 0 ? d + 'd ' : '') + h + 'h ' + m + 'm';
+    },
+
+    fmtNum(n) {
+      if (n >= 1e9) return (n / 1e9).toFixed(1) + 'G';
+      if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+      return String(n);
+    }
+  };
+}
+</script>
+</body>
+</html>

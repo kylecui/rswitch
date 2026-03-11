@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rSwitch — Routes</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+</head>
+<body x-data="routesPage()" x-init="init()">
+
+<header class="header">
+  <div class="header-brand">&#x2B21; rSwitch <span>Management</span></div>
+  <div class="header-stats">
+    <span>Routes: <span class="stat-val" x-text="routes.length"></span></span>
+  </div>
+</header>
+
+<nav class="sidebar">
+  <a href="index.html"><span class="icon">&#x25C8;</span> Dashboard</a>
+  <a href="ports.html"><span class="icon">&#x229E;</span> Ports</a>
+  <a href="modules.html"><span class="icon">&#x25EC;</span> Modules</a>
+  <a href="vlans.html"><span class="icon">&#x2261;</span> VLANs</a>
+  <a href="acls.html"><span class="icon">&#x26CA;</span> ACLs</a>
+  <a href="routes.html" class="active"><span class="icon">&#x21C4;</span> Routes</a>
+  <a href="logs.html"><span class="icon">&#x2630;</span> Logs</a>
+</nav>
+
+<main class="main">
+  <div class="page-title flex-between">
+    <span><span class="icon">&#x21C4;</span> Routing Table</span>
+    <button class="btn btn-primary" @click="showCreate = !showCreate">+ Add Route</button>
+  </div>
+
+  <div x-show="showCreate" x-transition class="card">
+    <div class="card-header">Add Route</div>
+    <form @submit.prevent="createRoute()" class="form-inline mt-12">
+      <div class="form-group">
+        <label>Prefix</label>
+        <input type="text" x-model="newRoute.prefix" placeholder="10.0.0.0/24" style="width:180px;" required>
+      </div>
+      <div class="form-group">
+        <label>Next Hop</label>
+        <input type="text" x-model="newRoute.next_hop" placeholder="10.0.0.1" style="width:150px;" required>
+      </div>
+      <div class="form-group">
+        <label>Interface</label>
+        <input type="text" x-model="newRoute.interface" placeholder="eth0" style="width:100px;">
+      </div>
+      <div class="form-group">
+        <label>Metric</label>
+        <input type="number" x-model.number="newRoute.metric" min="0" value="100" style="width:80px;">
+      </div>
+      <button type="submit" class="btn btn-primary">Add</button>
+      <button type="button" class="btn" @click="showCreate=false">Cancel</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Prefix</th>
+            <th>Next Hop</th>
+            <th>Interface</th>
+            <th>Metric</th>
+            <th>Type</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="rt in routes" :key="rt.prefix">
+            <tr>
+              <td class="mono" x-text="rt.prefix"></td>
+              <td class="mono" x-text="rt.next_hop || rt.nexthop || '—'"></td>
+              <td x-text="rt.interface || rt.iface || '—'"></td>
+              <td class="mono" x-text="rt.metric || 0"></td>
+              <td><span class="badge badge-info" x-text="rt.type || 'static'"></span></td>
+              <td>
+                <button class="btn btn-sm btn-danger" @click="deleteRoute(rt.prefix)">Delete</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+    <div x-show="routes.length === 0" class="empty-state">
+      <div class="icon">&#x21C4;</div>
+      <div>No routes configured</div>
+    </div>
+  </div>
+</main>
+
+<div x-show="toast" x-transition class="toast" :class="toastClass" x-text="toastMsg"
+     x-init="$watch('toast', v => { if(v) setTimeout(()=>toast=false, 3000) })"></div>
+
+<script>
+function routesPage() {
+  return {
+    routes: [], showCreate: false,
+    newRoute: { prefix: '', next_hop: '', interface: '', metric: 100 },
+    toast: false, toastMsg: '', toastClass: '',
+
+    init() {
+      this.fetchRoutes();
+      setInterval(() => this.fetchRoutes(), 5000);
+    },
+
+    async fetchRoutes() {
+      try {
+        const d = await (await fetch('/api/routes')).json();
+        this.routes = d.routes || d || [];
+      } catch {}
+    },
+
+    async createRoute() {
+      try {
+        const r = await fetch('/api/routes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.newRoute) });
+        if (r.ok) { this.showToast('Route added', 'toast-success'); this.showCreate = false; this.fetchRoutes(); }
+        else this.showToast('Failed to add route', 'toast-error');
+      } catch { this.showToast('Request failed', 'toast-error'); }
+    },
+
+    async deleteRoute(prefix) {
+      if (!confirm('Delete route ' + prefix + '?')) return;
+      try {
+        const r = await fetch('/api/routes/' + encodeURIComponent(prefix), { method: 'DELETE' });
+        if (r.ok) { this.showToast('Route deleted', 'toast-success'); this.fetchRoutes(); }
+        else this.showToast('Delete failed', 'toast-error');
+      } catch { this.showToast('Request failed', 'toast-error'); }
+    },
+
+    showToast(msg, cls) { this.toastMsg = msg; this.toastClass = cls; this.toast = true; }
+  };
+}
+</script>
+</body>
+</html>

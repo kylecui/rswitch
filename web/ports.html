@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rSwitch — Ports</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+</head>
+<body x-data="portsPage()" x-init="init()">
+
+<header class="header">
+  <div class="header-brand">&#x2B21; rSwitch <span>Management</span></div>
+  <div class="header-stats">
+    <span>Ports: <span class="stat-val" x-text="ports.length"></span></span>
+    <span>Up: <span class="stat-val stat-up" x-text="ports.filter(p=>p.link_up).length"></span></span>
+    <span>Down: <span class="stat-val stat-down" x-text="ports.filter(p=>!p.link_up).length"></span></span>
+  </div>
+</header>
+
+<nav class="sidebar">
+  <a href="index.html"><span class="icon">&#x25C8;</span> Dashboard</a>
+  <a href="ports.html" class="active"><span class="icon">&#x229E;</span> Ports</a>
+  <a href="modules.html"><span class="icon">&#x25EC;</span> Modules</a>
+  <a href="vlans.html"><span class="icon">&#x2261;</span> VLANs</a>
+  <a href="acls.html"><span class="icon">&#x26CA;</span> ACLs</a>
+  <a href="routes.html"><span class="icon">&#x21C4;</span> Routes</a>
+  <a href="logs.html"><span class="icon">&#x2630;</span> Logs</a>
+</nav>
+
+<main class="main">
+  <div class="page-title"><span class="icon">&#x229E;</span> Port Management</div>
+
+  <div class="port-grid">
+    <template x-for="port in ports" :key="port.port_id">
+      <div class="port-card" :class="{'selected': selected === port.port_id}" @click="selectPort(port.port_id)">
+        <div class="port-led" :class="port.link_up ? 'up' : 'down'"></div>
+        <div class="port-icon" :style="'color:' + (port.link_up ? 'var(--accent-green)' : 'var(--accent-red)')">&#x25A3;</div>
+        <div class="port-num" x-text="'P' + port.port_id"></div>
+        <div class="port-speed" x-text="port.speed || '—'"></div>
+      </div>
+    </template>
+  </div>
+
+  <template x-if="selected !== null && selectedStats">
+    <div class="detail-panel">
+      <h3 x-text="'Port ' + selected + ' — Detail'"></h3>
+      <div class="detail-grid">
+        <div class="detail-item"><span class="dlabel">RX Packets</span><span class="dvalue" x-text="fmtNum(selectedStats.rx_packets)"></span></div>
+        <div class="detail-item"><span class="dlabel">TX Packets</span><span class="dvalue" x-text="fmtNum(selectedStats.tx_packets)"></span></div>
+        <div class="detail-item"><span class="dlabel">RX Bytes</span><span class="dvalue" x-text="fmtBytes(selectedStats.rx_bytes)"></span></div>
+        <div class="detail-item"><span class="dlabel">TX Bytes</span><span class="dvalue" x-text="fmtBytes(selectedStats.tx_bytes)"></span></div>
+        <div class="detail-item"><span class="dlabel">RX Drops</span><span class="dvalue" :class="selectedStats.rx_drops > 0 ? 'text-red' : ''" x-text="selectedStats.rx_drops"></span></div>
+        <div class="detail-item"><span class="dlabel">TX Drops</span><span class="dvalue" :class="selectedStats.tx_drops > 0 ? 'text-red' : ''" x-text="selectedStats.tx_drops"></span></div>
+      </div>
+
+      <div class="mt-20">
+        <div class="card-header">Port Configuration</div>
+        <form @submit.prevent="updatePortConfig()" class="form-inline mt-12">
+          <div class="form-group">
+            <label>Admin State</label>
+            <select x-model="portCfg.admin_state">
+              <option value="up">Up</option>
+              <option value="down">Down</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Speed</label>
+            <select x-model="portCfg.speed">
+              <option value="auto">Auto</option>
+              <option value="1G">1G</option>
+              <option value="10G">10G</option>
+              <option value="25G">25G</option>
+              <option value="40G">40G</option>
+              <option value="100G">100G</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>MTU</label>
+            <input type="number" x-model.number="portCfg.mtu" min="64" max="9216" style="width:100px;">
+          </div>
+          <button type="submit" class="btn btn-primary">Apply</button>
+        </form>
+      </div>
+    </div>
+  </template>
+
+  <div x-show="ports.length === 0" class="empty-state">
+    <div class="icon">&#x229E;</div>
+    <div>No ports detected</div>
+  </div>
+</main>
+
+<div x-show="toast" x-transition class="toast" :class="toastClass" x-text="toastMsg"
+     x-init="$watch('toast', v => { if(v) setTimeout(()=>toast=false, 3000) })"></div>
+
+<script>
+function portsPage() {
+  return {
+    ports: [], selected: null, selectedStats: null,
+    portCfg: { admin_state: 'up', speed: 'auto', mtu: 1500 },
+    toast: false, toastMsg: '', toastClass: '',
+    refreshTimer: null,
+
+    init() {
+      this.fetchPorts();
+      setInterval(() => {
+        this.fetchPorts();
+        if (this.selected !== null) this.fetchPortStats(this.selected);
+      }, 2000);
+    },
+
+    async fetchPorts() {
+      try {
+        const d = await (await fetch('/api/ports')).json();
+        this.ports = d.ports || d || [];
+      } catch {}
+    },
+
+    async selectPort(id) {
+      this.selected = id;
+      await this.fetchPortStats(id);
+    },
+
+    async fetchPortStats(id) {
+      try {
+        const d = await (await fetch('/api/ports/' + id + '/stats')).json();
+        this.selectedStats = d;
+      } catch {}
+    },
+
+    async updatePortConfig() {
+      try {
+        const r = await fetch('/api/ports/' + this.selected + '/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.portCfg)
+        });
+        if (r.ok) { this.showToast('Port ' + this.selected + ' configuration applied', 'toast-success'); }
+        else { this.showToast('Failed to apply configuration', 'toast-error'); }
+      } catch { this.showToast('Request failed', 'toast-error'); }
+    },
+
+    showToast(msg, cls) { this.toastMsg = msg; this.toastClass = cls; this.toast = true; },
+
+    fmtNum(n) {
+      if (!n) return '0';
+      if (n >= 1e9) return (n / 1e9).toFixed(1) + 'G';
+      if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+      return String(n);
+    },
+
+    fmtBytes(b) {
+      if (!b) return '0 B';
+      if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB';
+      if (b >= 1e6) return (b / 1e6).toFixed(2) + ' MB';
+      if (b >= 1e3) return (b / 1e3).toFixed(2) + ' KB';
+      return b + ' B';
+    }
+  };
+}
+</script>
+</body>
+</html>

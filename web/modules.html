@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rSwitch — Modules</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+</head>
+<body x-data="modulesPage()" x-init="init()">
+
+<header class="header">
+  <div class="header-brand">&#x2B21; rSwitch <span>Management</span></div>
+  <div class="header-stats">
+    <span>Modules: <span class="stat-val" x-text="modules.length"></span></span>
+    <span>Active: <span class="stat-val stat-up" x-text="modules.filter(m=>m.state==='loaded'||m.loaded).length"></span></span>
+  </div>
+</header>
+
+<nav class="sidebar">
+  <a href="index.html"><span class="icon">&#x25C8;</span> Dashboard</a>
+  <a href="ports.html"><span class="icon">&#x229E;</span> Ports</a>
+  <a href="modules.html" class="active"><span class="icon">&#x25EC;</span> Modules</a>
+  <a href="vlans.html"><span class="icon">&#x2261;</span> VLANs</a>
+  <a href="acls.html"><span class="icon">&#x26CA;</span> ACLs</a>
+  <a href="routes.html"><span class="icon">&#x21C4;</span> Routes</a>
+  <a href="logs.html"><span class="icon">&#x2630;</span> Logs</a>
+</nav>
+
+<main class="main">
+  <div class="page-title"><span class="icon">&#x25EC;</span> Module Pipeline</div>
+
+  <div class="pipeline">
+    <div class="pipeline-node active">RX</div>
+    <template x-for="mod in modules" :key="mod.name">
+      <template x-fragment>
+        <div class="pipeline-arrow">&#x2192;</div>
+        <div class="pipeline-node" :class="(mod.state==='loaded'||mod.loaded) ? 'active' : 'inactive'" x-text="mod.name" @click="selectModule(mod.name)" style="cursor:pointer;"></div>
+      </template>
+    </template>
+    <div class="pipeline-arrow">&#x2192;</div>
+    <div class="pipeline-node active">TX</div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Loaded Modules</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>State</th>
+            <th>Packets</th>
+            <th>Drops</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="mod in modules" :key="mod.name">
+            <tr>
+              <td><a href="#" @click.prevent="selectModule(mod.name)" class="text-cyan" x-text="mod.name"></a></td>
+              <td x-text="mod.type || '—'"></td>
+              <td><span class="badge" :class="(mod.state==='loaded'||mod.loaded)?'badge-loaded':'badge-down'" x-text="mod.state || (mod.loaded?'loaded':'unloaded')"></span></td>
+              <td class="mono" x-text="fmtNum(mod.packets || 0)"></td>
+              <td class="mono" :class="(mod.drops||0)>0?'text-red':''" x-text="mod.drops || 0"></td>
+              <td>
+                <button class="btn btn-sm" @click="reloadModule(mod.name)">&#x21BB; Reload</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <template x-if="selectedName && selectedStats">
+    <div class="detail-panel">
+      <h3 x-text="'Module: ' + selectedName"></h3>
+      <div class="detail-grid">
+        <div class="detail-item"><span class="dlabel">Packets Processed</span><span class="dvalue" x-text="fmtNum(selectedStats.packets || 0)"></span></div>
+        <div class="detail-item"><span class="dlabel">Bytes</span><span class="dvalue" x-text="fmtBytes(selectedStats.bytes || 0)"></span></div>
+        <div class="detail-item"><span class="dlabel">Drops</span><span class="dvalue" :class="(selectedStats.drops||0)>0?'text-red':''" x-text="selectedStats.drops || 0"></span></div>
+        <div class="detail-item"><span class="dlabel">Errors</span><span class="dvalue" :class="(selectedStats.errors||0)>0?'text-red':''" x-text="selectedStats.errors || 0"></span></div>
+      </div>
+
+      <div class="mt-20">
+        <div class="card-header">Module Configuration</div>
+        <div class="mt-12">
+          <template x-for="(row, idx) in configPairs" :key="idx">
+            <div class="form-inline mb-12">
+              <div class="form-group"><label>Key</label><input type="text" x-model="row.key" style="width:200px;"></div>
+              <div class="form-group"><label>Value</label><input type="text" x-model="row.value" style="width:200px;"></div>
+              <button class="btn btn-sm btn-danger" @click="configPairs.splice(idx,1)">&#x2715;</button>
+            </div>
+          </template>
+          <div class="flex gap-8 mt-12">
+            <button class="btn btn-sm" @click="configPairs.push({key:'',value:''})">+ Add Field</button>
+            <button class="btn btn-sm btn-primary" @click="saveModuleConfig()">Apply Config</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
+</main>
+
+<div x-show="toast" x-transition class="toast" :class="toastClass" x-text="toastMsg"
+     x-init="$watch('toast', v => { if(v) setTimeout(()=>toast=false, 3000) })"></div>
+
+<script>
+function modulesPage() {
+  return {
+    modules: [], selectedName: null, selectedStats: null,
+    configPairs: [],
+    toast: false, toastMsg: '', toastClass: '',
+
+    init() {
+      this.fetchModules();
+      setInterval(() => this.fetchModules(), 5000);
+    },
+
+    async fetchModules() {
+      try {
+        const d = await (await fetch('/api/modules')).json();
+        this.modules = d.modules || d || [];
+      } catch {}
+    },
+
+    async selectModule(name) {
+      this.selectedName = name;
+      try {
+        const d = await (await fetch('/api/modules/' + encodeURIComponent(name) + '/stats')).json();
+        this.selectedStats = d;
+      } catch {}
+      this.configPairs = [{ key: '', value: '' }];
+    },
+
+    async reloadModule(name) {
+      try {
+        const r = await fetch('/api/modules/' + encodeURIComponent(name) + '/reload', { method: 'POST' });
+        if (r.ok) this.showToast('Module ' + name + ' reloaded', 'toast-success');
+        else this.showToast('Reload failed', 'toast-error');
+      } catch { this.showToast('Request failed', 'toast-error'); }
+      this.fetchModules();
+    },
+
+    async saveModuleConfig() {
+      const cfg = {};
+      this.configPairs.forEach(p => { if (p.key) cfg[p.key] = p.value; });
+      try {
+        const r = await fetch('/api/modules/' + encodeURIComponent(this.selectedName) + '/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(cfg)
+        });
+        if (r.ok) this.showToast('Config applied', 'toast-success');
+        else this.showToast('Config update failed', 'toast-error');
+      } catch { this.showToast('Request failed', 'toast-error'); }
+    },
+
+    showToast(msg, cls) { this.toastMsg = msg; this.toastClass = cls; this.toast = true; },
+
+    fmtNum(n) {
+      if (n >= 1e9) return (n / 1e9).toFixed(1) + 'G';
+      if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+      if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+      return String(n);
+    },
+    fmtBytes(b) {
+      if (b >= 1e9) return (b / 1e9).toFixed(2) + ' GB';
+      if (b >= 1e6) return (b / 1e6).toFixed(2) + ' MB';
+      if (b >= 1e3) return (b / 1e3).toFixed(2) + ' KB';
+      return b + ' B';
+    }
+  };
+}
+</script>
+</body>
+</html>

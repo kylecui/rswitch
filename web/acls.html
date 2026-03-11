@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rSwitch — ACLs</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+</head>
+<body x-data="aclsPage()" x-init="init()">
+
+<header class="header">
+  <div class="header-brand">&#x2B21; rSwitch <span>Management</span></div>
+  <div class="header-stats">
+    <span>ACL Rules: <span class="stat-val" x-text="acls.length"></span></span>
+  </div>
+</header>
+
+<nav class="sidebar">
+  <a href="index.html"><span class="icon">&#x25C8;</span> Dashboard</a>
+  <a href="ports.html"><span class="icon">&#x229E;</span> Ports</a>
+  <a href="modules.html"><span class="icon">&#x25EC;</span> Modules</a>
+  <a href="vlans.html"><span class="icon">&#x2261;</span> VLANs</a>
+  <a href="acls.html" class="active"><span class="icon">&#x26CA;</span> ACLs</a>
+  <a href="routes.html"><span class="icon">&#x21C4;</span> Routes</a>
+  <a href="logs.html"><span class="icon">&#x2630;</span> Logs</a>
+</nav>
+
+<main class="main">
+  <div class="page-title flex-between">
+    <span><span class="icon">&#x26CA;</span> Access Control Lists</span>
+    <button class="btn btn-primary" @click="showCreate = !showCreate">+ Add Rule</button>
+  </div>
+
+  <div x-show="showCreate" x-transition class="card">
+    <div class="card-header">Add ACL Rule</div>
+    <form @submit.prevent="createAcl()">
+      <div class="form-inline mt-12">
+        <div class="form-group">
+          <label>Priority</label>
+          <input type="number" x-model.number="newAcl.priority" min="0" max="65535" style="width:80px;" required>
+        </div>
+        <div class="form-group">
+          <label>Action</label>
+          <select x-model="newAcl.action">
+            <option value="permit">Permit</option>
+            <option value="deny">Deny</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Protocol</label>
+          <select x-model="newAcl.protocol">
+            <option value="any">Any</option>
+            <option value="tcp">TCP</option>
+            <option value="udp">UDP</option>
+            <option value="icmp">ICMP</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-inline mt-12">
+        <div class="form-group">
+          <label>Source IP</label>
+          <input type="text" x-model="newAcl.src_ip" placeholder="0.0.0.0/0" style="width:160px;">
+        </div>
+        <div class="form-group">
+          <label>Source Port</label>
+          <input type="text" x-model="newAcl.src_port" placeholder="any" style="width:80px;">
+        </div>
+        <div class="form-group">
+          <label>Dest IP</label>
+          <input type="text" x-model="newAcl.dst_ip" placeholder="0.0.0.0/0" style="width:160px;">
+        </div>
+        <div class="form-group">
+          <label>Dest Port</label>
+          <input type="text" x-model="newAcl.dst_port" placeholder="any" style="width:80px;">
+        </div>
+        <button type="submit" class="btn btn-primary">Add</button>
+        <button type="button" class="btn" @click="showCreate=false">Cancel</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Priority</th>
+            <th>Action</th>
+            <th>Protocol</th>
+            <th>Source</th>
+            <th>Destination</th>
+            <th>Hits</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="(acl, idx) in acls" :key="acl.id || idx">
+            <tr>
+              <td class="text-muted" x-text="acl.id || idx"></td>
+              <td x-text="acl.priority"></td>
+              <td>
+                <span class="badge" :class="acl.action === 'permit' ? 'badge-permit' : 'badge-deny'" x-text="acl.action"></span>
+              </td>
+              <td class="mono" x-text="acl.protocol || 'any'"></td>
+              <td class="mono" x-text="(acl.src_ip || 'any') + (acl.src_port && acl.src_port !== 'any' ? ':'+acl.src_port : '')"></td>
+              <td class="mono" x-text="(acl.dst_ip || 'any') + (acl.dst_port && acl.dst_port !== 'any' ? ':'+acl.dst_port : '')"></td>
+              <td class="mono" x-text="acl.hits || 0"></td>
+              <td>
+                <button class="btn btn-sm btn-danger" @click="deleteAcl(acl.id || idx)">Delete</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+    <div x-show="acls.length === 0" class="empty-state">
+      <div class="icon">&#x26CA;</div>
+      <div>No ACL rules configured</div>
+    </div>
+  </div>
+</main>
+
+<div x-show="toast" x-transition class="toast" :class="toastClass" x-text="toastMsg"
+     x-init="$watch('toast', v => { if(v) setTimeout(()=>toast=false, 3000) })"></div>
+
+<script>
+function aclsPage() {
+  return {
+    acls: [], showCreate: false,
+    newAcl: { priority: 100, action: 'permit', protocol: 'any', src_ip: '', src_port: '', dst_ip: '', dst_port: '' },
+    toast: false, toastMsg: '', toastClass: '',
+
+    init() {
+      this.fetchAcls();
+      setInterval(() => this.fetchAcls(), 5000);
+    },
+
+    async fetchAcls() {
+      try {
+        const d = await (await fetch('/api/acls')).json();
+        this.acls = d.acls || d || [];
+      } catch {}
+    },
+
+    async createAcl() {
+      const body = { ...this.newAcl };
+      if (body.src_port) body.src_port = parseInt(body.src_port) || body.src_port;
+      if (body.dst_port) body.dst_port = parseInt(body.dst_port) || body.dst_port;
+      try {
+        const r = await fetch('/api/acls', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (r.ok) { this.showToast('ACL rule added', 'toast-success'); this.showCreate = false; this.fetchAcls(); }
+        else this.showToast('Failed to add rule', 'toast-error');
+      } catch { this.showToast('Request failed', 'toast-error'); }
+    },
+
+    async deleteAcl(id) {
+      if (!confirm('Delete ACL rule #' + id + '?')) return;
+      try {
+        const r = await fetch('/api/acls/' + id, { method: 'DELETE' });
+        if (r.ok) { this.showToast('Rule deleted', 'toast-success'); this.fetchAcls(); }
+        else this.showToast('Delete failed', 'toast-error');
+      } catch { this.showToast('Request failed', 'toast-error'); }
+    },
+
+    showToast(msg, cls) { this.toastMsg = msg; this.toastClass = cls; this.toast = true; }
+  };
+}
+</script>
+</body>
+</html>
