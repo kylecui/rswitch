@@ -1,0 +1,13 @@
+{"timestamp":"2026-03-11T07:47:41+08:00","results":[
+{"profile":"l3","packet_size":64,"pps":0,"latency_p50_us":1598,"latency_p99_us":0,"cpu_percent":0}
+,
+{"profile":"l3","packet_size":512,"pps":0,"latency_p50_us":2015,"latency_p99_us":0,"cpu_percent":0}
+,
+{"profile":"l3","packet_size":1518,"pps":0,"latency_p50_us":1841,"latency_p99_us":0,"cpu_percent":0}
+,
+{"profile":"l3-acl-lab","packet_size":64,"pps":0,"latency_p50_us":1782,"latency_p99_us":0,"cpu_percent":0}
+,
+{"profile":"l3-acl-lab","packet_size":512,"pps":0,"latency_p50_us":1604,"latency_p99_us":0,"cpu_percent":0}
+,
+{"profile":"l3-acl-lab","packet_size":1518,"pps":0,"latency_p50_us":1468,"latency_p99_us":0,"cpu_percent":0}
+],"summary":{"host":"kc-ebpf-test-01","kernel":"6.14.0-1017-azure"}}
