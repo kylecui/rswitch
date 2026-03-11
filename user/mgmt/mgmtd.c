@@ -372,12 +372,6 @@ static int check_auth(struct mg_connection *c, struct mg_http_message *hm)
 		return 1;
 
 	now = time(NULL);
-	if (g_auth.lockout_until > now) {
-		json_printf(c, 429,
-			"{\"error\":\"too many authentication failures\",\"retry_after\":%ld}",
-			(long) (g_auth.lockout_until - now));
-		return 0;
-	}
 
 	expire_sessions();
 
@@ -390,30 +384,39 @@ static int check_auth(struct mg_connection *c, struct mg_http_message *hm)
 		}
 	}
 
+	if (g_auth.lockout_until > now) {
+		json_printf(c, 429,
+			"{\"error\":\"too many authentication failures\",\"retry_after\":%ld}",
+			(long) (g_auth.lockout_until - now));
+		return 0;
+	}
+
 	memset(user, 0, sizeof(user));
 	memset(pass, 0, sizeof(pass));
 	mg_http_creds(hm, user, sizeof(user), pass, sizeof(pass));
 
-	if (strcmp(user, g_ctx.cfg.auth_user) == 0 &&
-	    strcmp(pass, g_ctx.cfg.auth_password) == 0) {
-		session = NULL;
-		memset(remote_ip, 0, sizeof(remote_ip));
-		mg_snprintf(remote_ip, sizeof(remote_ip), "%M", mg_print_ip, &c->rem);
-		session = create_session(remote_ip);
-		if (session)
-			auth_set_pending_cookie(c->id, session->token);
-		g_auth.failed_attempts = 0;
-		g_auth.lockout_until = 0;
-		return 1;
-	}
+	if (user[0] != '\0') {
+		if (strcmp(user, g_ctx.cfg.auth_user) == 0 &&
+		    strcmp(pass, g_ctx.cfg.auth_password) == 0) {
+			session = NULL;
+			memset(remote_ip, 0, sizeof(remote_ip));
+			mg_snprintf(remote_ip, sizeof(remote_ip), "%M", mg_print_ip, &c->rem);
+			session = create_session(remote_ip);
+			if (session)
+				auth_set_pending_cookie(c->id, session->token);
+			g_auth.failed_attempts = 0;
+			g_auth.lockout_until = 0;
+			return 1;
+		}
 
-	g_auth.failed_attempts++;
-	max_fails = g_ctx.cfg.rate_limit_max_fails > 0 ? g_ctx.cfg.rate_limit_max_fails : 5;
-	if (g_auth.failed_attempts >= max_fails) {
-		int lockout_sec = g_ctx.cfg.rate_limit_lockout_sec > 0 ?
-			g_ctx.cfg.rate_limit_lockout_sec : 300;
-		g_auth.lockout_until = now + lockout_sec;
-		g_auth.failed_attempts = 0;
+		g_auth.failed_attempts++;
+		max_fails = g_ctx.cfg.rate_limit_max_fails > 0 ? g_ctx.cfg.rate_limit_max_fails : 5;
+		if (g_auth.failed_attempts >= max_fails) {
+			int lockout_sec = g_ctx.cfg.rate_limit_lockout_sec > 0 ?
+				g_ctx.cfg.rate_limit_lockout_sec : 300;
+			g_auth.lockout_until = now + lockout_sec;
+			g_auth.failed_attempts = 0;
+		}
 	}
 
 	mg_http_reply(c, 401,
@@ -2149,6 +2152,10 @@ int main(int argc, char **argv)
 
 	if (cli_auth_pass_set)
 		strncpy(g_ctx.cfg.auth_password, cli_auth_pass, sizeof(g_ctx.cfg.auth_password) - 1);
+
+	/* Implicitly enable auth when credentials are provided via CLI */
+	if (cli_auth_user_set || cli_auth_pass_set)
+		g_ctx.cfg.auth_enabled = 1;
 
 	snprintf(g_ctx.cfg.listen_addr, sizeof(g_ctx.cfg.listen_addr), "http://0.0.0.0:%d", g_ctx.cfg.port);
 
