@@ -3,10 +3,14 @@ Description=rSwitch XDP-based Software Switch (Development)
 After=network.target network-online.target
 Wants=network-online.target
 Documentation=https://github.com/rswitch
+OnFailure=rswitch-failsafe.service
+StartLimitBurst=3
+StartLimitIntervalSec=60
 
 [Service]
 Type=forking
 WorkingDirectory=/home/kylecui/dev/rswitch
+ExecStartPre=-/home/kylecui/dev/rswitch/scripts/rswitch-failsafe.sh teardown
 ExecStartPre=/home/kylecui/dev/rswitch/scripts/rswitch-init.sh prepare
 ExecStart=/home/kylecui/dev/rswitch/scripts/rswitch-init.sh start
 ExecStop=/home/kylecui/dev/rswitch/scripts/rswitch-init.sh stop

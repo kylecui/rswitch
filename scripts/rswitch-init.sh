@@ -102,6 +102,10 @@ cleanup_veth() {
 do_prepare() {
     check_root
     setup_directories
+
+    if [ -x "${RSWITCH_HOME}/scripts/rswitch-failsafe.sh" ]; then
+        "${RSWITCH_HOME}/scripts/rswitch-failsafe.sh" teardown 2>/dev/null || true
+    fi
     
     log "=========================================="
     log "rSwitch Preparation"

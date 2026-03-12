@@ -3,9 +3,13 @@ Description=rSwitch XDP-based Software Switch
 After=network.target network-online.target
 Wants=network-online.target
 Documentation=https://github.com/rswitch
+OnFailure=rswitch-failsafe.service
+StartLimitBurst=3
+StartLimitIntervalSec=60
 
 [Service]
 Type=forking
+ExecStartPre=-/opt/rswitch/scripts/rswitch-failsafe.sh teardown
 ExecStartPre=/opt/rswitch/scripts/rswitch-init.sh prepare
 ExecStart=/opt/rswitch/scripts/rswitch-init.sh start
 ExecStop=/opt/rswitch/scripts/rswitch-init.sh stop
@@ -16,7 +20,7 @@ RestartSec=5
 LimitMEMLOCK=infinity
 LimitNOFILE=65535
 Environment=RSWITCH_HOME=/opt/rswitch
-Environment=RSWITCH_PROFILE=all-modules-test.yaml
+Environment=RSWITCH_PROFILE=default.yaml
 Environment=RSWITCH_INTERFACES=ens34,ens35,ens36,ens37
 
 [Install]
