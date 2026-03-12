@@ -207,6 +207,7 @@ struct mgmtd_ctx {
 
 static volatile sig_atomic_t g_running = 1;
 static struct mgmtd_ctx g_ctx;
+static struct mg_mgr *g_mgr;
 
 static struct {
 	int stats_fd;
@@ -1095,6 +1096,62 @@ void mgmtd_ws_broadcast(struct mg_mgr *mgr, const char *json, size_t len)
 	}
 }
 
+static const char *audit_sev_to_str(int severity)
+{
+	switch (severity) {
+	case AUDIT_SEV_WARNING:  return "warn";
+	case AUDIT_SEV_CRITICAL: return "error";
+	default:                 return "info";
+	}
+}
+
+static void mgmtd_broadcast_event(int severity, const char *category,
+				   const char *action, const char *detail)
+{
+	char payload[1024];
+	struct timespec ts;
+
+	if (!g_mgr)
+		return;
+
+	clock_gettime(CLOCK_REALTIME, &ts);
+
+	snprintf(payload, sizeof(payload),
+		 "{\"type\":\"event\",\"severity\":\"%s\","
+		 "\"message\":\"[%s] %s: %s\",\"timestamp\":%llu}",
+		 audit_sev_to_str(severity),
+		 category ? category : "system",
+		 action ? action : "unknown",
+		 detail ? detail : "",
+		 (unsigned long long)ts.tv_sec);
+
+	mgmtd_ws_broadcast(g_mgr, payload, strlen(payload));
+}
+
+static void mgmtd_audit_log(int severity, const char *category,
+			     const char *action, int success,
+			     const char *detail_fmt, ...)
+	__attribute__((format(printf, 5, 6)));
+
+static void mgmtd_audit_log(int severity, const char *category,
+			     const char *action, int success,
+			     const char *detail_fmt, ...)
+{
+	char detail[512];
+	va_list ap;
+
+	if (detail_fmt) {
+		va_start(ap, detail_fmt);
+		vsnprintf(detail, sizeof(detail), detail_fmt, ap);
+		va_end(ap);
+	} else {
+		detail[0] = '\0';
+	}
+
+	rs_audit_log_result(severity, category, action, success, "%s", detail);
+	mgmtd_broadcast_event(severity, category, action, detail);
+}
+
 static void handle_system_info(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
 	char hostname[128] = { 0 };
@@ -1207,7 +1264,7 @@ static void handle_system_reboot(struct mg_connection *c, struct mg_http_message
 	(void) hm;
 	(void) userdata;
 
-	rs_audit_log_result(AUDIT_SEV_WARNING, AUDIT_CAT_SYSTEM, "reboot", 1,
+	mgmtd_audit_log(AUDIT_SEV_WARNING, AUDIT_CAT_SYSTEM, "reboot", 1,
 			    "reboot requested via mgmtd API");
 	ret = cmd_system("reboot");
 	if (ret != 0) {
@@ -1223,7 +1280,7 @@ static void handle_system_shutdown(struct mg_connection *c, struct mg_http_messa
 	(void) hm;
 	(void) userdata;
 
-	rs_audit_log_result(AUDIT_SEV_WARNING, AUDIT_CAT_SYSTEM, "shutdown", 1,
+	mgmtd_audit_log(AUDIT_SEV_WARNING, AUDIT_CAT_SYSTEM, "shutdown", 1,
 			    "shutdown requested via mgmtd API");
 	g_running = 0;
 	json_printf(c, 200, "{\"status\":\"stopping\"}");
@@ -1518,7 +1575,7 @@ static void handle_port_config_update(struct mg_connection *c, struct mg_http_me
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "port_config_update", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "port_config_update", 1,
 			    "ifindex=%u enabled=%u vlan_mode=%u pvid=%u",
 			    ifindex, cfg.enabled, cfg.vlan_mode, cfg.pvid);
 	json_printf(c, 200, "{\"status\":\"ok\"}");
@@ -1689,7 +1746,7 @@ static void handle_module_reload(struct mg_connection *c, struct mg_http_message
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_MODULE, "module_reload", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_MODULE, "module_reload", 1,
 			    "module=%s id=%u", st.name, st.module_id);
 	json_printf(c, 200, "{\"status\":\"ok\",\"module\":\"%s\"}", st.name);
 }
@@ -1744,7 +1801,7 @@ static void handle_module_config_update(struct mg_connection *c, struct mg_http_
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "module_config_update", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "module_config_update", 1,
 			    "module=%s param=%s", key.module_name, key.param_name);
 
 	free(module_name);
@@ -1889,7 +1946,7 @@ static void handle_vlan_create(struct mg_connection *c, struct mg_http_message *
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "vlan_create", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "vlan_create", 1,
 			    "vlan_id=%ld members=%d", vlan_id, member_count);
 	json_printf(c, 201, "{\"status\":\"created\",\"vlan_id\":%ld}", vlan_id);
 }
@@ -1927,7 +1984,7 @@ static void handle_vlan_update(struct mg_connection *c, struct mg_http_message *
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "vlan_update", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "vlan_update", 1,
 			    "vlan_id=%d member_count=%u", vlan_id, v.member_count);
 	json_printf(c, 200, "{\"status\":\"ok\"}");
 }
@@ -1956,7 +2013,7 @@ static void handle_vlan_delete(struct mg_connection *c, struct mg_http_message *
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "vlan_delete", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "vlan_delete", 1,
 			    "vlan_id=%d", vlan_id);
 	json_printf(c, 200, "{\"status\":\"deleted\"}");
 }
@@ -2178,7 +2235,7 @@ static void handle_acl_create(struct mg_connection *c, struct mg_http_message *h
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_ACL, "acl_add", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_ACL, "acl_add", 1,
 			    "proto=%u src_port=%ld dst_port=%ld action=%u", key.proto,
 			    src_port, dst_port, res.action);
 	json_printf(c, 200, "{\"status\":\"ok\"}");
@@ -2272,7 +2329,7 @@ static void handle_acl_delete(struct mg_connection *c, struct mg_http_message *h
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_ACL, "acl_delete", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_ACL, "acl_delete", 1,
 			    "acl_id=%d", target_id);
 	json_printf(c, 200, "{\"status\":\"deleted\"}");
 }
@@ -2414,7 +2471,7 @@ static void handle_route_add(struct mg_connection *c, struct mg_http_message *hm
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "route_add", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "route_add", 1,
 			    "prefix added via mgmt portal");
 	json_printf(c, 200, "{\"status\":\"ok\"}");
 }
@@ -2471,7 +2528,7 @@ static void handle_route_delete(struct mg_connection *c, struct mg_http_message 
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "route_delete", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "route_delete", 1,
 			    "route deleted via mgmt portal");
 	json_printf(c, 200, "{\"status\":\"deleted\"}");
 }
@@ -2620,7 +2677,7 @@ static void handle_profiles_apply(struct mg_connection *c, struct mg_http_messag
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_PROFILE, "profile_apply", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_PROFILE, "profile_apply", 1,
 			    "profile=%s", profile);
 	free(profile);
 	json_printf(c, 200, "{\"status\":\"ok\"}");
@@ -2732,7 +2789,7 @@ static void handle_config_snapshot_create(struct mg_connection *c, struct mg_htt
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "snapshot_create", 1,
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "snapshot_create", 1,
 			    "description=%s", desc ? desc : "manual snapshot");
 	free(desc);
 	json_printf(c, 201, "{\"status\":\"created\"}");
@@ -2758,7 +2815,7 @@ static void handle_config_rollback(struct mg_connection *c, struct mg_http_messa
 		return;
 	}
 
-	rs_audit_log_result(AUDIT_SEV_WARNING, AUDIT_CAT_CONFIG, "rollback", 1,
+	mgmtd_audit_log(AUDIT_SEV_WARNING, AUDIT_CAT_CONFIG, "rollback", 1,
 			    "snapshot=%s", id);
 	json_printf(c, 200, "{\"status\":\"ok\",\"snapshot\":\"%s\"}", id);
 }
@@ -3155,6 +3212,7 @@ int main(int argc, char **argv)
 	mgmtd_maps_init();
 
 	mg_mgr_init(&mgr);
+	g_mgr = &mgr;
 	listener = mg_http_listen(&mgr, g_ctx.cfg.listen_addr, ev_handler, &g_ctx);
 	if (!listener) {
 		RS_LOG_ERROR("Failed to listen on %s", g_ctx.cfg.listen_addr);
@@ -3171,6 +3229,7 @@ int main(int argc, char **argv)
 	while (g_running)
 		mg_mgr_poll(&mgr, 100);
 
+	g_mgr = NULL;
 	mg_mgr_free(&mgr);
 	mgmtd_maps_close();
 
