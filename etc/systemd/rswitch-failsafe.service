@@ -1,0 +1,12 @@
+[Unit]
+Description=rSwitch Fail-safe L2 Bridge
+Documentation=https://github.com/rswitch
+Conflicts=rswitch.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=FAILSAFE_BRIDGE=rswitch-br
+Environment=FAILSAFE_INTERFACES=ens34,ens35,ens36,ens37
+ExecStart=/home/kylecui/dev/rswitch/scripts/rswitch-failsafe.sh setup
+ExecStop=/home/kylecui/dev/rswitch/scripts/rswitch-failsafe.sh teardown
