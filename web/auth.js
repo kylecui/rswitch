@@ -95,15 +95,18 @@
 
   function showLoginModal() {
     ensureModal();
+
+    /* If a login flow is already in progress, return the same promise
+       so concurrent 401 callers coalesce into one auth attempt. */
+    if (loginWaiter) return loginWaiter.promise;
+
     hideLoginError();
     modalEl.hidden = false;
 
-    if (!loginWaiter) {
-      loginWaiter = {};
-      loginWaiter.promise = new Promise((resolve) => {
-        loginWaiter.resolve = resolve;
-      });
-    }
+    loginWaiter = {};
+    loginWaiter.promise = new Promise((resolve) => {
+      loginWaiter.resolve = resolve;
+    });
 
     setTimeout(() => {
       if (userEl.value) passEl.focus();

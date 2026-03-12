@@ -43,7 +43,7 @@ while [ $elapsed -lt "$WAIT_TIMEOUT" ]; do
             sleep 1
         done
         log "Launching mgmtd inside namespace '${NS_NAME}'"
-        exec ip netns exec "$NS_NAME" "$MGMTD_BIN" -f "$PROFILE_PATH" -n
+        exec nsenter --net=/run/netns/"$NS_NAME" "$MGMTD_BIN" -f "$PROFILE_PATH" -n
         # exec replaces this process — never reaches here
     fi
     sleep 1

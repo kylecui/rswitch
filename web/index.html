@@ -123,13 +123,23 @@ function dashboard() {
     },
 
     async fetchInfo() {
-      try { this.sysInfo = await (await apiFetch('/api/system/info')).json(); } catch {}
+      try {
+        const d = await (await apiFetch('/api/system/info')).json();
+        if (d.memory && typeof d.memory === 'object') {
+          d.memory = d.memory.used_mb + ' / ' + d.memory.total_mb + ' MB';
+        }
+        this.sysInfo = d;
+      } catch {}
     },
 
     async fetchHealth() {
       try {
         const d = await (await apiFetch('/api/system/health')).json();
-        this.health = d.status || d.health || '—';
+        if (d.status) { this.health = d.status; }
+        else if (typeof d.overall === 'number') {
+          const scores = ['critical', 'degraded', 'degraded', 'healthy', 'healthy', 'healthy'];
+          this.health = scores[d.overall] || 'unknown';
+        } else { this.health = d.health || '—'; }
       } catch {}
     },
 

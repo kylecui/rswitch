@@ -527,6 +527,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent-cyan); }
   justify-content: center;
   padding: 20px;
 }
+.auth-overlay[hidden] {
+  display: none !important;
+}
 
 .auth-card {
   width: min(420px, 100%);

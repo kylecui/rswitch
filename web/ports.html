@@ -134,10 +134,13 @@ function portsPage() {
 
     async updatePortConfig() {
       try {
+        const cfg = { ...this.portCfg };
+        const speedMap = { 'auto': 0, '1G': 1000, '10G': 10000, '25G': 25000, '40G': 40000, '100G': 100000 };
+        if (cfg.speed in speedMap) cfg.speed = speedMap[cfg.speed];
         const r = await apiFetch('/api/ports/' + this.selected + '/config', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(this.portCfg)
+          body: JSON.stringify(cfg)
         });
         if (r.ok) { this.showToast('Port ' + this.selected + ' configuration applied', 'toast-success'); }
         else { this.showToast('Failed to apply configuration', 'toast-error'); }

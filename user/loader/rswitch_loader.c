@@ -740,9 +740,17 @@ static int load_core_programs(struct loader_ctx *ctx)
     char path[256];
     int err;
     
+    /* Open with pin_root_path so maps with LIBBPF_PIN_BY_NAME are auto-pinned
+     * to /sys/fs/bpf/<map_name>. This is critical for mgmtd (separate process)
+     * to access shared BPF maps via bpf_obj_get().
+     */
+    LIBBPF_OPTS(bpf_object_open_opts, opts,
+        .pin_root_path = BPF_PIN_PATH,
+    );
+    
     /* Load dispatcher */
     snprintf(path, sizeof(path), "%s/dispatcher.bpf.o", BUILD_DIR);
-    ctx->dispatcher_obj = bpf_object__open(path);
+    ctx->dispatcher_obj = bpf_object__open_file(path, &opts);
     err = libbpf_get_error(ctx->dispatcher_obj);
     if (err) {
         RS_LOG_ERROR("Failed to open dispatcher: %s", strerror(-err));
@@ -768,14 +776,9 @@ static int load_core_programs(struct loader_ctx *ctx)
         return -1;
     }
     
-    /* NOTE: rs_ctx_map and rs_progs are auto-pinned by libbpf
-     * via LIBBPF_PIN_BY_NAME to /sys/fs/bpf/<map_name>
-     * No manual pinning needed!
-     */
-    
-    /* Load egress */
+    /* Load egress (same opts — reuses already-pinned maps) */
     snprintf(path, sizeof(path), "%s/egress.bpf.o", BUILD_DIR);
-    ctx->egress_obj = bpf_object__open(path);
+    ctx->egress_obj = bpf_object__open_file(path, &opts);
     err = libbpf_get_error(ctx->egress_obj);
     if (err) {
         RS_LOG_ERROR("Failed to open egress: %s", strerror(-err));

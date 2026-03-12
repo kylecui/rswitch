@@ -79,8 +79,8 @@
                 <span x-text="vlan.id"></span>
               </td>
               <td x-text="vlan.name || '—'"></td>
-              <td class="mono" x-text="(vlan.tagged_ports || vlan.tagged || []).join(', ') || '—'"></td>
-              <td class="mono" x-text="(vlan.untagged_ports || vlan.untagged || []).join(', ') || '—'"></td>
+              <td class="mono" x-text="portNames(vlan.tagged_ports || vlan.tagged)"></td>
+              <td class="mono" x-text="portNames(vlan.untagged_ports || vlan.untagged)"></td>
               <td>
                 <button class="btn btn-sm btn-danger" @click="deleteVlan(vlan.id)" x-text="'Delete'"></button>
               </td>
@@ -102,13 +102,31 @@
 <script>
 function vlansPage() {
   return {
-    vlans: [], showCreate: false,
+    vlans: [], showCreate: false, portMap: {},
     newVlan: { id: '', name: '', tagged: '', untagged: '' },
     toast: false, toastMsg: '', toastClass: '',
 
     init() {
+      this.fetchPorts();
       this.fetchVlans();
       setInterval(() => this.fetchVlans(), 5000);
+    },
+
+    async fetchPorts() {
+      try {
+        const d = await (await apiFetch('/api/ports')).json();
+        const ports = d.ports || d || [];
+        this.portMap = {};
+        ports.forEach(p => { this.portMap[p.ifindex] = p.name || ('P' + p.port_id); });
+      } catch {}
+    },
+
+    portName(ifidx) {
+      return this.portMap[ifidx] || String(ifidx);
+    },
+
+    portNames(arr) {
+      return (arr || []).map(i => this.portName(i)).join(', ') || '—';
     },
 
     async fetchVlans() {
