@@ -362,14 +362,10 @@ static int extract_session_cookie(const struct mg_str *cookie_hdr, char *token, 
 
 static int check_auth(struct mg_connection *c, struct mg_http_message *hm)
 {
-	char user[64];
-	char pass[128];
 	char token[SESSION_TOKEN_LEN * 2 + 1];
-	char remote_ip[64];
 	struct mg_str *cookie_hdr;
 	struct auth_session *session;
 	time_t now;
-	int max_fails;
 
 	if (!c || !hm)
 		return 0;
@@ -400,40 +396,14 @@ static int check_auth(struct mg_connection *c, struct mg_http_message *hm)
 		return 0;
 	}
 
-	memset(user, 0, sizeof(user));
-	memset(pass, 0, sizeof(pass));
-	mg_http_creds(hm, user, sizeof(user), pass, sizeof(pass));
-
-	if (user[0] != '\0') {
-		if (strcmp(user, g_ctx.cfg.auth_user) == 0 &&
-		    strcmp(pass, g_ctx.cfg.auth_password) == 0) {
-			session = NULL;
-			memset(remote_ip, 0, sizeof(remote_ip));
-			mg_snprintf(remote_ip, sizeof(remote_ip), "%M", mg_print_ip, &c->rem);
-			session = create_session(remote_ip);
-			if (session)
-				auth_set_pending_cookie(c->id, session->token);
-			g_auth.failed_attempts = 0;
-			g_auth.lockout_until = 0;
-			return 1;
-		}
-
-		g_auth.failed_attempts++;
-		max_fails = g_ctx.cfg.rate_limit_max_fails > 0 ? g_ctx.cfg.rate_limit_max_fails : 5;
-		if (g_auth.failed_attempts >= max_fails) {
-			int lockout_sec = g_ctx.cfg.rate_limit_lockout_sec > 0 ?
-				g_ctx.cfg.rate_limit_lockout_sec : 300;
-			g_auth.lockout_until = now + lockout_sec;
-			g_auth.failed_attempts = 0;
-		}
-	}
-
+	/* No valid session cookie — return 401 (no WWW-Authenticate header
+	 * so the browser won't show a native Basic Auth popup).
+	 * The JS login form handles credential input via /api/auth/login. */
 	mg_http_reply(c, 401,
 		      "Content-Type: application/json\r\n"
 		      "Access-Control-Allow-Origin: *\r\n"
 		      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-		      "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
-		      "WWW-Authenticate: Basic realm=\"rSwitch\"\r\n",
+		      "Access-Control-Allow-Headers: Content-Type, Authorization\r\n",
 		      "{\"error\":\"authentication required\"}");
 	return 0;
 }
