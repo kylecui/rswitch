@@ -33,6 +33,7 @@ Installation, system configuration, and production deployment.
 | [VOQd Setup](deployment/VOQd_Setup.md) | VOQd QoS scheduler — modes (BYPASS/SHADOW/ACTIVE), AF_XDP, software queues |
 | [NIC Configuration](deployment/NIC_Configuration.md) | NIC-specific setup — Intel X710/i40e, Mellanox CX-5/mlx5, Hyper-V hv_netvsc |
 | [Systemd Integration](deployment/Systemd_Integration.md) | Service units, auto-start, watchdog, and production deployment patterns |
+| [Management Portal](deployment/Management_Portal.md) | Web management UI — namespace isolation, DHCP, REST API, real-time monitoring |
 
 ---
 
@@ -84,7 +85,8 @@ docs/
 │   ├── Configuration.md
 │   ├── VOQd_Setup.md
 │   ├── NIC_Configuration.md
-│   └── Systemd_Integration.md
+│   ├── Systemd_Integration.md
+│   └── Management_Portal.md
 ├── development/               # Developer documentation
 │   ├── Platform_Architecture.md
 │   ├── Architecture.md
@@ -117,6 +119,7 @@ docs/
 - **Platform overview?** → [Platform Architecture](development/Platform_Architecture.md)
 - **Building a module?** → [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) or [Module Developer Guide](development/Module_Developer_Guide.md)
 - **Deploying to production?** → [Systemd Integration](deployment/Systemd_Integration.md)
+- **Management UI?** → [Management Portal](deployment/Management_Portal.md)
 - **Need API details?** → [API Reference](development/API_Reference.md)
 - **Intent-based config?** → [Intent Engine](usage/Intent_Engine.md)
 - **What's coming next?** → [Product Backlog](backlog/product-backlog.md)
