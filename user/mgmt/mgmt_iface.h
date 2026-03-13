@@ -15,6 +15,7 @@ struct rs_mgmt_iface_config {
 	char veth_ns[32];       /* namespace-side veth name */
 	int  mode;              /* 0=dhcp, 1=static */
 	char static_ip[46];     /* static IP (CIDR notation, e.g. "10.0.0.1/24") */
+	char gateway[46];       /* default gateway (e.g. "10.0.0.1"), empty = none */
 	int  mgmt_vlan;         /* management VLAN tag (0 = untagged) */
 };
 
@@ -56,5 +57,12 @@ int rs_mgmt_iface_destroy(const struct rs_mgmt_iface_config *cfg);
  * Returns 1 if healthy, 0 if not.
  */
 int rs_mgmt_iface_is_healthy(const struct rs_mgmt_iface_config *cfg);
+
+/*
+ * Reconfigure management IP at runtime.
+ * Tears down existing IP config, applies new mode (dhcp/static).
+ * Returns 0 on success, negative errno on failure.
+ */
+int rs_mgmt_iface_reconfigure(const struct rs_mgmt_iface_config *cfg);
 
 #endif

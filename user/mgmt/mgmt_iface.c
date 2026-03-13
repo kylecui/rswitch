@@ -165,12 +165,22 @@ int rs_mgmt_iface_obtain_ip(const struct rs_mgmt_iface_config *cfg)
 			RS_LOG_ERROR("Failed to assign static IP %s", cfg->static_ip);
 			return -EIO;
 		}
+		if (cfg->gateway[0] != '\0') {
+			snprintf(cmd, sizeof(cmd),
+				 "ip netns exec %s ip route replace default via %s dev %s",
+				 cfg->mgmt_ns, cfg->gateway, cfg->veth_ns);
+			if (run_cmd(cmd) != 0)
+				RS_LOG_WARN("Failed to set gateway %s", cfg->gateway);
+		}
 		RS_LOG_INFO("Static IP %s assigned to %s", cfg->static_ip, cfg->veth_ns);
 		return 0;
 	}
 
+	/* --persistent: keep retrying even after carrier loss / NAK
+	 * --noipv4ll:   do not fall back to link-local (we want a real lease)
+	 * -b:           background after initial fork                        */
 	snprintf(cmd, sizeof(cmd),
-		 "ip netns exec %s dhcpcd -b %s 2>/dev/null",
+		 "ip netns exec %s dhcpcd --persistent --noipv4ll -b %s 2>/dev/null",
 		 cfg->mgmt_ns, cfg->veth_ns);
 
 	if (run_cmd(cmd) != 0) {
@@ -249,4 +259,29 @@ int rs_mgmt_iface_is_healthy(const struct rs_mgmt_iface_config *cfg)
 		 cfg->mgmt_ns, cfg->veth_ns);
 
 	return run_cmd(cmd) == 0 ? 1 : 0;
+}
+
+int rs_mgmt_iface_reconfigure(const struct rs_mgmt_iface_config *cfg)
+{
+	char cmd[512];
+
+	if (!cfg)
+		return -EINVAL;
+
+	snprintf(cmd, sizeof(cmd),
+		 "ip netns exec %s dhcpcd -k %s 2>/dev/null || true",
+		 cfg->mgmt_ns, cfg->veth_ns);
+	run_cmd(cmd);
+
+	snprintf(cmd, sizeof(cmd),
+		 "ip netns exec %s ip addr flush dev %s scope global 2>/dev/null || true",
+		 cfg->mgmt_ns, cfg->veth_ns);
+	run_cmd(cmd);
+
+	snprintf(cmd, sizeof(cmd),
+		 "ip netns exec %s ip route flush dev %s 2>/dev/null || true",
+		 cfg->mgmt_ns, cfg->veth_ns);
+	run_cmd(cmd);
+
+	return rs_mgmt_iface_obtain_ip(cfg);
 }
