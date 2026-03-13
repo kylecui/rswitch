@@ -3245,7 +3245,7 @@ static void ws_timer_fn(void *arg)
 		g_stats_event_counter = 0;
 		snprintf(payload, sizeof(payload),
 			 "ports=%d modules=%d rx=%llu tx=%llu uptime=%llus",
-			 port_count, module_count,
+			 port_count, g_ctx.profile_module_count,
 			 (unsigned long long) total_rx,
 			 (unsigned long long) total_tx,
 			 (unsigned long long) uptime_sec());
