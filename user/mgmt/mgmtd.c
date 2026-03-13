@@ -31,6 +31,7 @@
 #include <net/if.h>
 #include <arpa/inet.h>
 #include <sys/utsname.h>
+#include <pthread.h>
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
@@ -61,6 +62,13 @@
 #define ACL_PP_MAP_PATH "/sys/fs/bpf/acl_pp_map"
 #define ACL_CONFIG_MAP_PATH "/sys/fs/bpf/acl_config_map"
 #define ROUTE_TBL_MAP_PATH "/sys/fs/bpf/route_tbl"
+#define RS_EVENT_BUS_PATH "/sys/fs/bpf/rs_event_bus"
+
+/* Event type ranges (must match uapi.h) */
+#define RS_EVENT_L2_BASE        0x0100
+#define RS_EVENT_ACL_BASE       0x0200
+#define RS_EVENT_MIRROR_BASE    0x0400
+#define RS_EVENT_ERROR_BASE     0xFF00
 
 struct acl_5tuple_key {
 	__u8 proto;
@@ -232,6 +240,26 @@ static struct {
 	     .acl_pdp_fd = -1, .acl_psp_fd = -1, .acl_pp_fd = -1,
 	     .acl_config_fd = -1, .route_tbl_fd = -1, .ncpus = 0,
 	     .initialized = false };
+
+/* ── Live event tracking state ── */
+
+struct port_link_state {
+	__u32 ifindex;
+	char name[IF_NAMESIZE];
+	int link_up;
+	int valid;
+};
+
+static int g_prev_health = -1;
+static struct port_link_state g_port_links[RS_MAX_INTERFACES];
+static int g_port_link_count;
+static int g_event_bus_fd = -1;
+static struct ring_buffer *g_event_rb;
+static pthread_t g_event_thread;
+static volatile int g_event_thread_running;
+static int g_stats_event_counter;
+
+#define STATS_EVENT_INTERVAL 15
 
 #define MAX_SESSIONS 64
 #define SESSION_TOKEN_LEN 32
@@ -1118,8 +1146,10 @@ static void mgmtd_broadcast_event(int severity, const char *category,
 
 	snprintf(payload, sizeof(payload),
 		 "{\"type\":\"event\",\"severity\":\"%s\","
+		 "\"category\":\"%s\","
 		 "\"message\":\"[%s] %s: %s\",\"timestamp\":%llu}",
 		 audit_sev_to_str(severity),
+		 category ? category : "system",
 		 category ? category : "system",
 		 action ? action : "unknown",
 		 detail ? detail : "",
@@ -1150,6 +1180,130 @@ static void mgmtd_audit_log(int severity, const char *category,
 
 	rs_audit_log_result(severity, category, action, success, "%s", detail);
 	mgmtd_broadcast_event(severity, category, action, detail);
+}
+
+static const char *bpf_event_category(uint32_t event_type)
+{
+	switch (event_type & 0xFF00) {
+	case RS_EVENT_L2_BASE:    return "bpf";
+	case RS_EVENT_ACL_BASE:   return "bpf";
+	case RS_EVENT_MIRROR_BASE: return "bpf";
+	case RS_EVENT_ERROR_BASE: return "bpf";
+	default:                  return "bpf";
+	}
+}
+
+static const char *bpf_event_action(uint32_t event_type)
+{
+	switch (event_type) {
+	case 0x0101: return "mac_learned";
+	case 0x0102: return "mac_moved";
+	case 0x0103: return "mac_aged";
+	case 0x0201: return "acl_hit";
+	case 0x0202: return "acl_deny";
+	case 0xFF01: return "parse_error";
+	case 0xFF02: return "map_full";
+	default:     return "bpf_event";
+	}
+}
+
+static int event_bus_callback(void *ctx, void *data, size_t size)
+{
+	uint32_t event_type;
+	char detail[256];
+
+	(void) ctx;
+
+	if (size < sizeof(uint32_t))
+		return 0;
+
+	event_type = *(uint32_t *)data;
+
+	if (event_type >= RS_EVENT_L2_BASE && event_type <= 0x0103 && size >= 20) {
+		uint8_t *mac = (uint8_t *)data + 8;
+		uint16_t vlan = 0;
+		uint32_t ifidx = 0;
+
+		if (size >= 18)
+			memcpy(&vlan, (uint8_t *)data + 14, sizeof(vlan));
+		if (size >= 22)
+			memcpy(&ifidx, (uint8_t *)data + 16, sizeof(ifidx));
+
+		snprintf(detail, sizeof(detail),
+			 "MAC %02x:%02x:%02x:%02x:%02x:%02x VLAN=%u ifindex=%u",
+			 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+			 vlan, ifidx);
+	} else if (event_type >= RS_EVENT_ACL_BASE && event_type <= 0x0202) {
+		snprintf(detail, sizeof(detail), "event_type=0x%04x size=%zu",
+			 event_type, size);
+	} else if (event_type >= RS_EVENT_ERROR_BASE) {
+		snprintf(detail, sizeof(detail), "error event 0x%04x size=%zu",
+			 event_type, size);
+	} else {
+		snprintf(detail, sizeof(detail), "type=0x%04x size=%zu",
+			 event_type, size);
+	}
+
+	mgmtd_broadcast_event(
+		event_type >= RS_EVENT_ERROR_BASE ? AUDIT_SEV_CRITICAL : AUDIT_SEV_INFO,
+		bpf_event_category(event_type),
+		bpf_event_action(event_type),
+		detail);
+
+	return 0;
+}
+
+static void *event_bus_thread(void *arg)
+{
+	(void) arg;
+
+	while (g_event_thread_running && g_event_rb)
+		ring_buffer__poll(g_event_rb, 200);
+
+	return NULL;
+}
+
+static void event_bus_init(void)
+{
+	g_event_bus_fd = bpf_obj_get(RS_EVENT_BUS_PATH);
+	if (g_event_bus_fd < 0) {
+		RS_LOG_WARN("Event bus not available: %s", strerror(errno));
+		return;
+	}
+
+	g_event_rb = ring_buffer__new(g_event_bus_fd, event_bus_callback, NULL, NULL);
+	if (!g_event_rb) {
+		RS_LOG_WARN("Failed to create ringbuf consumer");
+		close(g_event_bus_fd);
+		g_event_bus_fd = -1;
+		return;
+	}
+
+	g_event_thread_running = 1;
+	if (pthread_create(&g_event_thread, NULL, event_bus_thread, NULL) != 0) {
+		RS_LOG_WARN("Failed to start event bus thread");
+		ring_buffer__free(g_event_rb);
+		g_event_rb = NULL;
+		close(g_event_bus_fd);
+		g_event_bus_fd = -1;
+		return;
+	}
+
+	RS_LOG_INFO("BPF event bus consumer started");
+}
+
+static void event_bus_cleanup(void)
+{
+	if (g_event_thread_running) {
+		g_event_thread_running = 0;
+		pthread_join(g_event_thread, NULL);
+	}
+	if (g_event_rb)
+		ring_buffer__free(g_event_rb);
+	if (g_event_bus_fd >= 0)
+		close(g_event_bus_fd);
+	g_event_rb = NULL;
+	g_event_bus_fd = -1;
 }
 
 static void handle_system_info(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -3000,6 +3154,103 @@ static void ws_timer_fn(void *arg)
 		 (unsigned long long) total_tx);
 
 	mgmtd_ws_broadcast(mgr, payload, strlen(payload));
+
+	/* Health change detection */
+	{
+		struct rs_health_status hs;
+
+		if (rs_watchdog_check_health(&hs) == 0) {
+			if (g_prev_health >= 0 && hs.overall != g_prev_health) {
+				const char *label_old = g_prev_health >= 4 ? "healthy" :
+							g_prev_health >= 2 ? "degraded" : "critical";
+				const char *label_new = hs.overall >= 4 ? "healthy" :
+							hs.overall >= 2 ? "degraded" : "critical";
+				int sev = hs.overall < g_prev_health ?
+					  AUDIT_SEV_WARNING : AUDIT_SEV_INFO;
+
+				if (hs.overall <= 1)
+					sev = AUDIT_SEV_CRITICAL;
+
+				snprintf(payload, sizeof(payload),
+					 "health transitioned %s -> %s (score %d -> %d)",
+					 label_old, label_new, g_prev_health, hs.overall);
+				mgmtd_broadcast_event(sev, "system", "health_change",
+						      payload);
+			}
+			g_prev_health = hs.overall;
+		}
+	}
+
+	/* Port link-state change detection */
+	if (g_maps.port_config_fd >= 0) {
+		__u32 key, next;
+		int idx = 0;
+
+		if (bpf_map_get_next_key(g_maps.port_config_fd, NULL, &next) == 0) {
+			do {
+				struct rs_port_config p;
+
+				if (bpf_map_lookup_elem(g_maps.port_config_fd, &next, &p) == 0 &&
+				    idx < RS_MAX_INTERFACES) {
+					char name[IF_NAMESIZE] = "unknown";
+					char oper[32] = "unknown";
+					int link_up;
+					FILE *fp;
+					char path[128];
+
+					if_indextoname(p.ifindex, name);
+
+					snprintf(path, sizeof(path),
+						 "/sys/class/net/%s/operstate", name);
+					fp = fopen(path, "r");
+					if (fp) {
+						if (fgets(oper, sizeof(oper), fp))
+							oper[strcspn(oper, "\r\n")] = '\0';
+						fclose(fp);
+					}
+					link_up = (strcmp(oper, "up") == 0) ? 1 : 0;
+
+					if (g_port_links[idx].valid &&
+					    g_port_links[idx].ifindex == p.ifindex &&
+					    g_port_links[idx].link_up != link_up) {
+						int sev = link_up ? AUDIT_SEV_INFO :
+								    AUDIT_SEV_WARNING;
+
+						snprintf(payload, sizeof(payload),
+							 "%s (ifindex %u) link %s",
+							 name, p.ifindex,
+							 link_up ? "up" : "down");
+						mgmtd_broadcast_event(sev, "port",
+								      "link_change",
+								      payload);
+					}
+
+					g_port_links[idx].ifindex = p.ifindex;
+					strncpy(g_port_links[idx].name, name,
+						sizeof(g_port_links[idx].name) - 1);
+					g_port_links[idx].link_up = link_up;
+					g_port_links[idx].valid = 1;
+					idx++;
+				}
+
+				key = next;
+			} while (bpf_map_get_next_key(g_maps.port_config_fd, &key, &next) == 0);
+		}
+		g_port_link_count = idx;
+	}
+
+	/* Periodic stats summary as event (every STATS_EVENT_INTERVAL polls) */
+	g_stats_event_counter++;
+	if (g_stats_event_counter >= STATS_EVENT_INTERVAL) {
+		g_stats_event_counter = 0;
+		snprintf(payload, sizeof(payload),
+			 "ports=%d modules=%d rx=%llu tx=%llu uptime=%llus",
+			 port_count, module_count,
+			 (unsigned long long) total_rx,
+			 (unsigned long long) total_tx,
+			 (unsigned long long) uptime_sec());
+		mgmtd_broadcast_event(AUDIT_SEV_INFO, "stats", "summary", payload);
+	}
 }
 
 static void handle_preflight(struct mg_connection *c)
@@ -3313,6 +3564,7 @@ int main(int argc, char **argv)
 	}
 
 	mgmtd_maps_init();
+	event_bus_init();
 
 	mg_mgr_init(&mgr);
 	g_mgr = &mgr;
@@ -3320,6 +3572,7 @@ int main(int argc, char **argv)
 	if (!listener) {
 		RS_LOG_ERROR("Failed to listen on %s", g_ctx.cfg.listen_addr);
 		mg_mgr_free(&mgr);
+		event_bus_cleanup();
 		mgmtd_maps_close();
 		if (g_ctx.cfg.use_namespace && !g_ctx.loader_managed_veth)
 			rs_mgmt_iface_destroy(&g_ctx.mgmt_cfg);
@@ -3334,6 +3587,7 @@ int main(int argc, char **argv)
 
 	g_mgr = NULL;
 	mg_mgr_free(&mgr);
+	event_bus_cleanup();
 	mgmtd_maps_close();
 
 	if (g_ctx.cfg.use_namespace && !g_ctx.loader_managed_veth)

@@ -389,6 +389,20 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent-cyan); }
 .log-entry.error .log-sev { color: var(--accent-red); }
 .log-entry .log-msg { color: var(--text-primary); }
 
+.log-entry .log-cat {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 3px; white-space: nowrap;
+  background: var(--bg-secondary); color: var(--text-secondary);
+}
+.log-cat.cat-system { background: #1a3a4a; color: #5ec4ff; }
+.log-cat.cat-port   { background: #1a3a2a; color: #5effa0; }
+.log-cat.cat-bpf    { background: #3a1a4a; color: #c49fff; }
+.log-cat.cat-config { background: #3a3a1a; color: #ffe05e; }
+.log-cat.cat-stats  { background: #1a2a3a; color: #8ab4f8; }
+.log-cat.cat-acl    { background: #3a2a1a; color: #ffb05e; }
+.log-cat.cat-module { background: #2a1a3a; color: #d49fff; }
+.log-cat.cat-user   { background: #1a3a3a; color: #5effee; }
+
 .log-toolbar {
   display: flex; align-items: center; gap: 12px;
   margin-bottom: 12px; flex-wrap: wrap;

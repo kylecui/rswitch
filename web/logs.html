@@ -36,11 +36,24 @@
 
   <div class="log-toolbar">
     <div class="form-group" style="margin:0;">
-      <select x-model="filter" style="width:120px;">
-        <option value="all">All</option>
+      <select x-model="filterSeverity" style="width:120px;">
+        <option value="all">All Severity</option>
         <option value="info">Info</option>
         <option value="warn">Warning</option>
         <option value="error">Error</option>
+      </select>
+    </div>
+    <div class="form-group" style="margin:0;">
+      <select x-model="filterCategory" style="width:130px;">
+        <option value="all">All Categories</option>
+        <option value="system">System</option>
+        <option value="port">Port</option>
+        <option value="bpf">BPF</option>
+        <option value="config">Config</option>
+        <option value="stats">Stats</option>
+        <option value="acl">ACL</option>
+        <option value="module">Module</option>
+        <option value="user">User</option>
       </select>
     </div>
     <div class="form-group" style="margin:0;">
@@ -55,6 +68,7 @@
     <template x-for="ev in filtered" :key="ev.id">
       <div class="log-entry" :class="ev.severity">
         <span class="log-time" x-text="ev.time"></span>
+        <span class="log-cat" :class="'cat-' + ev.category" x-text="ev.category"></span>
         <span class="log-sev" x-text="ev.severity"></span>
         <span class="log-msg" x-text="ev.message"></span>
       </div>
@@ -70,11 +84,13 @@
 function logsPage() {
   return {
     events: [], wsState: 'disconnected', ws: null,
-    filter: 'all', search: '', paused: false, eventId: 0,
+    filterSeverity: 'all', filterCategory: 'all',
+    search: '', paused: false, eventId: 0,
 
     get filtered() {
       return this.events.filter(ev => {
-        if (this.filter !== 'all' && ev.severity !== this.filter) return false;
+        if (this.filterSeverity !== 'all' && ev.severity !== this.filterSeverity) return false;
+        if (this.filterCategory !== 'all' && ev.category !== this.filterCategory) return false;
         if (this.search && !ev.message.toLowerCase().includes(this.search.toLowerCase())) return false;
         return true;
       });
@@ -96,9 +112,11 @@ function logsPage() {
           const msg = JSON.parse(e.data);
           if (msg.type === 'event') {
             const ts = msg.timestamp ? new Date(msg.timestamp * 1000) : new Date();
+            const cat = msg.category || this.inferCategory(msg.message);
             this.events.push({
               id: ++this.eventId,
               severity: msg.severity || 'info',
+              category: cat,
               message: msg.message || '',
               time: ts.toLocaleTimeString()
             });
@@ -110,6 +128,12 @@ function logsPage() {
           }
         } catch {}
       };
+    },
+
+    inferCategory(message) {
+      if (!message) return 'system';
+      const m = message.match(/^\[(\w+)\]/);
+      return m ? m[1] : 'system';
     }
   };
 }
