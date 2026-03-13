@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rSwitch — Network</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="auth.js"></script>
+<script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+</head>
+<body x-data="networkPage()" x-init="init()">
+
+<header class="header">
+  <div class="header-brand">&#x2B21; rSwitch <span>Management</span></div>
+  <div class="header-stats">
+    <span>Mode: <span class="stat-val" x-text="net.mode || '—'"></span></span>
+    <span>IP: <span class="stat-val" x-text="net.current_ip || '—'"></span></span>
+  </div>
+  <button class="btn btn-sm" type="button" onclick="authLogout()">Logout</button>
+</header>
+
+<nav class="sidebar">
+  <a href="index.html"><span class="icon">&#x25C8;</span> Dashboard</a>
+  <a href="ports.html"><span class="icon">&#x229E;</span> Ports</a>
+  <a href="modules.html"><span class="icon">&#x25EC;</span> Modules</a>
+  <a href="vlans.html"><span class="icon">&#x2261;</span> VLANs</a>
+  <a href="acls.html"><span class="icon">&#x26CA;</span> ACLs</a>
+  <a href="routes.html"><span class="icon">&#x21C4;</span> Routes</a>
+  <a href="logs.html"><span class="icon">&#x2630;</span> Logs</a>
+  <a href="network.html" class="active"><span class="icon">&#x2316;</span> Network</a>
+</nav>
+
+<main class="main">
+  <div class="page-title"><span class="icon">&#x2316;</span> Management Network</div>
+
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="label">Mode</div>
+      <div class="value" :class="net.mode === 'dhcp' ? 'cyan' : 'blue'" x-text="(net.mode || '—').toUpperCase()"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Current IP</div>
+      <div class="value green" x-text="net.current_ip || '—'"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Gateway</div>
+      <div class="value cyan" x-text="net.current_gateway || '—'"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Interface</div>
+      <div class="value" x-text="net.interface || '—'"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Namespace</div>
+      <div class="value" x-text="net.namespace || '—'"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">MGMT VLAN</div>
+      <div class="value amber" x-text="net.mgmt_vlan != null ? net.mgmt_vlan : '—'"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Network Configuration</div>
+
+    <form @submit.prevent="applyConfig()" style="max-width:480px;">
+      <div class="form-group">
+        <label>Address Mode</label>
+        <select x-model="form.mode" @change="onModeChange()">
+          <option value="dhcp">DHCP (Automatic)</option>
+          <option value="static">Static (Manual)</option>
+        </select>
+      </div>
+
+      <template x-if="form.mode === 'static'">
+        <div>
+          <div class="form-group">
+            <label>Static IP (CIDR)</label>
+            <input type="text" x-model="form.static_ip" placeholder="e.g. 10.174.29.100/24" required>
+          </div>
+          <div class="form-group">
+            <label>Gateway</label>
+            <input type="text" x-model="form.gateway" placeholder="e.g. 10.174.29.1">
+          </div>
+        </div>
+      </template>
+
+      <div style="display:flex; gap:8px; margin-top:16px;">
+        <button type="submit" class="btn btn-primary" :disabled="saving">
+          <span x-show="!saving">Apply</span>
+          <span x-show="saving" class="spinner"></span>
+          <span x-show="saving">Applying…</span>
+        </button>
+        <button type="button" class="btn" @click="resetForm()">Reset</button>
+      </div>
+    </form>
+
+    <div x-show="note" class="mt-12" style="font-size:12px; color:var(--text-secondary);">
+      <strong>Note:</strong> Changing from DHCP to static (or vice versa) will reconfigure the management
+      interface immediately. If you are connected via the management IP, you may lose connectivity
+      and need to reconnect at the new address.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Current State (Live)</div>
+    <div class="detail-grid">
+      <div class="detail-item">
+        <span class="dlabel">Mode</span>
+        <span class="dvalue" x-text="net.mode || '—'"></span>
+      </div>
+      <div class="detail-item">
+        <span class="dlabel">Current IP</span>
+        <span class="dvalue" x-text="net.current_ip || '—'"></span>
+      </div>
+      <div class="detail-item">
+        <span class="dlabel">Static IP (config)</span>
+        <span class="dvalue" x-text="net.static_ip || '—'"></span>
+      </div>
+      <div class="detail-item">
+        <span class="dlabel">Gateway (config)</span>
+        <span class="dvalue" x-text="net.gateway || '—'"></span>
+      </div>
+      <div class="detail-item">
+        <span class="dlabel">Current Gateway</span>
+        <span class="dvalue" x-text="net.current_gateway || '—'"></span>
+      </div>
+      <div class="detail-item">
+        <span class="dlabel">Interface</span>
+        <span class="dvalue" x-text="net.interface || '—'"></span>
+      </div>
+      <div class="detail-item">
+        <span class="dlabel">Namespace</span>
+        <span class="dvalue" x-text="net.namespace || '—'"></span>
+      </div>
+      <div class="detail-item">
+        <span class="dlabel">MGMT VLAN</span>
+        <span class="dvalue" x-text="net.mgmt_vlan != null ? net.mgmt_vlan : '—'"></span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div x-show="toast" x-transition class="toast" :class="toastClass" x-text="toastMsg"
+     x-init="$watch('toast', v => { if(v) setTimeout(()=>toast=false, 4000) })"></div>
+
+<script>
+function networkPage() {
+  return {
+    net: {},
+    form: { mode: 'dhcp', static_ip: '', gateway: '' },
+    saving: false, note: true,
+    toast: false, toastMsg: '', toastClass: '',
+
+    init() {
+      this.fetchNetwork();
+      setInterval(() => this.fetchNetwork(), 5000);
+    },
+
+    async fetchNetwork() {
+      try {
+        const r = await apiFetch('/api/system/network');
+        if (!r.ok) return;
+        this.net = await r.json();
+        /* Only update form if user isn't actively editing */
+        if (!this.saving) {
+          this.form.mode = this.net.mode || 'dhcp';
+          if (this.net.static_ip) this.form.static_ip = this.net.static_ip;
+          if (this.net.gateway) this.form.gateway = this.net.gateway;
+        }
+      } catch {}
+    },
+
+    onModeChange() {
+      /* Pre-fill static fields from current values when switching to static */
+      if (this.form.mode === 'static' && !this.form.static_ip && this.net.current_ip) {
+        this.form.static_ip = this.net.current_ip;
+      }
+      if (this.form.mode === 'static' && !this.form.gateway && this.net.current_gateway) {
+        this.form.gateway = this.net.current_gateway;
+      }
+    },
+
+    resetForm() {
+      this.form.mode = this.net.mode || 'dhcp';
+      this.form.static_ip = this.net.static_ip || '';
+      this.form.gateway = this.net.gateway || '';
+    },
+
+    async applyConfig() {
+      if (this.saving) return;
+
+      if (this.form.mode === 'static') {
+        if (!this.form.static_ip || !this.form.static_ip.includes('/')) {
+          this.showToast('Static IP must be in CIDR format (e.g. 10.0.0.1/24)', 'toast-error');
+          return;
+        }
+      }
+
+      const body = { mode: this.form.mode };
+      if (this.form.mode === 'static') {
+        body.static_ip = this.form.static_ip;
+        if (this.form.gateway) body.gateway = this.form.gateway;
+      }
+
+      this.saving = true;
+      try {
+        const r = await apiFetch('/api/system/network', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (r.ok) {
+          this.showToast('Network configuration applied', 'toast-success');
+          /* Refresh after a short delay to let reconfiguration settle */
+          setTimeout(() => this.fetchNetwork(), 2000);
+        } else {
+          let msg = 'Failed to apply configuration';
+          try { const d = await r.json(); if (d.error) msg = d.error; } catch {}
+          this.showToast(msg, 'toast-error');
+        }
+      } catch {
+        this.showToast('Request failed — connection may have changed', 'toast-error');
+      } finally {
+        this.saving = false;
+      }
+    },
+
+    showToast(msg, cls) { this.toastMsg = msg; this.toastClass = cls; this.toast = true; }
+  };
+}
+</script>
+</body>
+</html>
