@@ -95,6 +95,8 @@ management:
   use_namespace: true
   namespace_name: rswitch-mgmt
   iface_mode: dhcp
+  # static_ip: 10.174.29.100/24
+  # gateway: 10.174.29.1
   mgmt_vlan: 1
   auth_enabled: true
   auth_user: admin

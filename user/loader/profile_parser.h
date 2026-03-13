@@ -73,6 +73,7 @@ struct rs_profile_mgmt {
     char namespace_name[64];     /* namespace name, default "rswitch-mgmt" */
     int iface_mode;              /* 0 = dhcp, 1 = static */
     char static_ip[46];          /* static IP in CIDR, e.g. "10.0.0.100/24" */
+    char gateway[46];            /* default gateway, e.g. "10.0.0.1" */
     int mgmt_vlan;               /* management VLAN (0 = untagged) */
     int auth_enabled;            /* require HTTP Basic auth */
     char auth_user[64];          /* username */

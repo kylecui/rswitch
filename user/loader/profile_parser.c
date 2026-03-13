@@ -282,6 +282,9 @@ static void profile_merge(struct rs_profile *child, const struct rs_profile *par
     if (strcmp(child->mgmt.static_ip, defaults.mgmt.static_ip) == 0)
         strncpy(child->mgmt.static_ip, parent->mgmt.static_ip,
                 sizeof(child->mgmt.static_ip) - 1);
+    if (strcmp(child->mgmt.gateway, defaults.mgmt.gateway) == 0)
+        strncpy(child->mgmt.gateway, parent->mgmt.gateway,
+                sizeof(child->mgmt.gateway) - 1);
     if (child->mgmt.mgmt_vlan == defaults.mgmt.mgmt_vlan)
         child->mgmt.mgmt_vlan = parent->mgmt.mgmt_vlan;
     if (child->mgmt.auth_enabled == defaults.mgmt.auth_enabled)
@@ -978,6 +981,8 @@ static int parse_management(FILE *fp, struct rs_profile_mgmt *mgmt)
             else if (strcmp(value, "static") == 0) mgmt->iface_mode = 1;
         } else if (strcmp(key, "static_ip") == 0) {
             strncpy(mgmt->static_ip, value, sizeof(mgmt->static_ip) - 1);
+        } else if (strcmp(key, "gateway") == 0) {
+            strncpy(mgmt->gateway, value, sizeof(mgmt->gateway) - 1);
         } else if (strcmp(key, "mgmt_vlan") == 0) {
             mgmt->mgmt_vlan = atoi(value);
         } else if (strcmp(key, "auth_enabled") == 0) {
@@ -1216,6 +1221,7 @@ void profile_print(const struct rs_profile *profile)
     printf("  Namespace name: %s\n", profile->mgmt.namespace_name);
     printf("  Interface mode: %s\n", profile->mgmt.iface_mode ? "static" : "dhcp");
     printf("  Static IP: %s\n", profile->mgmt.static_ip[0] ? profile->mgmt.static_ip : "(none)");
+    printf("  Gateway: %s\n", profile->mgmt.gateway[0] ? profile->mgmt.gateway : "(none)");
     printf("  Management VLAN: %d\n", profile->mgmt.mgmt_vlan);
     printf("  Auth enabled: %s\n", profile->mgmt.auth_enabled ? "yes" : "no");
     printf("  Auth user: %s\n", profile->mgmt.auth_user[0] ? profile->mgmt.auth_user : "(none)");
