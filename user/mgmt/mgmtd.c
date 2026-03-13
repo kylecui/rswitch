@@ -1286,6 +1286,103 @@ static void handle_system_shutdown(struct mg_connection *c, struct mg_http_messa
 	json_printf(c, 200, "{\"status\":\"stopping\"}");
 }
 
+static void handle_network_get(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
+{
+	struct mgmtd_ctx *ctx = userdata;
+	char current_ip[64] = "";
+	char gw_buf[128] = "";
+	char cmd[512];
+	FILE *fp;
+
+	(void) hm;
+	if (!ctx) ctx = &g_ctx;
+
+	rs_mgmt_iface_get_ip(&ctx->mgmt_cfg, current_ip, sizeof(current_ip));
+
+	snprintf(cmd, sizeof(cmd),
+		 "ip netns exec %s ip -4 route show default 2>/dev/null | grep -oP 'via \\K[^ ]+'",
+		 ctx->mgmt_cfg.mgmt_ns);
+	fp = popen(cmd, "r");
+	if (fp) {
+		if (fgets(gw_buf, sizeof(gw_buf), fp)) {
+			char *nl = strchr(gw_buf, '\n');
+			if (nl) *nl = '\0';
+		}
+		pclose(fp);
+	}
+
+	json_printf(c, 200,
+		    "{\"mode\":\"%s\",\"current_ip\":\"%s\","
+		    "\"static_ip\":\"%s\",\"gateway\":\"%s\","
+		    "\"current_gateway\":\"%s\",\"mgmt_vlan\":%d,"
+		    "\"interface\":\"%s\",\"namespace\":\"%s\"}",
+		    ctx->mgmt_cfg.mode == 1 ? "static" : "dhcp",
+		    current_ip, ctx->mgmt_cfg.static_ip,
+		    ctx->mgmt_cfg.gateway, gw_buf,
+		    ctx->mgmt_cfg.mgmt_vlan,
+		    ctx->mgmt_cfg.veth_ns, ctx->mgmt_cfg.mgmt_ns);
+}
+
+static void handle_network_put(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
+{
+	struct mgmtd_ctx *ctx = userdata;
+	char *mode_str, *ip_str, *gw_str;
+
+	if (!ctx) ctx = &g_ctx;
+
+	mode_str = mg_json_get_str(hm->body, "$.mode");
+	ip_str = mg_json_get_str(hm->body, "$.static_ip");
+	gw_str = mg_json_get_str(hm->body, "$.gateway");
+
+	if (!mode_str) {
+		json_printf(c, 400, "{\"error\":\"mode required (dhcp or static)\"}");
+		return;
+	}
+
+	if (strcmp(mode_str, "static") == 0) {
+		if (!ip_str || ip_str[0] == '\0') {
+			json_printf(c, 400, "{\"error\":\"static_ip required for static mode\"}");
+			free(mode_str);
+			if (ip_str) free(ip_str);
+			if (gw_str) free(gw_str);
+			return;
+		}
+		ctx->mgmt_cfg.mode = 1;
+		memset(ctx->mgmt_cfg.static_ip, 0, sizeof(ctx->mgmt_cfg.static_ip));
+		strncpy(ctx->mgmt_cfg.static_ip, ip_str, sizeof(ctx->mgmt_cfg.static_ip) - 1);
+		memset(ctx->mgmt_cfg.gateway, 0, sizeof(ctx->mgmt_cfg.gateway));
+		if (gw_str)
+			strncpy(ctx->mgmt_cfg.gateway, gw_str, sizeof(ctx->mgmt_cfg.gateway) - 1);
+	} else if (strcmp(mode_str, "dhcp") == 0) {
+		ctx->mgmt_cfg.mode = 0;
+		memset(ctx->mgmt_cfg.static_ip, 0, sizeof(ctx->mgmt_cfg.static_ip));
+		memset(ctx->mgmt_cfg.gateway, 0, sizeof(ctx->mgmt_cfg.gateway));
+	} else {
+		json_printf(c, 400, "{\"error\":\"mode must be dhcp or static\"}");
+		free(mode_str);
+		if (ip_str) free(ip_str);
+		if (gw_str) free(gw_str);
+		return;
+	}
+
+	free(mode_str);
+	if (ip_str) free(ip_str);
+	if (gw_str) free(gw_str);
+
+	if (rs_mgmt_iface_reconfigure(&ctx->mgmt_cfg) != 0) {
+		json_printf(c, 500, "{\"error\":\"failed to reconfigure network\"}");
+		mgmtd_audit_log(AUDIT_SEV_WARNING, AUDIT_CAT_SYSTEM, "network_reconfig", 0,
+				    "management network reconfigure failed");
+		return;
+	}
+
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_SYSTEM, "network_reconfig", 1,
+			    ctx->mgmt_cfg.mode == 1 ? "switched to static IP" : "switched to DHCP");
+
+	json_printf(c, 200, "{\"status\":\"ok\",\"mode\":\"%s\"}",
+		    ctx->mgmt_cfg.mode == 1 ? "static" : "dhcp");
+}
+
 static int ifindex_to_name_sysfs(__u32 ifindex, char *out, size_t out_sz)
 {
 	DIR *d;
@@ -2942,6 +3039,10 @@ static void dispatch_api(struct mg_connection *c, struct mg_http_message *hm, vo
 		return handle_system_reboot(c, hm, userdata);
 	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/system/shutdown"), NULL))
 		return handle_system_shutdown(c, hm, userdata);
+	if (method_is(hm->method, "GET") && mg_match(hm->uri, mg_str("/api/system/network"), NULL))
+		return handle_network_get(c, hm, userdata);
+	if (method_is(hm->method, "PUT") && mg_match(hm->uri, mg_str("/api/system/network"), NULL))
+		return handle_network_put(c, hm, userdata);
 
 	if (method_is(hm->method, "GET") && mg_match(hm->uri, mg_str("/api/ports"), NULL))
 		return handle_ports_list(c, hm, userdata);
@@ -3147,6 +3248,8 @@ int main(int argc, char **argv)
 			g_ctx.mgmt_cfg.mode = profile.mgmt.iface_mode;
 			strncpy(g_ctx.mgmt_cfg.static_ip, profile.mgmt.static_ip,
 				sizeof(g_ctx.mgmt_cfg.static_ip) - 1);
+			strncpy(g_ctx.mgmt_cfg.gateway, profile.mgmt.gateway,
+				sizeof(g_ctx.mgmt_cfg.gateway) - 1);
 			g_ctx.mgmt_cfg.mgmt_vlan = profile.mgmt.mgmt_vlan;
 		}
 
