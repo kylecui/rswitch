@@ -15,6 +15,7 @@
   <div class="header-brand">&#x2B21; rSwitch <span>Management</span></div>
   <div class="header-stats">
     <span>Events: <span class="stat-val" x-text="events.length"></span></span>
+    <span>WS Msgs: <span class="stat-val" x-text="msgCount"></span></span>
     <span class="ws-status"><span class="ws-dot" :class="wsState"></span> <span x-text="wsState"></span></span>
   </div>
   <button class="btn btn-sm" type="button" onclick="authLogout()">Logout</button>
@@ -32,7 +33,7 @@
 </nav>
 
 <main class="main">
-  <div class="page-title"><span class="icon">&#x2630;</span> Live Event Log</div>
+  <div class="page-title"><span class="icon">&#x2630;</span> Event Log</div>
 
   <div class="log-toolbar">
     <div class="form-group" style="margin:0;">
@@ -83,9 +84,9 @@
 <script>
 function logsPage() {
   return {
-    events: [], wsState: 'disconnected', ws: null,
+    events: [], wsState: 'disconnected', ws: null, msgCount: 0,
     filterSeverity: 'all', filterCategory: 'all',
-    search: '', paused: false, eventId: 0,
+    search: '', paused: false, eventId: 0, historyLoaded: false,
 
     get filtered() {
       return this.events.filter(ev => {
@@ -96,37 +97,88 @@ function logsPage() {
       });
     },
 
-    init() {
+    async init() {
+      await this.loadHistory();
       this.connectWs();
     },
 
-    connectWs() {
+    async loadHistory() {
+      try {
+        const resp = await apiFetch('/api/events?limit=500');
+        if (resp.status === 401) return;
+        const data = await resp.json();
+        if (data.events && data.events.length) {
+          const historical = data.events.reverse().map(ev => {
+            const ts = ev.timestamp ? new Date(ev.timestamp * 1000) : new Date();
+            return {
+              id: ++this.eventId,
+              dbId: ev.id,
+              severity: ev.severity || 'info',
+              category: ev.category || this.inferCategory(ev.message),
+              message: ev.message || '',
+              time: ts.toLocaleTimeString(),
+              timestamp: ev.timestamp || 0
+            };
+          });
+          this.events = historical;
+          this.historyLoaded = true;
+          this.$nextTick(() => {
+            const box = this.$refs.logbox;
+            if (box) box.scrollTop = box.scrollHeight;
+          });
+        }
+      } catch (e) {
+        console.error('Failed to load event history:', e);
+      }
+    },
+
+    async connectWs() {
+      try {
+        const resp = await apiFetch('/api/ports');
+        if (resp.status === 401) {
+          this.wsState = 'auth-required';
+          setTimeout(() => this.connectWs(), 2000);
+          return;
+        }
+      } catch (e) {
+        this.wsState = 'disconnected';
+        setTimeout(() => this.connectWs(), 3000);
+        return;
+      }
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       this.ws = new WebSocket(proto + '//' + location.host + '/api/ws');
-      this.ws.onopen = () => { this.wsState = 'connected'; };
-      this.ws.onclose = () => { this.wsState = 'reconnecting'; setTimeout(() => this.connectWs(), 3000); };
-      this.ws.onerror = () => { this.wsState = 'disconnected'; };
+      this.ws.onopen = () => { this.wsState = 'connected'; console.log('WS connected'); };
+      this.ws.onclose = (ev) => { this.wsState = 'reconnecting'; console.log('WS closed code=' + ev.code + ' reason=' + ev.reason); setTimeout(() => this.connectWs(), 3000); };
+      this.ws.onerror = (ev) => { this.wsState = 'error'; console.error('WS error', ev); };
       this.ws.onmessage = (e) => {
+        this.msgCount++;
         if (this.paused) return;
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === 'event') {
             const ts = msg.timestamp ? new Date(msg.timestamp * 1000) : new Date();
             const cat = msg.category || this.inferCategory(msg.message);
+            const msgText = msg.message || '';
+            const epoch = msg.timestamp || 0;
+            if (this.historyLoaded && this.events.length > 0) {
+              const last = this.events[this.events.length - 1];
+              if (last.timestamp === epoch && last.message === msgText) return;
+            }
             this.events.push({
               id: ++this.eventId,
               severity: msg.severity || 'info',
               category: cat,
-              message: msg.message || '',
-              time: ts.toLocaleTimeString()
+              message: msgText,
+              time: ts.toLocaleTimeString(),
+              timestamp: epoch
             });
-            if (this.events.length > 1000) this.events = this.events.slice(-500);
+            if (this.events.length > 2000) this.events = this.events.slice(-1000);
             this.$nextTick(() => {
               const box = this.$refs.logbox;
               if (box) box.scrollTop = box.scrollHeight;
             });
           }
-        } catch {}
+        } catch (err) { console.error('WS onmessage error:', err, 'raw:', e.data); }
       };
     },
 
