@@ -5,6 +5,7 @@
 #include "mongoose.h"
 #include "mgmtd.h"
 #include "mgmt_iface.h"
+#include "event_db.h"
 #include "../loader/profile_parser.h"
 
 #if __has_include("rs_log.h")
@@ -1144,16 +1145,26 @@ static void mgmtd_broadcast_event(int severity, const char *category,
 
 	clock_gettime(CLOCK_REALTIME, &ts);
 
-	snprintf(payload, sizeof(payload),
-		 "{\"type\":\"event\",\"severity\":\"%s\","
-		 "\"category\":\"%s\","
-		 "\"message\":\"[%s] %s: %s\",\"timestamp\":%llu}",
-		 audit_sev_to_str(severity),
-		 category ? category : "system",
-		 category ? category : "system",
-		 action ? action : "unknown",
-		 detail ? detail : "",
-		 (unsigned long long)ts.tv_sec);
+	{
+		char msg[512];
+		const char *sev_str = audit_sev_to_str(severity);
+		const char *cat_str = category ? category : "system";
+
+		snprintf(msg, sizeof(msg), "[%s] %s: %s",
+			 cat_str,
+			 action ? action : "unknown",
+			 detail ? detail : "");
+
+		event_db_insert(sev_str, cat_str, msg,
+				(int64_t)ts.tv_sec);
+
+		snprintf(payload, sizeof(payload),
+			 "{\"type\":\"event\",\"severity\":\"%s\","
+			 "\"category\":\"%s\","
+			 "\"message\":\"%s\",\"timestamp\":%llu}",
+			 sev_str, cat_str, msg,
+			 (unsigned long long)ts.tv_sec);
+	}
 
 	mgmtd_ws_broadcast(g_mgr, payload, strlen(payload));
 }
@@ -3263,6 +3274,95 @@ static void handle_preflight(struct mg_connection *c)
 		      "");
 }
 
+static void handle_api_events(struct mg_connection *c, struct mg_http_message *hm)
+{
+	char severity[32] = {0}, category[32] = {0}, search[128] = {0};
+	char before_s[32] = {0}, after_s[32] = {0}, limit_s[16] = {0};
+	int64_t before = 0, after = 0;
+	int limit = 200;
+	struct event_row *rows;
+	int count, total;
+	char *buf;
+	int off, bufsz;
+
+	mg_http_get_var(&hm->query, "severity", severity, sizeof(severity));
+	mg_http_get_var(&hm->query, "category", category, sizeof(category));
+	mg_http_get_var(&hm->query, "search", search, sizeof(search));
+	mg_http_get_var(&hm->query, "before", before_s, sizeof(before_s));
+	mg_http_get_var(&hm->query, "after", after_s, sizeof(after_s));
+	mg_http_get_var(&hm->query, "limit", limit_s, sizeof(limit_s));
+
+	if (before_s[0])
+		before = strtoll(before_s, NULL, 10);
+	if (after_s[0])
+		after = strtoll(after_s, NULL, 10);
+	if (limit_s[0]) {
+		limit = atoi(limit_s);
+		if (limit <= 0 || limit > 1000)
+			limit = 200;
+	}
+
+	rows = calloc(limit, sizeof(*rows));
+	if (!rows) {
+		json_printf(c, 500, "{\"error\":\"out of memory\"}");
+		return;
+	}
+
+	count = event_db_query(rows, limit,
+			       severity[0] ? severity : NULL,
+			       category[0] ? category : NULL,
+			       before, after,
+			       search[0] ? search : NULL,
+			       limit);
+	total = event_db_count();
+
+	if (count < 0)
+		count = 0;
+
+	bufsz = 256 + count * 700;
+	buf = malloc(bufsz);
+	if (!buf) {
+		free(rows);
+		json_printf(c, 500, "{\"error\":\"out of memory\"}");
+		return;
+	}
+
+	off = snprintf(buf, bufsz, "{\"events\":[");
+	for (int i = 0; i < count; i++) {
+		/* JSON-escape message — escape quotes and backslashes */
+		char escaped[1024];
+		int ej = 0;
+		for (int k = 0; rows[i].message[k] && ej < (int)sizeof(escaped) - 2; k++) {
+			char ch = rows[i].message[k];
+			if (ch == '"' || ch == '\\') {
+				escaped[ej++] = '\\';
+			}
+			escaped[ej++] = ch;
+		}
+		escaped[ej] = '\0';
+
+		off += snprintf(buf + off, bufsz - off,
+				"%s{\"id\":%lld,\"timestamp\":%lld,"
+				"\"severity\":\"%s\",\"category\":\"%s\","
+				"\"message\":\"%s\"}",
+				i > 0 ? "," : "",
+				(long long)rows[i].id,
+				(long long)rows[i].timestamp,
+				rows[i].severity,
+				rows[i].category,
+				escaped);
+	}
+	off += snprintf(buf + off, bufsz - off, "],\"total\":%d}", total);
+
+	mg_http_reply(c, 200,
+		      "Content-Type: application/json\r\n"
+		      "Access-Control-Allow-Origin: *\r\n",
+		      "%s", buf);
+
+	free(buf);
+	free(rows);
+}
+
 static bool method_is(struct mg_str method, const char *s)
 {
 	return mg_strcmp(method, mg_str(s)) == 0;
@@ -3360,6 +3460,9 @@ static void dispatch_api(struct mg_connection *c, struct mg_http_message *hm, vo
 	if (method_is(hm->method, "GET") && mg_match(hm->uri, mg_str("/api/config/audit"), NULL))
 		return handle_config_audit(c, hm, userdata);
 
+	if (method_is(hm->method, "GET") && mg_match(hm->uri, mg_str("/api/events"), NULL))
+		return handle_api_events(c, hm);
+
 	json_printf(c, 404, "{\"error\":\"route not found\"}");
 }
 
@@ -3381,11 +3484,27 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
 		}
 
 		if (mg_match(hm->uri, mg_str("/api/ws"), NULL)) {
-			if (!check_auth(c, hm))
+			if (!check_auth(c, hm)) {
+				RS_LOG_INFO("WebSocket auth rejected id=%lu", c->id);
 				return;
+			}
 			mg_ws_upgrade(c, hm, NULL);
 			c->data[0] = 'W';
 			RS_LOG_INFO("WebSocket client upgraded id=%lu", c->id);
+			/* Send a welcome event so the client sees something immediately */
+			{
+				char welcome[256];
+				struct timespec wts;
+				clock_gettime(CLOCK_REALTIME, &wts);
+				snprintf(welcome, sizeof(welcome),
+					 "{\"type\":\"event\",\"severity\":\"info\","
+					 "\"category\":\"system\","
+					 "\"message\":\"[system] connected: WebSocket stream active\","
+					 "\"timestamp\":%llu}",
+					 (unsigned long long)wts.tv_sec);
+				mg_ws_send(c, welcome, strlen(welcome),
+					   WEBSOCKET_OP_TEXT);
+			}
 			return;
 		}
 
@@ -3399,7 +3518,8 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
 		opts.extra_headers =
 			"Access-Control-Allow-Origin: *\r\n"
 			"Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-			"Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
+			"Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+			"Cache-Control: no-cache\r\n";
 		mg_http_serve_dir(c, hm, &opts);
 	} else if (ev == MG_EV_WS_MSG) {
 		struct mg_ws_message *wm = ev_data;
@@ -3565,6 +3685,8 @@ int main(int argc, char **argv)
 
 	mgmtd_maps_init();
 	event_bus_init();
+	if (event_db_open(NULL) != 0)
+		RS_LOG_WARN("Event database init failed — events will not be persisted");
 
 	mg_mgr_init(&mgr);
 	g_mgr = &mgr;
@@ -3572,6 +3694,7 @@ int main(int argc, char **argv)
 	if (!listener) {
 		RS_LOG_ERROR("Failed to listen on %s", g_ctx.cfg.listen_addr);
 		mg_mgr_free(&mgr);
+		event_db_close();
 		event_bus_cleanup();
 		mgmtd_maps_close();
 		if (g_ctx.cfg.use_namespace && !g_ctx.loader_managed_veth)
@@ -3587,6 +3710,7 @@ int main(int argc, char **argv)
 
 	g_mgr = NULL;
 	mg_mgr_free(&mgr);
+	event_db_close();
 	event_bus_cleanup();
 	mgmtd_maps_close();
 

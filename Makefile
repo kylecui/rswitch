@@ -38,6 +38,7 @@ RESOURCE_LIMITS_OBJ = $(BUILD_DIR)/resource_limits.o
 ROLLBACK_OBJ = $(BUILD_DIR)/rollback.o
 AUDIT_OBJ = $(BUILD_DIR)/audit.o
 TOPOLOGY_OBJ = $(BUILD_DIR)/topology.o
+EVENT_DB_OBJ = $(BUILD_DIR)/event_db.o
 
 INCLUDES = $(LIBBPF_UAPI_INCLUDES) $(LIBBPF_INCLUDES) -I$(INCLUDE_DIR) -I$(CORE_DIR)
 USER_INCLUDES = -I$(COMMON_DIR)
@@ -178,6 +179,10 @@ $(TOPOLOGY_OBJ): $(USER_DIR)/topology/topology.c $(USER_DIR)/topology/topology.h
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-c $< -o $@
 
+$(EVENT_DB_OBJ): $(USER_DIR)/mgmt/event_db.c $(USER_DIR)/mgmt/event_db.h $(COMMON_DIR)/rs_log.h
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 $(USER_INCLUDES) -I$(USER_DIR)/mgmt -c $< -o $@
+
 # Build user-space loader
 $(LOADER): $(USER_DIR)/loader/rswitch_loader.c $(USER_DIR)/loader/profile_parser.c $(wildcard $(USER_DIR)/loader/*.h) $(USER_DIR)/lifecycle/lifecycle.h $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(RESOURCE_LIMITS_OBJ)
 	@echo "  CC [USER] $@"
@@ -273,16 +278,16 @@ $(WATCHDOG_OBJ): $(USER_DIR)/watchdog/watchdog.c $(USER_DIR)/watchdog/watchdog.h
 		-c $< -o $@
 
 # Build management daemon
-$(MGMTD): $(USER_DIR)/mgmt/mgmtd.c $(USER_DIR)/mgmt/mgmtd.h $(USER_DIR)/mgmt/mgmt_iface.h $(USER_DIR)/mgmt/mongoose.h $(USER_DIR)/loader/profile_parser.c $(USER_DIR)/loader/profile_parser.h $(MONGOOSE_OBJ) $(MGMT_IFACE_OBJ) $(WATCHDOG_OBJ) $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(AUDIT_OBJ) $(ROLLBACK_OBJ) $(TOPOLOGY_OBJ)
+$(MGMTD): $(USER_DIR)/mgmt/mgmtd.c $(USER_DIR)/mgmt/mgmtd.h $(USER_DIR)/mgmt/mgmt_iface.h $(USER_DIR)/mgmt/mongoose.h $(USER_DIR)/mgmt/event_db.h $(USER_DIR)/loader/profile_parser.c $(USER_DIR)/loader/profile_parser.h $(MONGOOSE_OBJ) $(MGMT_IFACE_OBJ) $(WATCHDOG_OBJ) $(EVENT_DB_OBJ) $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(AUDIT_OBJ) $(ROLLBACK_OBJ) $(TOPOLOGY_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-I$(USER_DIR)/mgmt -I$(USER_DIR)/loader -I$(USER_DIR)/watchdog -I$(USER_DIR)/topology \
 		-I$(USER_DIR)/audit -I$(USER_DIR)/rollback -I$(USER_DIR)/lifecycle \
 		-o $@ $(USER_DIR)/mgmt/mgmtd.c $(USER_DIR)/loader/profile_parser.c \
-		$(MONGOOSE_OBJ) $(MGMT_IFACE_OBJ) $(WATCHDOG_OBJ) \
+		$(MONGOOSE_OBJ) $(MGMT_IFACE_OBJ) $(WATCHDOG_OBJ) $(EVENT_DB_OBJ) \
 		$(LIFECYCLE_OBJ) $(AUDIT_OBJ) $(ROLLBACK_OBJ) $(TOPOLOGY_OBJ) $(RS_LOG_OBJ) \
-		$(LIBBPF_LIBS) -lelf -lz -lpthread
+		$(LIBBPF_LIBS) -lelf -lz -lpthread -lsqlite3
 
 # Build rswitchctl
 $(RSWITCHCTL): $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_dev.c $(USER_DIR)/ctl/rswitchctl_extended.c $(USER_DIR)/ctl/rswitchctl_acl.c $(USER_DIR)/ctl/rswitchctl_mirror.c $(USER_DIR)/loader/profile_parser.c $(USER_DIR)/watchdog/watchdog.c $(USER_DIR)/watchdog/watchdog.h $(USER_DIR)/lifecycle/lifecycle.h $(USER_DIR)/registry/registry.c $(USER_DIR)/rollback/rollback.h $(USER_DIR)/audit/audit.h $(USER_DIR)/topology/topology.h $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(REGISTRY_OBJ) $(ROLLBACK_OBJ) $(AUDIT_OBJ) $(TOPOLOGY_OBJ)
