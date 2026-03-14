@@ -55,6 +55,9 @@ setup_nic() {
         return 0
     fi
     
+    # Flush any IP addresses — switch ports must have NO IPs
+    ip addr flush dev "$iface" 2>/dev/null || true
+    
     # Force bring interface UP first
     ip link set "$iface" up 2>/dev/null || warn "Could not bring up $iface"
     
