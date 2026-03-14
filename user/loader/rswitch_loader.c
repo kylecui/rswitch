@@ -130,7 +130,21 @@ struct rs_module_config_value {
 #define MAX_MODULES 64
 #define MAX_INTERFACES 64
 #define BPF_PIN_PATH "/sys/fs/bpf"
-#define BUILD_DIR "./build/bpf"
+
+/* Runtime-resolved paths (initialized from RSWITCH_HOME env var) */
+static char g_rswitch_home[256] = ".";
+static char g_build_dir[512]    = "./build/bpf";
+static char g_build_root[512]   = "./build";
+
+static void init_paths(void)
+{
+    const char *home = getenv("RSWITCH_HOME");
+    if (home && home[0]) {
+        snprintf(g_rswitch_home, sizeof(g_rswitch_home), "%s", home);
+    }
+    snprintf(g_build_dir,  sizeof(g_build_dir),  "%s/build/bpf", g_rswitch_home);
+    snprintf(g_build_root, sizeof(g_build_root), "%s/build",     g_rswitch_home);
+}
 
 /* Configuration defaults */
 #define DEFAULT_XDP_FLAGS XDP_FLAGS_UPDATE_IF_NOEXIST
@@ -478,9 +492,9 @@ static int discover_modules(struct loader_ctx *ctx)
     int count = 0;
     
     /* Scan build/bpf directory for .bpf.o files */
-    dir = opendir(BUILD_DIR);
+    dir = opendir(g_build_dir);
     if (!dir) {
-        RS_LOG_ERROR("Failed to open %s: %s", BUILD_DIR, strerror(errno));
+        RS_LOG_ERROR("Failed to open %s: %s", g_build_dir, strerror(errno));
         return -1;
     }
     
@@ -497,7 +511,7 @@ static int discover_modules(struct loader_ctx *ctx)
             strcmp(entry->d_name, "egress.bpf.o") == 0)
             continue;
         
-        snprintf(path, sizeof(path), "%s/%s", BUILD_DIR, entry->d_name);
+        snprintf(path, sizeof(path), "%s/%s", g_build_dir, entry->d_name);
         
         /* Try to read module metadata */
         struct rs_module_desc desc;
@@ -749,7 +763,7 @@ static int load_core_programs(struct loader_ctx *ctx)
     );
     
     /* Load dispatcher */
-    snprintf(path, sizeof(path), "%s/dispatcher.bpf.o", BUILD_DIR);
+    snprintf(path, sizeof(path), "%s/dispatcher.bpf.o", g_build_dir);
     ctx->dispatcher_obj = bpf_object__open_file(path, &opts);
     err = libbpf_get_error(ctx->dispatcher_obj);
     if (err) {
@@ -777,7 +791,7 @@ static int load_core_programs(struct loader_ctx *ctx)
     }
     
     /* Load egress (same opts — reuses already-pinned maps) */
-    snprintf(path, sizeof(path), "%s/egress.bpf.o", BUILD_DIR);
+    snprintf(path, sizeof(path), "%s/egress.bpf.o", g_build_dir);
     ctx->egress_obj = bpf_object__open_file(path, &opts);
     err = libbpf_get_error(ctx->egress_obj);
     if (err) {
@@ -1853,7 +1867,7 @@ static int setup_veth_egress(struct loader_ctx *ctx)
         return 0;
     }
     
-    snprintf(path, sizeof(path), "%s/veth_egress.bpf.o", BUILD_DIR);
+    snprintf(path, sizeof(path), "%s/veth_egress.bpf.o", g_build_dir);
     ctx->veth_egress_obj = bpf_object__open(path);
     err = libbpf_get_error(ctx->veth_egress_obj);
     if (err) {
@@ -2203,9 +2217,11 @@ static int start_voqd(struct loader_ctx *ctx)
     
     printf("\nStarting VOQd (user-space scheduler)...\n");
     
-    /* Check if rswitch-voqd binary exists */
-    if (access("./build/rswitch-voqd", X_OK) != 0) {
-        RS_LOG_ERROR("VOQd binary not found: ./build/rswitch-voqd");
+    char voqd_path[512];
+    snprintf(voqd_path, sizeof(voqd_path), "%s/rswitch-voqd", g_build_root);
+
+    if (access(voqd_path, X_OK) != 0) {
+        RS_LOG_ERROR("VOQd binary not found: %s", voqd_path);
         RS_LOG_ERROR("Build VOQd first or disable voqd_config in profile");
         return -1;
     }
@@ -2226,7 +2242,8 @@ static int start_voqd(struct loader_ctx *ctx)
                  voqd->mode, voqd->enabled, voqd->prio_mask);
     
     snprintf(cmd, sizeof(cmd),
-             "./build/rswitch-voqd -i %s -p %d -m %s -P 0x%x %s%s%s",
+             "%s/rswitch-voqd -i %s -p %d -m %s -P 0x%x %s%s%s",
+             g_build_root,
              iface_list,
              voqd->num_ports > 0 ? voqd->num_ports : ctx->num_interfaces,
              voqd->mode == 2 ? "active" : (voqd->mode == 1 ? "shadow" : "bypass"),
@@ -2632,6 +2649,7 @@ int main(int argc, char **argv)
     char *iface_list = NULL;
 
     rs_log_init("rswitch-loader", RS_LOG_LEVEL_INFO);
+    init_paths();
     
     /* Initialize map FDs to -1 */
     ctx.rs_ctx_map_fd = -1;
