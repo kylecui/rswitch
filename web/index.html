@@ -119,8 +119,22 @@ function dashboard() {
       this.fetchHealth();
       this.fetchPorts();
       this.fetchModules();
+      this.loadRecentEvents();
       this.connectWs();
       setInterval(() => { this.fetchInfo(); this.fetchHealth(); this.fetchPorts(); this.fetchModules(); }, 5000);
+    },
+
+    async loadRecentEvents() {
+      try {
+        const resp = await apiFetch('/api/events?limit=20');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const rows = (data.events || []).map(ev => {
+          const ts = ev.timestamp ? new Date(ev.timestamp * 1000) : new Date();
+          return { severity: ev.severity, message: ev.message, time: ts.toLocaleTimeString(), ts: ev.timestamp || 0 };
+        });
+        this.events = rows;
+      } catch {}
     },
 
     async fetchInfo() {
@@ -192,8 +206,11 @@ function dashboard() {
             this.rxTotal = msg.rx_total || this.rxTotal;
             this.txTotal = msg.tx_total || this.txTotal;
           } else if (msg.type === 'event') {
+            const serverTs = msg.timestamp || 0;
+            const maxTs = this.events.length > 0 ? Math.max(...this.events.map(e => e.ts)) : 0;
+            if (serverTs && serverTs <= maxTs) return;
             const ts = msg.timestamp ? new Date(msg.timestamp * 1000) : new Date();
-            this.events.push({ severity: msg.severity, message: msg.message, time: ts.toLocaleTimeString(), ts: Date.now() });
+            this.events.push({ severity: msg.severity, message: msg.message, time: ts.toLocaleTimeString(), ts: serverTs || Date.now() });
             if (this.events.length > 200) this.events = this.events.slice(-100);
           }
         } catch (err) { console.error('WS onmessage error:', err); }
