@@ -45,19 +45,15 @@
     <form @submit.prevent="stageCreate()" class="form-inline mt-12">
       <div class="form-group">
         <label>VLAN ID</label>
-        <input type="number" x-model.number="newVlan.id" min="1" max="4094" style="width:100px;" required>
-      </div>
-      <div class="form-group">
-        <label>Name</label>
-        <input type="text" x-model="newVlan.name" placeholder="e.g. servers" style="width:180px;">
+        <input type="number" x-model.number="newVlan.id" min="1" max="4094" style="width:100px;">
       </div>
       <div class="form-group">
         <label>Tagged Ports</label>
-        <input type="text" x-model="newVlan.tagged" placeholder="0,1,2" style="width:140px;">
+        <input type="text" x-model="newVlan.tagged" placeholder="3,4,5" style="width:140px;">
       </div>
       <div class="form-group">
         <label>Untagged Ports</label>
-        <input type="text" x-model="newVlan.untagged" placeholder="3,4" style="width:140px;">
+        <input type="text" x-model="newVlan.untagged" placeholder="6,7" style="width:140px;">
       </div>
       <button type="submit" class="btn btn-primary">Stage</button>
       <button type="button" class="btn" @click="showCreate=false">Cancel</button>
@@ -70,7 +66,6 @@
         <thead>
           <tr>
             <th>ID</th>
-            <th>Name</th>
             <th>Tagged Ports</th>
             <th>Untagged Ports</th>
             <th>Status</th>
@@ -79,24 +74,52 @@
         </thead>
         <tbody>
           <template x-for="row in displayVlans" :key="row.id + '-' + row._status">
-            <tr :style="row._status === 'delete' ? 'opacity:0.45;text-decoration:line-through' : (row._status === 'create' ? 'border-left:3px solid var(--accent-amber)' : '')">
+            <tr :style="rowStyle(row)">
               <td>
                 <span class="vlan-color" :style="'background:hsl(' + (row.id * 37 % 360) + ',60%,50%)'"></span>
                 <span x-text="row.id"></span>
               </td>
-              <td x-text="row.name || '—'"></td>
-              <td class="mono" x-text="portNames(row.tagged_ports || row.tagged)"></td>
-              <td class="mono" x-text="portNames(row.untagged_ports || row.untagged)"></td>
+
+              <template x-if="editingId === row.id">
+                <td>
+                  <input type="text" x-model="editForm.tagged" placeholder="3,4,5"
+                         style="width:120px;padding:2px 6px;font-size:12px;font-family:var(--font-mono);">
+                </td>
+              </template>
+              <template x-if="editingId !== row.id">
+                <td class="mono" x-text="portNames(row.tagged_ports)"></td>
+              </template>
+
+              <template x-if="editingId === row.id">
+                <td>
+                  <input type="text" x-model="editForm.untagged" placeholder="6,7"
+                         style="width:120px;padding:2px 6px;font-size:12px;font-family:var(--font-mono);">
+                </td>
+              </template>
+              <template x-if="editingId !== row.id">
+                <td class="mono" x-text="portNames(row.untagged_ports)"></td>
+              </template>
+
               <td>
                 <span x-show="row._status === 'live'" class="badge badge-active">Live</span>
                 <span x-show="row._status === 'create'" class="badge badge-warn">Pending Create</span>
                 <span x-show="row._status === 'delete'" class="badge badge-down">Pending Delete</span>
+                <span x-show="row._status === 'update'" class="badge badge-info">Pending Update</span>
               </td>
-              <td>
-                <template x-if="row._status === 'live'">
-                  <button class="btn btn-sm btn-danger" @click="stageDelete(row.id)">Delete</button>
+              <td style="white-space:nowrap;">
+                <template x-if="editingId === row.id">
+                  <span>
+                    <button class="btn btn-sm btn-primary" @click="saveEdit(row.id)">Save</button>
+                    <button class="btn btn-sm" @click="cancelEdit()">Cancel</button>
+                  </span>
                 </template>
-                <template x-if="row._status === 'create' || row._status === 'delete'">
+                <template x-if="editingId !== row.id && row._status === 'live'">
+                  <span>
+                    <button class="btn btn-sm" @click="startEdit(row)">Edit</button>
+                    <button class="btn btn-sm btn-danger" @click="stageDelete(row.id)">Delete</button>
+                  </span>
+                </template>
+                <template x-if="editingId !== row.id && (row._status === 'create' || row._status === 'delete' || row._status === 'update')">
                   <button class="btn btn-sm" @click="unstage(row.id, row._status)">Undo</button>
                 </template>
               </td>
@@ -135,7 +158,9 @@ function vlansPage() {
     pendingChanges: [],
     showCreate: false,
     portMap: {},
-    newVlan: { id: '', name: '', tagged: '', untagged: '' },
+    newVlan: { id: '', tagged: '', untagged: '' },
+    editingId: null,
+    editForm: { tagged: '', untagged: '' },
     toast: false, toastMsg: '', toastClass: '',
     applying: false,
     _refreshTimer: null,
@@ -149,15 +174,12 @@ function vlansPage() {
     _startAutoRefresh() {
       this._stopAutoRefresh();
       this._refreshTimer = setInterval(() => {
-        if (this.pendingChanges.length === 0) this.fetchVlans();
+        if (this.pendingChanges.length === 0 && this.editingId === null) this.fetchVlans();
       }, 5000);
     },
 
     _stopAutoRefresh() {
-      if (this._refreshTimer) {
-        clearInterval(this._refreshTimer);
-        this._refreshTimer = null;
-      }
+      if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }
     },
 
     async fetchPorts() {
@@ -169,12 +191,15 @@ function vlansPage() {
       } catch {}
     },
 
-    portName(ifidx) {
-      return this.portMap[ifidx] || String(ifidx);
-    },
+    portName(ifidx) { return this.portMap[ifidx] || String(ifidx); },
 
-    portNames(arr) {
-      return (arr || []).map(i => this.portName(i)).join(', ') || '—';
+    portNames(arr) { return (arr || []).map(i => this.portName(i)).join(', ') || '\u2014'; },
+
+    portsToStr(arr) { return (arr || []).join(','); },
+
+    parsePorts(str) {
+      if (!str || !str.trim()) return [];
+      return str.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n > 0);
     },
 
     async fetchVlans() {
@@ -184,16 +209,26 @@ function vlansPage() {
       } catch {}
     },
 
+    rowStyle(row) {
+      if (row._status === 'delete') return 'opacity:0.45;text-decoration:line-through';
+      if (row._status === 'create') return 'border-left:3px solid var(--accent-amber)';
+      if (row._status === 'update') return 'border-left:3px solid var(--accent-cyan)';
+      return '';
+    },
+
     get displayVlans() {
-      const deleteIds = new Set(
-        this.pendingChanges.filter(c => c.action === 'delete').map(c => c.id)
-      );
+      const deleteIds = new Set(this.pendingChanges.filter(c => c.action === 'delete').map(c => c.id));
+      const updateMap = {};
+      this.pendingChanges.filter(c => c.action === 'update').forEach(c => { updateMap[c.id] = c; });
 
       const rows = [];
 
       for (const v of this.liveVlans) {
         if (deleteIds.has(v.id)) {
           rows.push({ ...v, _status: 'delete' });
+        } else if (updateMap[v.id]) {
+          const u = updateMap[v.id];
+          rows.push({ id: v.id, name: v.name, tagged_ports: u.data.tagged_ports, untagged_ports: u.data.untagged_ports, _status: 'update' });
         } else {
           rows.push({ ...v, _status: 'live' });
         }
@@ -201,13 +236,7 @@ function vlansPage() {
 
       for (const c of this.pendingChanges) {
         if (c.action === 'create') {
-          rows.push({
-            id: c.data.id,
-            name: c.data.name,
-            tagged_ports: c.data.tagged_ports,
-            untagged_ports: c.data.untagged_ports,
-            _status: 'create'
-          });
+          rows.push({ id: c.data.id, name: 'VLAN ' + c.data.id, tagged_ports: c.data.tagged_ports, untagged_ports: c.data.untagged_ports, _status: 'create' });
         }
       }
 
@@ -217,61 +246,87 @@ function vlansPage() {
 
     stageCreate() {
       const id = this.newVlan.id;
-      if (!id || id < 1 || id > 4094) {
-        this.showToast('VLAN ID must be 1-4094', 'toast-error');
-        return;
-      }
-
-      const alreadyExists = this.liveVlans.some(v => v.id === id) ||
-        this.pendingChanges.some(c => c.action === 'create' && c.id === id);
-      if (alreadyExists) {
-        this.showToast('VLAN ' + id + ' already exists', 'toast-error');
-        return;
-      }
-
       this.pendingChanges.push({
         action: 'create',
         id: id,
         data: {
           id: id,
-          name: this.newVlan.name,
-          tagged_ports: this.newVlan.tagged ? this.newVlan.tagged.split(',').map(Number) : [],
-          untagged_ports: this.newVlan.untagged ? this.newVlan.untagged.split(',').map(Number) : []
+          tagged_ports: this.parsePorts(this.newVlan.tagged),
+          untagged_ports: this.parsePorts(this.newVlan.untagged)
         }
       });
-
-      this.newVlan = { id: '', name: '', tagged: '', untagged: '' };
+      this.newVlan = { id: '', tagged: '', untagged: '' };
       this.showCreate = false;
       this.showToast('VLAN ' + id + ' staged for creation', 'toast-info');
     },
 
     stageDelete(id) {
       if (this.pendingChanges.some(c => c.action === 'delete' && c.id === id)) return;
+      this.pendingChanges = this.pendingChanges.filter(c => !(c.action === 'update' && c.id === id));
       this.pendingChanges.push({ action: 'delete', id: id });
       this.showToast('VLAN ' + id + ' staged for deletion', 'toast-info');
     },
 
+    startEdit(row) {
+      this.editingId = row.id;
+      this.editForm.tagged = this.portsToStr(row.tagged_ports);
+      this.editForm.untagged = this.portsToStr(row.untagged_ports);
+    },
+
+    cancelEdit() { this.editingId = null; },
+
+    saveEdit(id) {
+      const tagged = this.parsePorts(this.editForm.tagged);
+      const untagged = this.parsePorts(this.editForm.untagged);
+      this.pendingChanges = this.pendingChanges.filter(c => !(c.action === 'update' && c.id === id));
+      this.pendingChanges.push({ action: 'update', id: id, data: { tagged_ports: tagged, untagged_ports: untagged } });
+      this.editingId = null;
+      this.showToast('VLAN ' + id + ' staged for update', 'toast-info');
+    },
+
     unstage(id, status) {
-      if (status === 'create') {
-        this.pendingChanges = this.pendingChanges.filter(c => !(c.action === 'create' && c.id === id));
-      } else if (status === 'delete') {
-        this.pendingChanges = this.pendingChanges.filter(c => !(c.action === 'delete' && c.id === id));
-      }
+      this.pendingChanges = this.pendingChanges.filter(c => !(c.action === status && c.id === id));
       this.showToast('Change reverted', 'toast-info');
     },
 
     discardAll() {
       this.pendingChanges = [];
+      this.editingId = null;
       this.showToast('All pending changes discarded', 'toast-info');
     },
 
     async applyAll() {
       if (this.applying) return;
-      this.applying = true;
-      let ok = 0;
-      let fail = 0;
 
+      const errors = [];
+      const creates = this.pendingChanges.filter(c => c.action === 'create');
+      const updates = this.pendingChanges.filter(c => c.action === 'update');
       const deletes = this.pendingChanges.filter(c => c.action === 'delete');
+
+      for (const c of creates) {
+        if (!c.data.id || c.data.id < 1 || c.data.id > 4094)
+          errors.push('VLAN ' + (c.data.id || '?') + ': ID must be 1-4094');
+        if (this.liveVlans.some(v => v.id === c.data.id))
+          errors.push('VLAN ' + c.data.id + ': already exists');
+      }
+
+      const createIds = creates.map(c => c.data.id);
+      const dupes = createIds.filter((v, i) => createIds.indexOf(v) !== i);
+      if (dupes.length > 0) errors.push('Duplicate create IDs: ' + [...new Set(dupes)].join(', '));
+
+      for (const c of deletes) {
+        if (!this.liveVlans.some(v => v.id === c.id))
+          errors.push('VLAN ' + c.id + ': does not exist');
+      }
+
+      if (errors.length > 0) {
+        this.showToast(errors[0], 'toast-error');
+        return;
+      }
+
+      this.applying = true;
+      let ok = 0, fail = 0;
+
       for (const c of deletes) {
         try {
           const r = await apiFetch('/api/vlans/' + c.id, { method: 'DELETE' });
@@ -279,20 +334,18 @@ function vlansPage() {
         } catch { fail++; }
       }
 
-      const creates = this.pendingChanges.filter(c => c.action === 'create');
       for (const c of creates) {
         try {
-          const payload = {
-            vlan_id: c.data.id,
-            name: c.data.name,
-            tagged_ports: c.data.tagged_ports,
-            untagged_ports: c.data.untagged_ports
-          };
-          const r = await apiFetch('/api/vlans', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
+          const payload = { vlan_id: c.data.id, tagged_ports: c.data.tagged_ports, untagged_ports: c.data.untagged_ports };
+          const r = await apiFetch('/api/vlans', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          if (r.ok) ok++; else fail++;
+        } catch { fail++; }
+      }
+
+      for (const c of updates) {
+        try {
+          const payload = { tagged_ports: c.data.tagged_ports, untagged_ports: c.data.untagged_ports };
+          const r = await apiFetch('/api/vlans/' + c.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
           if (r.ok) ok++; else fail++;
         } catch { fail++; }
       }

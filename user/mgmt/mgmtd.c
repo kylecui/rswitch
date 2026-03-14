@@ -2306,8 +2306,9 @@ static void handle_vlan_update(struct mg_connection *c, struct mg_http_message *
 {
 	int vlan_id;
 	struct rs_vlan_members v;
-	long member_count;
 	__u16 key;
+	int i, port, member_count = 0;
+	char path[32];
 
 	(void) userdata;
 
@@ -2323,10 +2324,41 @@ static void handle_vlan_update(struct mg_connection *c, struct mg_http_message *
 	}
 
 	key = (__u16) vlan_id;
-	if (bpf_map_lookup_elem(g_maps.vlan_fd, &key, &v) != 0)
-		memset(&v, 0, sizeof(v));
+	if (bpf_map_lookup_elem(g_maps.vlan_fd, &key, &v) != 0) {
+		json_printf(c, 404, "{\"error\":\"vlan not found\"}");
+		return;
+	}
 
-	member_count = mg_json_get_long(hm->body, "$.member_count", v.member_count);
+	/* Rebuild port bitmasks from JSON arrays (same logic as create) */
+	memset(v.tagged_members, 0, sizeof(v.tagged_members));
+	memset(v.untagged_members, 0, sizeof(v.untagged_members));
+
+	for (i = 0; i < 256; i++) {
+		snprintf(path, sizeof(path), "$.tagged_ports[%d]", i);
+		port = (int) mg_json_get_long(hm->body, path, -1);
+		if (port < 0)
+			break;
+		if (port > 0 && port <= 256) {
+			int word = (port - 1) / 64;
+			int bit = (port - 1) % 64;
+			v.tagged_members[word] |= (1ULL << bit);
+			member_count++;
+		}
+	}
+
+	for (i = 0; i < 256; i++) {
+		snprintf(path, sizeof(path), "$.untagged_ports[%d]", i);
+		port = (int) mg_json_get_long(hm->body, path, -1);
+		if (port < 0)
+			break;
+		if (port > 0 && port <= 256) {
+			int word = (port - 1) / 64;
+			int bit = (port - 1) % 64;
+			v.untagged_members[word] |= (1ULL << bit);
+			member_count++;
+		}
+	}
+
 	v.vlan_id = key;
 	v.member_count = (__u16) member_count;
 
@@ -2336,7 +2368,7 @@ static void handle_vlan_update(struct mg_connection *c, struct mg_http_message *
 	}
 
 	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "vlan_update", 1,
-			    "vlan_id=%d member_count=%u", vlan_id, v.member_count);
+			    "vlan_id=%d member_count=%d", vlan_id, member_count);
 	json_printf(c, 200, "{\"status\":\"ok\"}");
 }
 
