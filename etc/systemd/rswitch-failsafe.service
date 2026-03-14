@@ -8,5 +8,5 @@ Type=oneshot
 RemainAfterExit=yes
 Environment=FAILSAFE_BRIDGE=rswitch-br
 Environment=FAILSAFE_INTERFACES=ens34,ens35,ens36,ens37
-ExecStart=/home/kylecui/dev/rswitch/scripts/rswitch-failsafe.sh setup
-ExecStop=/home/kylecui/dev/rswitch/scripts/rswitch-failsafe.sh teardown
+ExecStart=/opt/rswitch/scripts/rswitch-failsafe.sh setup
+ExecStop=/opt/rswitch/scripts/rswitch-failsafe.sh teardown

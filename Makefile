@@ -500,6 +500,73 @@ clean:
 	@rm -rf $(BUILD_DIR)
 	@echo "✓ Clean complete"
 
+# ── Production install/uninstall ──────────────────────────────────
+INSTALL_PREFIX ?= /opt/rswitch
+
+install: all
+	@echo "Installing rSwitch to $(INSTALL_PREFIX) ..."
+	@mkdir -p $(INSTALL_PREFIX)/build/bpf
+	@mkdir -p $(INSTALL_PREFIX)/scripts
+	@mkdir -p $(INSTALL_PREFIX)/etc/profiles
+	@mkdir -p $(INSTALL_PREFIX)/etc/systemd
+	@mkdir -p $(INSTALL_PREFIX)/web
+	@# Binaries
+	@cp -f $(BUILD_DIR)/rswitch_loader   $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/hot_reload       $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rswitch-mgmtd    $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rswitchctl       $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rsportctl        $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rsvlanctl        $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rsaclctl         $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rsroutectl       $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rsqosctl         $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rsflowctl        $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rsnatctl         $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rsvoqctl         $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rstunnelctl      $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rswitch-events   $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rs_packet_trace  $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rswitch-watchdog $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rswitch-telemetry $(INSTALL_PREFIX)/build/
+	@cp -f $(BUILD_DIR)/rswitch-sflow    $(INSTALL_PREFIX)/build/
+	@for f in $(BUILD_DIR)/rswitch-voqd $(BUILD_DIR)/rswitch-stpd $(BUILD_DIR)/rswitch-lldpd \
+	          $(BUILD_DIR)/rswitch-lacpd $(BUILD_DIR)/rswitch-prometheus \
+	          $(BUILD_DIR)/rswitch-controller $(BUILD_DIR)/rswitch-agent $(BUILD_DIR)/rswitch-snmpagent; do \
+	    [ -f "$$f" ] && cp -f "$$f" $(INSTALL_PREFIX)/build/ || true; \
+	done
+	@# BPF objects
+	@cp -f $(OBJ_DIR)/*.bpf.o $(INSTALL_PREFIX)/build/bpf/
+	@# Scripts
+	@cp -f scripts/rswitch-init.sh        $(INSTALL_PREFIX)/scripts/
+	@cp -f scripts/rswitch-failsafe.sh    $(INSTALL_PREFIX)/scripts/
+	@cp -f scripts/rswitch-mgmtd-start.sh $(INSTALL_PREFIX)/scripts/
+	@for f in scripts/setup_nic_queues.sh scripts/cleanup_nic_queues.sh \
+	          scripts/unload.sh scripts/hot-reload.sh scripts/setup_veth_egress.sh \
+	          scripts/rswitch-detect-ports.sh scripts/rswitch-gen-profile.sh \
+	          scripts/install.sh scripts/uninstall.sh; do \
+	    [ -f "$$f" ] && cp -f "$$f" $(INSTALL_PREFIX)/scripts/ || true; \
+	done
+	@chmod +x $(INSTALL_PREFIX)/scripts/*.sh
+	@# Config, profiles, systemd templates, web
+	@cp -f etc/profiles/*.yaml $(INSTALL_PREFIX)/etc/profiles/
+	@cp -f etc/systemd/*.service $(INSTALL_PREFIX)/etc/systemd/
+	@cp -rf web/* $(INSTALL_PREFIX)/web/
+	@echo "✓ Installed to $(INSTALL_PREFIX)"
+	@echo "  Run: sudo rswitch-install to set up systemd services and start"
+
+uninstall:
+	@echo "Uninstalling rSwitch from $(INSTALL_PREFIX) ..."
+	@systemctl stop rswitch-mgmtd 2>/dev/null || true
+	@systemctl stop rswitch 2>/dev/null || true
+	@systemctl disable rswitch-mgmtd rswitch rswitch-failsafe rswitch-watchdog 2>/dev/null || true
+	@rm -f /etc/systemd/system/rswitch.service
+	@rm -f /etc/systemd/system/rswitch-mgmtd.service
+	@rm -f /etc/systemd/system/rswitch-failsafe.service
+	@rm -f /etc/systemd/system/rswitch-watchdog.service
+	@systemctl daemon-reload 2>/dev/null || true
+	@rm -rf $(INSTALL_PREFIX)
+	@echo "✓ Uninstalled"
+
 install-sdk:
 	@echo "Generating rSwitch SDK..."
 	@mkdir -p sdk/include

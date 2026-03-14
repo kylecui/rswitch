@@ -6,11 +6,11 @@ After=rswitch.service
 
 [Service]
 Type=simple
-Environment=RSWITCH_HOME=/home/kylecui/dev/rswitch
-Environment=RSWITCH_PROFILE=all-modules-test.yaml
+Environment=RSWITCH_HOME=/opt/rswitch
+Environment=RSWITCH_PROFILE=default.yaml
 Environment=MGMT_NAMESPACE=rswitch-mgmt
 Environment=MGMT_NS_TIMEOUT=60
-ExecStart=/home/kylecui/dev/rswitch/scripts/rswitch-mgmtd-start.sh
+ExecStart=/opt/rswitch/scripts/rswitch-mgmtd-start.sh
 Restart=on-failure
 RestartSec=5
 StartLimitBurst=3
