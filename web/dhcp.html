@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rSwitch — DHCP Snooping</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="auth.js"></script>
+<script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+</head>
+<body x-data="dhcpPage()" x-init="init()">
+
+<header class="header">
+  <div class="header-brand">&#x2B21; rSwitch <span>Management</span></div>
+  <div class="header-stats">
+    <span>Snooping: <span class="stat-val" :class="cfg.enabled ? 'green' : 'red'" x-text="cfg.enabled ? 'ON' : 'OFF'"></span></span>
+    <span>Trusted: <span class="stat-val cyan" x-text="trustedPorts.length"></span></span>
+  </div>
+  <button class="btn btn-sm" type="button" onclick="authLogout()">Logout</button>
+</header>
+
+<nav class="sidebar">
+  <a href="index.html"><span class="icon">&#x25C8;</span> Dashboard</a>
+  <a href="ports.html"><span class="icon">&#x229E;</span> Ports</a>
+  <a href="modules.html"><span class="icon">&#x25EC;</span> Modules</a>
+  <a href="vlans.html"><span class="icon">&#x2261;</span> VLANs</a>
+  <a href="acls.html"><span class="icon">&#x26CA;</span> ACLs</a>
+  <a href="routes.html"><span class="icon">&#x21C4;</span> Routes</a>
+  <a href="logs.html"><span class="icon">&#x2630;</span> Logs</a>
+  <a href="network.html"><span class="icon">&#x2316;</span> Network</a>
+  <a href="dhcp.html" class="active"><span class="icon">&#x2690;</span> DHCP Snooping</a>
+</nav>
+
+<main class="main">
+  <div class="page-title"><span class="icon">&#x2690;</span> DHCP Snooping</div>
+
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="label">Status</div>
+      <div class="value" :class="cfg.enabled ? 'green' : 'red'" x-text="cfg.enabled ? 'ENABLED' : 'DISABLED'"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Rogue Drop</div>
+      <div class="value" :class="cfg.drop_rogue_server ? 'amber' : ''" x-text="cfg.drop_rogue_server ? 'ACTIVE' : 'INACTIVE'"></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Trusted Ports</div>
+      <div class="value cyan" x-text="trustedPorts.length"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Snooping Configuration</div>
+    <form @submit.prevent="applyConfig()" style="max-width:480px;">
+      <div class="form-group">
+        <label>DHCP Snooping</label>
+        <select x-model="form.enabled">
+          <option value="true">Enabled</option>
+          <option value="false">Disabled</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Drop Rogue Server Packets</label>
+        <select x-model="form.drop_rogue_server">
+          <option value="true">Enabled (Drop)</option>
+          <option value="false">Disabled (Allow)</option>
+        </select>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:16px;">
+        <button type="submit" class="btn btn-primary" :disabled="saving">
+          <span x-show="!saving">Apply</span>
+          <span x-show="saving" class="spinner"></span>
+          <span x-show="saving">Applying...</span>
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Trusted Ports</div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Port</th>
+            <th>ifindex</th>
+            <th style="width:80px;"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="p in trustedPorts" :key="p.ifindex">
+            <tr>
+              <td x-text="p.name"></td>
+              <td x-text="p.ifindex"></td>
+              <td>
+                <button class="btn btn-sm" style="color:var(--accent-red);"
+                        @click="removeTrustedPort(p.name)"
+                        :disabled="portBusy">Remove</button>
+              </td>
+            </tr>
+          </template>
+          <tr x-show="trustedPorts.length === 0">
+            <td colspan="3" style="text-align:center; color:var(--text-secondary);">No trusted ports configured</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <form @submit.prevent="addTrustedPort()" style="display:flex; gap:8px; margin-top:12px; max-width:360px;">
+      <input type="text" x-model="newPort" placeholder="e.g. ens34" required style="flex:1;">
+      <button type="submit" class="btn btn-primary" :disabled="portBusy || !newPort.trim()">
+        <span x-show="!portBusy">Add Port</span>
+        <span x-show="portBusy">...</span>
+      </button>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="card-header">DHCP Events</div>
+
+    <div class="table-wrap" style="max-height:400px; overflow-y:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:170px;">Time</th>
+            <th style="width:80px;">Severity</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="e in events" :key="e.id">
+            <tr>
+              <td style="font-family:var(--font-mono); font-size:12px;" x-text="fmtTime(e.timestamp)"></td>
+              <td>
+                <span class="badge" :class="sevClass(e.severity)" x-text="e.severity"></span>
+              </td>
+              <td style="font-size:12px;" x-text="e.message"></td>
+            </tr>
+          </template>
+          <tr x-show="events.length === 0">
+            <td colspan="3" style="text-align:center; color:var(--text-secondary);">No DHCP events</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<div x-show="toast" x-transition class="toast" :class="toastClass" x-text="toastMsg"
+     x-init="$watch('toast', v => { if(v) setTimeout(()=>toast=false, 4000) })"></div>
+
+<script>
+function dhcpPage() {
+  return {
+    cfg: { enabled: false, drop_rogue_server: false },
+    trustedPorts: [],
+    events: [],
+    form: { enabled: 'false', drop_rogue_server: 'false' },
+    newPort: '',
+    saving: false,
+    portBusy: false,
+    toast: false, toastMsg: '', toastClass: '',
+
+    init() {
+      this.fetchConfig();
+      this.fetchEvents();
+      setInterval(() => this.fetchConfig(), 5000);
+      setInterval(() => this.fetchEvents(), 10000);
+    },
+
+    async fetchConfig() {
+      try {
+        const r = await apiFetch('/api/dhcp-snooping');
+        if (!r.ok) return;
+        const d = await r.json();
+        this.cfg.enabled = !!d.enabled;
+        this.cfg.drop_rogue_server = !!d.drop_rogue_server;
+        this.trustedPorts = d.trusted_ports || [];
+        if (!this.saving) {
+          this.form.enabled = String(this.cfg.enabled);
+          this.form.drop_rogue_server = String(this.cfg.drop_rogue_server);
+        }
+      } catch {}
+    },
+
+    async fetchEvents() {
+      try {
+        const r = await apiFetch('/api/events?limit=100');
+        if (!r.ok) return;
+        const d = await r.json();
+        this.events = (d.events || []).filter(e => e.category === 'dhcp');
+      } catch {}
+    },
+
+    async applyConfig() {
+      if (this.saving) return;
+      this.saving = true;
+      try {
+        const body = {
+          enabled: this.form.enabled === 'true',
+          drop_rogue_server: this.form.drop_rogue_server === 'true'
+        };
+        const r = await apiFetch('/api/dhcp-snooping/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (r.ok) {
+          this.showToast('DHCP snooping configuration updated', 'toast-success');
+          setTimeout(() => this.fetchConfig(), 500);
+        } else {
+          let msg = 'Failed to update configuration';
+          try { const d = await r.json(); if (d.error) msg = d.error; } catch {}
+          this.showToast(msg, 'toast-error');
+        }
+      } catch {
+        this.showToast('Request failed', 'toast-error');
+      } finally {
+        this.saving = false;
+      }
+    },
+
+    async addTrustedPort() {
+      const port = this.newPort.trim();
+      if (!port || this.portBusy) return;
+      this.portBusy = true;
+      try {
+        const r = await apiFetch('/api/dhcp-snooping/trusted-ports', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'add', port: port })
+        });
+        if (r.ok) {
+          this.showToast('Trusted port added: ' + port, 'toast-success');
+          this.newPort = '';
+          setTimeout(() => this.fetchConfig(), 500);
+        } else {
+          let msg = 'Failed to add port';
+          try { const d = await r.json(); if (d.error) msg = d.error; } catch {}
+          this.showToast(msg, 'toast-error');
+        }
+      } catch {
+        this.showToast('Request failed', 'toast-error');
+      } finally {
+        this.portBusy = false;
+      }
+    },
+
+    async removeTrustedPort(name) {
+      if (this.portBusy) return;
+      this.portBusy = true;
+      try {
+        const r = await apiFetch('/api/dhcp-snooping/trusted-ports', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'remove', port: name })
+        });
+        if (r.ok) {
+          this.showToast('Trusted port removed: ' + name, 'toast-success');
+          setTimeout(() => this.fetchConfig(), 500);
+        } else {
+          let msg = 'Failed to remove port';
+          try { const d = await r.json(); if (d.error) msg = d.error; } catch {}
+          this.showToast(msg, 'toast-error');
+        }
+      } catch {
+        this.showToast('Request failed', 'toast-error');
+      } finally {
+        this.portBusy = false;
+      }
+    },
+
+    fmtTime(ts) {
+      const d = new Date(ts * 1000);
+      return d.toLocaleString('sv-SE', { hour12: false }).replace('T', ' ');
+    },
+
+    sevClass(sev) {
+      if (sev === 'error' || sev === 'critical') return 'badge-error';
+      if (sev === 'warning') return 'badge-warn';
+      return 'badge-up';
+    },
+
+    showToast(msg, cls) { this.toastMsg = msg; this.toastClass = cls; this.toast = true; }
+  };
+}
+</script>
+</body>
+</html>

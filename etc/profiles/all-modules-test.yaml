@@ -4,6 +4,7 @@ version: "1.0"
 
 ingress:
   - vlan
+  - dhcp_snoop
   - arp_learn
   - acl
   - mirror
@@ -101,6 +102,15 @@ management:
   auth_enabled: true
   auth_user: admin
   auth_password: rswitch
+
+dhcp_snooping:
+  enabled: true
+  drop_rogue_server: true
+  trusted_ports:
+    - ens34
+    - ens35
+    - ens36
+    - ens37
 
 vlans:
   - vlan_id: 1

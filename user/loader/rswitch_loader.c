@@ -970,6 +970,64 @@ static int reuse_shared_maps(struct bpf_object *obj, struct loader_ctx *ctx)
     return 0;
 }
 
+struct dhcp_snoop_config_loader {
+    __u32 enabled;
+    __u32 drop_rogue_server;
+    __u32 trusted_port_count;
+    __u32 pad;
+};
+
+static void dhcp_snoop_prepopulate(struct loader_ctx *ctx)
+{
+    struct rs_profile_dhcp_snooping *ds = &ctx->profile.dhcp_snooping;
+
+    if (!ds->enabled)
+        return;
+
+    int cfg_fd = bpf_obj_get("/sys/fs/bpf/dhcp_snoop_config_map");
+    int tp_fd = bpf_obj_get("/sys/fs/bpf/dhcp_trusted_ports_map");
+
+    if (tp_fd >= 0) {
+        int populated = 0;
+        for (int i = 0; i < ds->trusted_port_count; i++) {
+            __u32 ifidx = if_nametoindex(ds->trusted_ports[i]);
+            if (ifidx == 0) {
+                RS_LOG_WARN("DHCP trusted port '%s' not found at load time",
+                            ds->trusted_ports[i]);
+                continue;
+            }
+            __u32 val = 1;
+            if (bpf_map_update_elem(tp_fd, &ifidx, &val, BPF_ANY) == 0) {
+                RS_LOG_INFO("Loader: DHCP trusted port %s (ifindex=%u)",
+                            ds->trusted_ports[i], ifidx);
+                populated++;
+            }
+        }
+        close(tp_fd);
+
+        if (cfg_fd >= 0) {
+            __u32 key = 0;
+            struct dhcp_snoop_config_loader cfg = {
+                .enabled = 1,
+                .drop_rogue_server = ds->drop_rogue_server ? 1 : 0,
+                .trusted_port_count = (__u32) populated,
+            };
+            if (bpf_map_update_elem(cfg_fd, &key, &cfg, BPF_ANY) == 0)
+                RS_LOG_INFO("Loader: DHCP snooping config (drop_rogue=%d, trusted=%d)",
+                            cfg.drop_rogue_server, populated);
+            else
+                RS_LOG_WARN("Loader: failed to write dhcp_snoop_config_map: %s",
+                            strerror(errno));
+        }
+    } else {
+        RS_LOG_WARN("Loader: dhcp_trusted_ports_map not available: %s",
+                    strerror(errno));
+    }
+
+    if (cfg_fd >= 0)
+        close(cfg_fd);
+}
+
 /* Load module BPF objects and get program FDs */
 static int load_modules(struct loader_ctx *ctx)
 {
@@ -1031,6 +1089,9 @@ static int load_modules(struct loader_ctx *ctx)
             printf("Loaded module %s: stage=%u, fd=%d\n", 
                    mod->name, mod->stage, mod->prog_fd);
         }
+
+        if (ctx->use_profile && strcmp(mod->name, "dhcp_snoop") == 0)
+            dhcp_snoop_prepopulate(ctx);
     }
     
     return 0;

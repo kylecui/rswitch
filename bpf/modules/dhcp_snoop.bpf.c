@@ -13,7 +13,7 @@ RS_DECLARE_MODULE("dhcp_snoop", RS_HOOK_XDP_INGRESS, 19,
                   RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_NEED_FLOW_INFO |
                       RS_FLAG_MAY_DROP | RS_FLAG_CREATES_EVENTS,
                   "DHCP Snooping");
-RS_DEPENDS_ON("source_guard");
+
 
 #define DHCP_SERVER_PORT 67
 #define DHCP_CLIENT_PORT 68
@@ -31,7 +31,8 @@ RS_DEPENDS_ON("source_guard");
 struct dhcp_snoop_config {
     __u32 enabled;
     __u32 drop_rogue_server;
-    __u32 pad[2];
+    __u32 trusted_port_count;   /* 0 = no enforcement (allow all) */
+    __u32 pad;
 };
 
 struct dhcp_snoop_stats {
@@ -74,11 +75,12 @@ enum dhcp_snoop_action {
     DHCP_SNOOP_ACTION_BINDING_CREATE = 2,
 };
 
-extern struct {
+struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 16384);
     __type(key, struct sg_key);
     __type(value, struct sg_entry);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } sg_binding_map SEC(".maps");
 
 struct {
@@ -128,36 +130,58 @@ static __always_inline void emit_snoop_event(__u32 ifindex, __u8 msg_type, __u8 
     RS_EMIT_EVENT(&evt, sizeof(evt));
 }
 
+/*
+ * Extract DHCP message type.
+ *
+ * RFC 2131: option 53 is mandatory and virtually always appears as the
+ * first option right after the 4-byte magic cookie (offset 240).
+ * We check that position first for the fast path, then scan a small
+ * number of additional options as a fallback.  The two-phase approach
+ * keeps the verifier happy while covering real-world DHCP traffic.
+ */
 static __always_inline __u8 parse_dhcp_message_type(__u8 *dhcp, void *data_end)
 {
-    __u16 offset = DHCP_MIN_LEN;
+    /* Fast path: option 53 at standard position (offset 240) */
+    __u8 *fast = dhcp + DHCP_MIN_LEN;
+    if ((void *)(fast + 3) <= data_end &&
+        fast[0] == DHCP_OPT_MSG_TYPE && fast[1] >= 1)
+        return fast[2];
+
+    /* Slow path: scan up to 8 options from offset 240 */
+    __u32 off = DHCP_MIN_LEN;
 
 #pragma unroll
-    for (int i = 0; i < 64; i++) {
-        __u8 *opt = dhcp + offset;
+    for (int i = 0; i < 8; i++) {
+        __u8 *opt = dhcp + off;
         if ((void *)(opt + 1) > data_end)
-            break;
+            return 0;
 
         __u8 code = *opt;
         if (code == DHCP_OPT_END)
-            break;
+            return 0;
         if (code == DHCP_OPT_PAD) {
-            offset += 1;
+            off++;
             continue;
         }
 
-        if ((void *)(opt + 2) > data_end)
-            break;
+        /* Check 3 bytes: code + len + at least 1 value byte.
+         * This single check covers the reads of *(opt+1) and *(opt+2)
+         * so the verifier has bounds for the value read below. */
+        if ((void *)(opt + 3) > data_end)
+            return 0;
 
-        __u8 opt_len = *(opt + 1);
-        __u8 *opt_val = opt + 2;
-        if ((void *)(opt_val + opt_len) > data_end)
-            break;
+        __u8 len = *(opt + 1);
+        if (len == 0)
+            return 0;
 
-        if (code == DHCP_OPT_MSG_TYPE && opt_len >= 1)
-            return *opt_val;
+        if (code == DHCP_OPT_MSG_TYPE)
+            return *(opt + 2);
 
-        offset += (__u16)opt_len + 2;
+        /* For non-target options, validate full TLV before advancing */
+        if ((void *)(opt + 2 + len) > data_end)
+            return 0;
+
+        off += (__u32)len + 2;
     }
 
     return 0;
@@ -215,8 +239,9 @@ int dhcp_snoop(struct xdp_md *xdp_ctx)
     if (sport == DHCP_SERVER_PORT) {
         __u32 *trusted = bpf_map_lookup_elem(&dhcp_trusted_ports_map, &ctx->ifindex);
         int trusted_port = trusted && *trusted;
+        int has_trusted_ports = cfg->trusted_port_count > 0;
 
-        if (!trusted_port && cfg->drop_rogue_server) {
+        if (!trusted_port && has_trusted_ports && cfg->drop_rogue_server) {
             if (stats)
                 stats->rogue_server_drops++;
             emit_snoop_event(ctx->ifindex, msg_type, DHCP_SNOOP_ACTION_ROGUE_DROP, 0, NULL);
@@ -224,7 +249,7 @@ int dhcp_snoop(struct xdp_md *xdp_ctx)
             return XDP_DROP;
         }
 
-        if (trusted_port && msg_type == DHCP_MSG_ACK) {
+        if ((trusted_port || !has_trusted_ports) && msg_type == DHCP_MSG_ACK) {
             struct sg_key key = {};
             struct sg_entry entry = {};
 

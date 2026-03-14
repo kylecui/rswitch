@@ -137,6 +137,10 @@ void profile_init(struct rs_profile *profile)
     profile->mgmt.session_timeout = 3600;
     profile->mgmt.rate_limit_max_fails = 5;
     profile->mgmt.rate_limit_lockout_sec = 300;
+
+    profile->dhcp_snooping.enabled = 0;
+    profile->dhcp_snooping.drop_rogue_server = 0;
+    profile->dhcp_snooping.trusted_port_count = 0;
     
     profile->ports = NULL;
     profile->port_count = 0;
@@ -941,6 +945,55 @@ static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
     return 0;
 }
 
+static int parse_dhcp_snooping(FILE *fp, struct rs_profile_dhcp_snooping *ds)
+{
+    char line[MAX_LINE_LEN];
+    char key[256], value[256];
+    int in_trusted_ports = 0;
+
+    while (fgets(line, sizeof(line), fp)) {
+        char line_copy[MAX_LINE_LEN];
+        strncpy(line_copy, line, sizeof(line_copy) - 1);
+        line_copy[sizeof(line_copy) - 1] = '\0';
+
+        remove_comment(line);
+        char *trimmed = trim(line);
+
+        if (strlen(trimmed) == 0) continue;
+
+        if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
+            fseek(fp, -(long)strlen(line_copy), SEEK_CUR);
+            break;
+        }
+
+        if (strncmp(trimmed, "- ", 2) == 0 && in_trusted_ports) {
+            if (ds->trusted_port_count < RS_MAX_DHCP_TRUSTED_PORTS) {
+                char *port_name = trim(trimmed + 2);
+                strncpy(ds->trusted_ports[ds->trusted_port_count],
+                        port_name,
+                        sizeof(ds->trusted_ports[0]) - 1);
+                ds->trusted_port_count++;
+            }
+            continue;
+        }
+
+        in_trusted_ports = 0;
+
+        if (parse_key_value(trimmed, key, value, sizeof(key)) != 0)
+            continue;
+
+        if (strcmp(key, "enabled") == 0) {
+            ds->enabled = parse_bool(value);
+        } else if (strcmp(key, "drop_rogue_server") == 0) {
+            ds->drop_rogue_server = parse_bool(value);
+        } else if (strcmp(key, "trusted_ports") == 0) {
+            in_trusted_ports = 1;
+        }
+    }
+
+    return 0;
+}
+
 static int parse_management(FILE *fp, struct rs_profile_mgmt *mgmt)
 {
     char line[MAX_LINE_LEN];
@@ -1118,6 +1171,9 @@ int profile_load(const char *filename, struct rs_profile *profile)
         } else if (strcmp(key, "management") == 0) {
             ret = parse_management(fp, &profile->mgmt);
             if (ret < 0) goto error;
+        } else if (strcmp(key, "dhcp_snooping") == 0) {
+            ret = parse_dhcp_snooping(fp, &profile->dhcp_snooping);
+            if (ret < 0) goto error;
         } else if (strcmp(key, "ports") == 0) {
             ret = parse_ports(fp, profile);
             if (ret < 0) goto error;
@@ -1228,4 +1284,11 @@ void profile_print(const struct rs_profile *profile)
     printf("  Session timeout: %d\n", profile->mgmt.session_timeout);
     printf("  Rate limit max fails: %d\n", profile->mgmt.rate_limit_max_fails);
     printf("  Rate limit lockout sec: %d\n", profile->mgmt.rate_limit_lockout_sec);
+
+    printf("\nDHCP Snooping:\n");
+    printf("  Enabled: %s\n", profile->dhcp_snooping.enabled ? "yes" : "no");
+    printf("  Drop rogue server: %s\n", profile->dhcp_snooping.drop_rogue_server ? "yes" : "no");
+    printf("  Trusted ports (%d):\n", profile->dhcp_snooping.trusted_port_count);
+    for (int i = 0; i < profile->dhcp_snooping.trusted_port_count; i++)
+        printf("    - %s\n", profile->dhcp_snooping.trusted_ports[i]);
 }

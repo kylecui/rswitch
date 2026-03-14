@@ -115,6 +115,15 @@ struct rs_profile_module_entry {
     int config_count;
 };
 
+#define RS_MAX_DHCP_TRUSTED_PORTS 16
+
+struct rs_profile_dhcp_snooping {
+    int enabled;
+    int drop_rogue_server;
+    char trusted_ports[RS_MAX_DHCP_TRUSTED_PORTS][32];
+    int trusted_port_count;
+};
+
 /* Profile structure */
 struct rs_profile {
     char name[64];
@@ -138,6 +147,9 @@ struct rs_profile {
 
     /* Management plane configuration */
     struct rs_profile_mgmt mgmt;
+
+    /* DHCP snooping configuration */
+    struct rs_profile_dhcp_snooping dhcp_snooping;
     
     /* Port configurations */
     struct rs_profile_port *ports;

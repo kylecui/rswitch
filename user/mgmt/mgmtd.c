@@ -64,12 +64,29 @@
 #define ACL_CONFIG_MAP_PATH "/sys/fs/bpf/acl_config_map"
 #define ROUTE_TBL_MAP_PATH "/sys/fs/bpf/route_tbl"
 #define RS_EVENT_BUS_PATH "/sys/fs/bpf/rs_event_bus"
+#define DHCP_SNOOP_CONFIG_MAP_PATH "/sys/fs/bpf/dhcp_snoop_config_map"
+#define DHCP_TRUSTED_PORTS_MAP_PATH "/sys/fs/bpf/dhcp_trusted_ports_map"
 
 /* Event type ranges (must match uapi.h) */
 #define RS_EVENT_L2_BASE        0x0100
 #define RS_EVENT_ACL_BASE       0x0200
+#define RS_EVENT_DHCP_SNOOP     (RS_EVENT_ACL_BASE + 0x20) /* 0x0220 */
 #define RS_EVENT_MIRROR_BASE    0x0400
 #define RS_EVENT_ERROR_BASE     0xFF00
+
+/* DHCP snooping structures (must match dhcp_snoop.bpf.c) */
+struct dhcp_snoop_config {
+	__u32 enabled;
+	__u32 drop_rogue_server;
+	__u32 trusted_port_count;
+	__u32 pad;
+};
+
+enum dhcp_snoop_action_e {
+	DHCP_SNOOP_ACTION_OBSERVED       = 0,
+	DHCP_SNOOP_ACTION_ROGUE_DROP     = 1,
+	DHCP_SNOOP_ACTION_BINDING_CREATE = 2,
+};
 
 struct acl_5tuple_key {
 	__u8 proto;
@@ -212,6 +229,11 @@ struct mgmtd_ctx {
 	char profile_path[PATH_MAX];
 	struct profile_module_info profile_modules[128];
 	int profile_module_count;
+	/* DHCP snooping config cached from profile */
+	int dhcp_snoop_enabled;
+	int dhcp_snoop_drop_rogue;
+	char dhcp_trusted_ports[16][32];
+	int dhcp_trusted_port_count;
 };
 
 static volatile sig_atomic_t g_running = 1;
@@ -233,14 +255,17 @@ static struct {
 	int acl_pp_fd;
 	int acl_config_fd;
 	int route_tbl_fd;
+	int dhcp_snoop_config_fd;
+	int dhcp_trusted_ports_fd;
 	int ncpus;
 	bool initialized;
 } g_maps = { .stats_fd = -1, .module_stats_fd = -1, .port_config_fd = -1,
 	     .vlan_fd = -1, .mac_table_fd = -1, .module_config_fd = -1,
 	     .voqd_state_fd = -1, .qdepth_fd = -1, .acl_5tuple_fd = -1,
 	     .acl_pdp_fd = -1, .acl_psp_fd = -1, .acl_pp_fd = -1,
-	     .acl_config_fd = -1, .route_tbl_fd = -1, .ncpus = 0,
-	     .initialized = false };
+	     .acl_config_fd = -1, .route_tbl_fd = -1,
+	     .dhcp_snoop_config_fd = -1, .dhcp_trusted_ports_fd = -1,
+	     .ncpus = 0, .initialized = false };
 
 /* ── Live event tracking state ── */
 
@@ -261,6 +286,23 @@ static volatile int g_event_thread_running;
 static int g_stats_event_counter;
 
 #define STATS_EVENT_INTERVAL 15
+
+static __u32 resolve_ifindex(const char *name)
+{
+	__u32 idx = if_nametoindex(name);
+	if (idx)
+		return idx;
+	char path[256];
+	snprintf(path, sizeof(path), "/sys/class/net/%s/ifindex", name);
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return 0;
+	unsigned int val = 0;
+	if (fscanf(f, "%u", &val) != 1)
+		val = 0;
+	fclose(f);
+	return (__u32)val;
+}
 
 #define MAX_SESSIONS 64
 #define SESSION_TOKEN_LEN 32
@@ -287,6 +329,7 @@ static struct {
 
 static bool method_is(struct mg_str method, const char *s);
 static void json_printf(struct mg_connection *c, int status, const char *fmt, ...);
+static int ifindex_to_name_sysfs(__u32 ifindex, char *out, size_t out_sz);
 
 static struct mg_str mg_http_body(const struct mg_http_message *hm)
 {
@@ -922,6 +965,8 @@ static int mgmtd_maps_init(void)
 	map_try_open(&g_maps.acl_pp_fd, ACL_PP_MAP_PATH);
 	map_try_open(&g_maps.acl_config_fd, ACL_CONFIG_MAP_PATH);
 	map_try_open(&g_maps.route_tbl_fd, ROUTE_TBL_MAP_PATH);
+	map_try_open(&g_maps.dhcp_snoop_config_fd, DHCP_SNOOP_CONFIG_MAP_PATH);
+	map_try_open(&g_maps.dhcp_trusted_ports_fd, DHCP_TRUSTED_PORTS_MAP_PATH);
 
 	g_maps.initialized = true;
 	return 0;
@@ -957,6 +1002,10 @@ static void mgmtd_maps_close(void)
 		close(g_maps.acl_config_fd);
 	if (g_maps.route_tbl_fd >= 0)
 		close(g_maps.route_tbl_fd);
+	if (g_maps.dhcp_snoop_config_fd >= 0)
+		close(g_maps.dhcp_snoop_config_fd);
+	if (g_maps.dhcp_trusted_ports_fd >= 0)
+		close(g_maps.dhcp_trusted_ports_fd);
 
 	g_maps.stats_fd = -1;
 	g_maps.module_stats_fd = -1;
@@ -972,6 +1021,8 @@ static void mgmtd_maps_close(void)
 	g_maps.acl_pp_fd = -1;
 	g_maps.acl_config_fd = -1;
 	g_maps.route_tbl_fd = -1;
+	g_maps.dhcp_snoop_config_fd = -1;
+	g_maps.dhcp_trusted_ports_fd = -1;
 	g_maps.initialized = false;
 }
 
@@ -1212,6 +1263,7 @@ static const char *bpf_event_action(uint32_t event_type)
 	case 0x0103: return "mac_aged";
 	case 0x0201: return "acl_hit";
 	case 0x0202: return "acl_deny";
+	case RS_EVENT_DHCP_SNOOP: return "dhcp_snoop";
 	case 0xFF01: return "parse_error";
 	case 0xFF02: return "map_full";
 	default:     return "bpf_event";
@@ -1244,6 +1296,46 @@ static int event_bus_callback(void *ctx, void *data, size_t size)
 			 "MAC %02x:%02x:%02x:%02x:%02x:%02x VLAN=%u ifindex=%u",
 			 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
 			 vlan, ifidx);
+	} else if (event_type == RS_EVENT_DHCP_SNOOP && size >= 24) {
+		uint32_t ifidx = 0;
+		uint8_t msg_type = 0, action = 0;
+		uint32_t yiaddr = 0;
+		uint8_t chaddr[6] = {0};
+		char portname[IF_NAMESIZE];
+
+		memcpy(&ifidx, (uint8_t *)data + 4, sizeof(ifidx));
+		msg_type = *((uint8_t *)data + 8);
+		action = *((uint8_t *)data + 9);
+		memcpy(&yiaddr, (uint8_t *)data + 12, sizeof(yiaddr));
+		memcpy(chaddr, (uint8_t *)data + 16, sizeof(chaddr));
+
+		snprintf(portname, sizeof(portname), "port%u", ifidx);
+		ifindex_to_name_sysfs(ifidx, portname, sizeof(portname));
+
+		const char *msg_str = "unknown";
+		if (msg_type == 1) msg_str = "DISCOVER";
+		else if (msg_type == 2) msg_str = "OFFER";
+		else if (msg_type == 3) msg_str = "REQUEST";
+		else if (msg_type == 5) msg_str = "ACK";
+
+		const char *act_str = "observed";
+		if (action == DHCP_SNOOP_ACTION_ROGUE_DROP) act_str = "ROGUE_DROP";
+		else if (action == DHCP_SNOOP_ACTION_BINDING_CREATE) act_str = "BINDING_CREATE";
+
+		uint8_t *ip = (uint8_t *)&yiaddr;
+		snprintf(detail, sizeof(detail),
+			 "DHCP %s on %s [%s] IP=%u.%u.%u.%u MAC=%02x:%02x:%02x:%02x:%02x:%02x",
+			 msg_str, portname, act_str,
+			 ip[0], ip[1], ip[2], ip[3],
+			 chaddr[0], chaddr[1], chaddr[2],
+			 chaddr[3], chaddr[4], chaddr[5]);
+
+		int sev = AUDIT_SEV_INFO;
+		if (action == DHCP_SNOOP_ACTION_ROGUE_DROP)
+			sev = AUDIT_SEV_CRITICAL;
+
+		mgmtd_broadcast_event(sev, "dhcp", act_str, detail);
+		return 0;
 	} else if (event_type >= RS_EVENT_ACL_BASE && event_type <= 0x0202) {
 		snprintf(detail, sizeof(detail), "event_type=0x%04x size=%zu",
 			 event_type, size);
@@ -1424,20 +1516,15 @@ static void handle_system_health(struct mg_connection *c, struct mg_http_message
 
 static void handle_system_reboot(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
-	int ret;
-
 	(void) hm;
 	(void) userdata;
 
 	mgmtd_audit_log(AUDIT_SEV_WARNING, AUDIT_CAT_SYSTEM, "reboot", 1,
 			    "reboot requested via mgmtd API");
-	ret = cmd_system("reboot");
-	if (ret != 0) {
-		json_printf(c, 500, "{\"status\":\"failed\",\"code\":%d}", ret);
-		return;
-	}
-
-	json_printf(c, 200, "{\"status\":\"ok\"}");
+	json_printf(c, 200, "{\"status\":\"rebooting\"}");
+	c->is_draining = 1;
+	sync();
+	system("reboot");
 }
 
 static void handle_system_shutdown(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -1447,8 +1534,10 @@ static void handle_system_shutdown(struct mg_connection *c, struct mg_http_messa
 
 	mgmtd_audit_log(AUDIT_SEV_WARNING, AUDIT_CAT_SYSTEM, "shutdown", 1,
 			    "shutdown requested via mgmtd API");
-	g_running = 0;
-	json_printf(c, 200, "{\"status\":\"stopping\"}");
+	json_printf(c, 200, "{\"status\":\"shutting_down\"}");
+	c->is_draining = 1;
+	sync();
+	system("shutdown -h now");
 }
 
 static void handle_network_get(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -2717,7 +2806,7 @@ static void handle_route_add(struct mg_connection *c, struct mg_http_message *hm
 	}
 
 	if (iface_str) {
-		entry.ifindex = if_nametoindex(iface_str);
+		entry.ifindex = resolve_ifindex(iface_str);
 		if (entry.ifindex == 0)
 			entry.ifindex = (__u32) atoi(iface_str);
 		free(iface_str);
@@ -3209,7 +3298,7 @@ static void ws_timer_fn(void *arg)
 					FILE *fp;
 					char path[128];
 
-					if_indextoname(p.ifindex, name);
+					ifindex_to_name_sysfs(p.ifindex, name, sizeof(name));
 
 					snprintf(path, sizeof(path),
 						 "/sys/class/net/%s/operstate", name);
@@ -3272,6 +3361,201 @@ static void handle_preflight(struct mg_connection *c)
 		      "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
 		      "Access-Control-Max-Age: 86400\r\n",
 		      "");
+}
+
+static void handle_dhcp_snoop_get(struct mg_connection *c, struct mg_http_message *hm,
+				  void *userdata)
+{
+	char out[4096];
+	size_t off = 0;
+
+	(void) hm;
+	(void) userdata;
+
+	mgmtd_maps_ensure();
+
+	int enabled = 0, drop_rogue = 0;
+	if (g_maps.dhcp_snoop_config_fd >= 0) {
+		__u32 key = 0;
+		struct dhcp_snoop_config cfg;
+		if (bpf_map_lookup_elem(g_maps.dhcp_snoop_config_fd, &key, &cfg) == 0) {
+			enabled = cfg.enabled ? 1 : 0;
+			drop_rogue = cfg.drop_rogue_server ? 1 : 0;
+		}
+	}
+
+	off += (size_t) snprintf(out + off, sizeof(out) - off,
+				 "{\"enabled\":%s,\"drop_rogue_server\":%s,"
+				 "\"trusted_ports\":[",
+				 enabled ? "true" : "false",
+				 drop_rogue ? "true" : "false");
+
+	int port_count = 0;
+	if (g_maps.dhcp_trusted_ports_fd >= 0) {
+		__u32 key = 0, next_key = 0;
+		__u32 trusted = 0;
+		int first_iter = 1;
+		char ifname[IF_NAMESIZE] = {0};
+
+		while (bpf_map_get_next_key(g_maps.dhcp_trusted_ports_fd,
+					    first_iter ? NULL : &key, &next_key) == 0) {
+			first_iter = 0;
+			memset(ifname, 0, sizeof(ifname));
+			if (bpf_map_lookup_elem(g_maps.dhcp_trusted_ports_fd,
+						&next_key, &trusted) == 0 && trusted) {
+				ifindex_to_name_sysfs(next_key, ifname, sizeof(ifname));
+				off += (size_t) snprintf(out + off, sizeof(out) - off,
+							 "%s{\"ifindex\":%u,\"name\":\"%s\"}",
+							 port_count > 0 ? "," : "",
+							 next_key,
+							 ifname[0] ? ifname : "unknown");
+				port_count++;
+			}
+			key = next_key;
+			if (off + 256 >= sizeof(out))
+				break;
+		}
+	}
+
+	off += (size_t) snprintf(out + off, sizeof(out) - off,
+				 "],\"trusted_port_count\":%d}", port_count);
+
+	mg_http_reply(c, 200,
+		      "Content-Type: application/json\r\n"
+		      "Access-Control-Allow-Origin: *\r\n",
+		      "%.*s", (int) off, out);
+}
+
+static void handle_dhcp_snoop_config_update(struct mg_connection *c, struct mg_http_message *hm,
+					    void *userdata)
+{
+	(void) userdata;
+
+	mgmtd_maps_ensure();
+
+	if (g_maps.dhcp_snoop_config_fd < 0) {
+		json_printf(c, 503, "{\"error\":\"dhcp_snoop_config_map not available\"}");
+		return;
+	}
+
+	int enabled = -1, drop_rogue = -1;
+	bool bval;
+	if (mg_json_get_bool(hm->body, "$.enabled", &bval))
+		enabled = bval ? 1 : 0;
+	if (mg_json_get_bool(hm->body, "$.drop_rogue_server", &bval))
+		drop_rogue = bval ? 1 : 0;
+
+	__u32 key = 0;
+	struct dhcp_snoop_config cfg = {0};
+	bpf_map_lookup_elem(g_maps.dhcp_snoop_config_fd, &key, &cfg);
+
+	if (enabled >= 0)
+		cfg.enabled = (__u32) enabled;
+	if (drop_rogue >= 0)
+		cfg.drop_rogue_server = (__u32) drop_rogue;
+
+	if (bpf_map_update_elem(g_maps.dhcp_snoop_config_fd, &key, &cfg, BPF_ANY) < 0) {
+		json_printf(c, 500, "{\"error\":\"failed to update config: %s\"}", strerror(errno));
+		return;
+	}
+
+	g_ctx.dhcp_snoop_enabled = cfg.enabled;
+	g_ctx.dhcp_snoop_drop_rogue = cfg.drop_rogue_server;
+
+	RS_LOG_INFO("DHCP snooping config updated: enabled=%u drop_rogue=%u",
+		    cfg.enabled, cfg.drop_rogue_server);
+	mgmtd_broadcast_event(AUDIT_SEV_INFO, "dhcp", "config_update",
+			      cfg.enabled ? "DHCP snooping enabled" : "DHCP snooping disabled");
+
+	json_printf(c, 200, "{\"ok\":true,\"enabled\":%s,\"drop_rogue_server\":%s}",
+		    cfg.enabled ? "true" : "false",
+		    cfg.drop_rogue_server ? "true" : "false");
+}
+
+static void sync_trusted_port_count(void)
+{
+	if (g_maps.dhcp_snoop_config_fd < 0 || g_maps.dhcp_trusted_ports_fd < 0)
+		return;
+
+	__u32 count = 0, key = 0, next_key;
+	while (bpf_map_get_next_key(g_maps.dhcp_trusted_ports_fd,
+				    count ? &key : NULL, &next_key) == 0) {
+		key = next_key;
+		count++;
+	}
+
+	__u32 cfg_key = 0;
+	struct dhcp_snoop_config cfg = {0};
+	bpf_map_lookup_elem(g_maps.dhcp_snoop_config_fd, &cfg_key, &cfg);
+	cfg.trusted_port_count = count;
+	bpf_map_update_elem(g_maps.dhcp_snoop_config_fd, &cfg_key, &cfg, BPF_ANY);
+}
+
+static void handle_dhcp_snoop_trusted_ports(struct mg_connection *c, struct mg_http_message *hm,
+					    void *userdata)
+{
+	(void) userdata;
+
+	mgmtd_maps_ensure();
+
+	if (g_maps.dhcp_trusted_ports_fd < 0) {
+		json_printf(c, 503, "{\"error\":\"dhcp_trusted_ports_map not available\"}");
+		return;
+	}
+
+	char *action_str = mg_json_get_str(hm->body, "$.action");
+	char *port_str = mg_json_get_str(hm->body, "$.port");
+	if (!action_str || !port_str) {
+		free(action_str);
+		free(port_str);
+		json_printf(c, 400,
+			    "{\"error\":\"required: {action:'add'|'remove', port:'ifname'}\"}");
+		return;
+	}
+
+	__u32 ifidx = resolve_ifindex(port_str);
+	if (ifidx == 0) {
+		json_printf(c, 404, "{\"error\":\"interface not found: %s\"}", port_str);
+		free(action_str);
+		free(port_str);
+		return;
+	}
+
+	if (strcmp(action_str, "add") == 0) {
+		__u32 trusted = 1;
+		if (bpf_map_update_elem(g_maps.dhcp_trusted_ports_fd,
+					&ifidx, &trusted, BPF_ANY) < 0) {
+			json_printf(c, 500, "{\"error\":\"map update failed: %s\"}",
+				    strerror(errno));
+			free(action_str);
+			free(port_str);
+			return;
+		}
+		RS_LOG_INFO("DHCP trusted port added: %s (ifindex=%u)", port_str, ifidx);
+		mgmtd_broadcast_event(AUDIT_SEV_INFO, "dhcp", "trusted_port_add", port_str);
+		sync_trusted_port_count();
+	} else if (strcmp(action_str, "remove") == 0) {
+		if (bpf_map_delete_elem(g_maps.dhcp_trusted_ports_fd, &ifidx) < 0 &&
+		    errno != ENOENT) {
+			json_printf(c, 500, "{\"error\":\"map delete failed: %s\"}",
+				    strerror(errno));
+			free(action_str);
+			free(port_str);
+			return;
+		}
+		RS_LOG_INFO("DHCP trusted port removed: %s (ifindex=%u)", port_str, ifidx);
+		mgmtd_broadcast_event(AUDIT_SEV_INFO, "dhcp", "trusted_port_remove", port_str);
+		sync_trusted_port_count();
+	} else {
+		json_printf(c, 400, "{\"error\":\"action must be 'add' or 'remove'\"}");
+		free(action_str);
+		free(port_str);
+		return;
+	}
+
+	free(action_str);
+	free(port_str);
+	json_printf(c, 200, "{\"ok\":true}");
 }
 
 static void handle_api_events(struct mg_connection *c, struct mg_http_message *hm)
@@ -3463,6 +3747,13 @@ static void dispatch_api(struct mg_connection *c, struct mg_http_message *hm, vo
 	if (method_is(hm->method, "GET") && mg_match(hm->uri, mg_str("/api/events"), NULL))
 		return handle_api_events(c, hm);
 
+	if (method_is(hm->method, "GET") && mg_match(hm->uri, mg_str("/api/dhcp-snooping"), NULL))
+		return handle_dhcp_snoop_get(c, hm, userdata);
+	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/dhcp-snooping/config"), NULL))
+		return handle_dhcp_snoop_config_update(c, hm, userdata);
+	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/dhcp-snooping/trusted-ports"), NULL))
+		return handle_dhcp_snoop_trusted_ports(c, hm, userdata);
+
 	json_printf(c, 404, "{\"error\":\"route not found\"}");
 }
 
@@ -3643,6 +3934,63 @@ int main(int argc, char **argv)
 			strncpy(g_ctx.profile_modules[g_ctx.profile_module_count].type,
 				"egress", sizeof(g_ctx.profile_modules[0].type) - 1);
 			g_ctx.profile_module_count++;
+		}
+
+		/* Populate DHCP snooping BPF maps from profile config */
+		g_ctx.dhcp_snoop_enabled = profile.dhcp_snooping.enabled;
+		g_ctx.dhcp_snoop_drop_rogue = profile.dhcp_snooping.drop_rogue_server;
+		g_ctx.dhcp_trusted_port_count = profile.dhcp_snooping.trusted_port_count;
+		for (int i = 0; i < profile.dhcp_snooping.trusted_port_count && i < 16; i++)
+			strncpy(g_ctx.dhcp_trusted_ports[i],
+				profile.dhcp_snooping.trusted_ports[i],
+				sizeof(g_ctx.dhcp_trusted_ports[0]) - 1);
+
+		if (profile.dhcp_snooping.enabled) {
+			int fd = bpf_obj_get(DHCP_SNOOP_CONFIG_MAP_PATH);
+			if (fd >= 0) {
+				__u32 key = 0;
+				struct dhcp_snoop_config cfg = {
+					.enabled = 1,
+					.drop_rogue_server = profile.dhcp_snooping.drop_rogue_server ? 1 : 0,
+					.trusted_port_count = (__u32) profile.dhcp_snooping.trusted_port_count,
+				};
+				if (bpf_map_update_elem(fd, &key, &cfg, BPF_ANY) == 0)
+					RS_LOG_INFO("DHCP snooping enabled (drop_rogue=%d, trusted_ports=%d)",
+						    cfg.drop_rogue_server, cfg.trusted_port_count);
+				else
+					RS_LOG_WARN("Failed to update dhcp_snoop_config_map: %s",
+						    strerror(errno));
+				close(fd);
+			} else {
+				RS_LOG_WARN("dhcp_snoop_config_map not available: %s",
+					    strerror(errno));
+			}
+
+			fd = bpf_obj_get(DHCP_TRUSTED_PORTS_MAP_PATH);
+			if (fd >= 0) {
+				for (int i = 0; i < profile.dhcp_snooping.trusted_port_count; i++) {
+				__u32 ifidx = resolve_ifindex(
+					profile.dhcp_snooping.trusted_ports[i]);
+					if (ifidx == 0) {
+						RS_LOG_WARN("DHCP trusted port '%s' not found",
+							    profile.dhcp_snooping.trusted_ports[i]);
+						continue;
+					}
+					__u32 trusted = 1;
+					if (bpf_map_update_elem(fd, &ifidx, &trusted, BPF_ANY) == 0)
+						RS_LOG_INFO("DHCP trusted port %s (ifindex=%u)",
+							    profile.dhcp_snooping.trusted_ports[i],
+							    ifidx);
+					else
+						RS_LOG_WARN("Failed to set trusted port %s: %s",
+							    profile.dhcp_snooping.trusted_ports[i],
+							    strerror(errno));
+				}
+				close(fd);
+			} else {
+				RS_LOG_WARN("dhcp_trusted_ports_map not available: %s",
+					    strerror(errno));
+			}
 		}
 
 		profile_free(&profile);
