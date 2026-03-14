@@ -164,12 +164,24 @@ function dashboard() {
       } catch {}
     },
 
-    connectWs() {
+    async connectWs() {
+      try {
+        const resp = await apiFetch('/api/ports');
+        if (resp.status === 401) {
+          this.wsState = 'auth-required';
+          setTimeout(() => this.connectWs(), 2000);
+          return;
+        }
+      } catch (e) {
+        this.wsState = 'disconnected';
+        setTimeout(() => this.connectWs(), 3000);
+        return;
+      }
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       this.ws = new WebSocket(proto + '//' + location.host + '/api/ws');
       this.ws.onopen = () => { this.wsState = 'connected'; };
       this.ws.onclose = () => { this.wsState = 'reconnecting'; setTimeout(() => this.connectWs(), 3000); };
-      this.ws.onerror = () => { this.wsState = 'disconnected'; };
+      this.ws.onerror = () => { this.wsState = 'error'; };
       this.ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
@@ -184,7 +196,7 @@ function dashboard() {
             this.events.push({ severity: msg.severity, message: msg.message, time: ts.toLocaleTimeString(), ts: Date.now() });
             if (this.events.length > 200) this.events = this.events.slice(-100);
           }
-        } catch {}
+        } catch (err) { console.error('WS onmessage error:', err); }
       };
     },
 
