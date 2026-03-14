@@ -539,6 +539,52 @@ Environment=RSWITCH_WATCHDOG_IFACES=${ifaces}
 WantedBy=multi-user.target
 EOF
 
+    # Suppress DHCP / link-local IPs on switch ports
+    # Switch ports must carry only bridged traffic — no IP stack
+    info "Configuring IP suppression on switch ports..."
+    IFS=',' read -ra SW_PORTS <<< "$ifaces"
+
+    # dhcpcd: add denyinterfaces so it ignores switch ports
+    if [ -f /etc/dhcpcd.conf ] || command -v dhcpcd >/dev/null 2>&1; then
+        local dhcpcd_changed=0
+        for sp in "${SW_PORTS[@]}" veth_voq_in veth_voq_out mgmt-br mgmt-ext; do
+            if ! grep -qF "denyinterfaces ${sp}" /etc/dhcpcd.conf 2>/dev/null; then
+                echo "denyinterfaces ${sp}" >> /etc/dhcpcd.conf
+                dhcpcd_changed=1
+            fi
+        done
+        if [ "$dhcpcd_changed" = "1" ]; then
+            systemctl restart dhcpcd 2>/dev/null || true
+            info "dhcpcd denyinterfaces configured ✓"
+        fi
+    fi
+
+    # systemd-networkd: create .network files that disable DHCP/autoconf
+    if systemctl is-active systemd-networkd >/dev/null 2>&1; then
+        for sp in "${SW_PORTS[@]}"; do
+            cat > "/etc/systemd/network/10-rswitch-${sp}.network" <<NETEOF
+[Match]
+Name=${sp}
+
+[Link]
+Unmanaged=yes
+
+[Network]
+DHCP=no
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+NETEOF
+        done
+        systemctl restart systemd-networkd 2>/dev/null || true
+        info "systemd-networkd IP suppression configured ✓"
+    fi
+
+    # Flush any existing IPs on switch ports right now
+    for sp in "${SW_PORTS[@]}"; do
+        ip addr flush dev "$sp" 2>/dev/null || true
+    done
+    info "Switch port IPs flushed ✓"
+
     # Reload systemd
     systemctl daemon-reload
     info "Systemd units installed ✓"
@@ -637,6 +683,14 @@ done
 
 info "Removing installation directory..."
 rm -rf "$INSTALL_PREFIX"
+
+info "Removing IP suppression configs..."
+rm -f /etc/systemd/network/10-rswitch-*.network 2>/dev/null || true
+if [ -f /etc/dhcpcd.conf ]; then
+    sed -i '/^denyinterfaces .*/d' /etc/dhcpcd.conf 2>/dev/null || true
+fi
+systemctl restart dhcpcd 2>/dev/null || true
+systemctl restart systemd-networkd 2>/dev/null || true
 
 info "Removing runtime files..."
 rm -rf /run/rswitch 2>/dev/null || true
@@ -752,7 +806,64 @@ print_summary() {
 }
 
 # ── Main ─────────────────────────────────────────────────────────
+usage() {
+    cat <<EOF
+Usage: sudo bash install.sh [OPTIONS]
+
+Options:
+  -i, --interfaces IFACES   Comma-separated list of switch port NICs
+                             (default: auto-detect all physical NICs)
+  -m, --mgmt-nic NIC        Management NIC (default: auto-detect)
+  -p, --prefix PATH         Installation prefix (default: /opt/rswitch)
+  -y, --yes                 Skip confirmation prompts
+  -h, --help                Show this help
+
+Examples:
+  sudo bash install.sh                         # auto-detect everything
+  sudo bash install.sh -i ens34,ens35          # use only ens34 and ens35
+  sudo bash install.sh -i ens34,ens35 -m eth0  # specify mgmt NIC
+  curl -sfL https://get.rswitch.dev | sudo bash -s -- -i ens34,ens35
+EOF
+    exit 0
+}
+
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -i|--interfaces)
+                shift
+                [ $# -eq 0 ] && fatal "--interfaces requires a value"
+                RSWITCH_INTERFACES="$1"
+                export RSWITCH_INTERFACES
+                ;;
+            -m|--mgmt-nic)
+                shift
+                [ $# -eq 0 ] && fatal "--mgmt-nic requires a value"
+                RSWITCH_MGMT_NIC="$1"
+                export RSWITCH_MGMT_NIC
+                ;;
+            -p|--prefix)
+                shift
+                [ $# -eq 0 ] && fatal "--prefix requires a value"
+                INSTALL_PREFIX="$1"
+                ;;
+            -y|--yes)
+                RSWITCH_FORCE=1
+                export RSWITCH_FORCE
+                ;;
+            -h|--help)
+                usage
+                ;;
+            *)
+                fatal "Unknown option: $1 (see --help)"
+                ;;
+        esac
+        shift
+    done
+}
+
 main() {
+    parse_args "$@"
     banner
     preflight
     install_deps

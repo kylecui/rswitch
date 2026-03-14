@@ -176,9 +176,15 @@ int rs_mgmt_iface_obtain_ip(const struct rs_mgmt_iface_config *cfg)
 		return 0;
 	}
 
-	/* --persistent: keep retrying even after carrier loss / NAK
-	 * --noipv4ll:   do not fall back to link-local (we want a real lease)
-	 * -b:           background after initial fork                        */
+	/* Clear stale dhcpcd control sockets inherited from the root
+	 * namespace — otherwise dhcpcd connects to the host daemon
+	 * instead of starting a fresh instance for mgmt0.           */
+	snprintf(cmd, sizeof(cmd),
+		 "ip netns exec %s rm -f /run/dhcpcd/sock /run/dhcpcd/unpriv.sock "
+		 "/run/dhcpcd.pid /run/dhcpcd.unpriv.pid 2>/dev/null || true",
+		 cfg->mgmt_ns);
+	run_cmd(cmd);
+
 	snprintf(cmd, sizeof(cmd),
 		 "ip netns exec %s dhcpcd --persistent --noipv4ll -b %s 2>/dev/null",
 		 cfg->mgmt_ns, cfg->veth_ns);
