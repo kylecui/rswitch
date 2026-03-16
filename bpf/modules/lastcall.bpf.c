@@ -24,13 +24,13 @@ char _license[] SEC("license") = "GPL";
  * Following PoC egress_map pattern:
  * - Defined ONLY in lastcall (single user)
  * - Loader populates it via lastcall object
- * - NO pinning needed (not shared across modules)
+ * - Pinned so mgmtd can register mgmt-br for DHCP/portal access
  * - Uses bpf_devmap_val for egress hook attachment
  */
 struct {
-    // __uint(type, BPF_MAP_TYPE_DEVMAP_HASH);
     __uint(type, BPF_MAP_TYPE_DEVMAP);
     __uint(max_entries, RS_MAX_INTERFACES);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
     __type(key, __u32);         /* ifindex */
     __type(value, struct bpf_devmap_val);
 } rs_xdp_devmap SEC(".maps");

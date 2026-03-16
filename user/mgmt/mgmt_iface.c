@@ -1,14 +1,44 @@
 // SPDX-License-Identifier: GPL-2.0
 
+#define _GNU_SOURCE
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <net/if.h>
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
+#include <linux/bpf.h>
+#include <linux/if_link.h>
+#include <sys/ioctl.h>
+#include <net/if_arp.h>
+#include <fcntl.h>
+#include <sched.h>
+#include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "../common/rs_log.h"
 #include "mgmt_iface.h"
+
+#define RS_PORT_CONFIG_MAP_PATH    "/sys/fs/bpf/rs_port_config_map"
+#define RS_IFINDEX_TO_PORT_MAP_PATH "/sys/fs/bpf/rs_ifindex_to_port_map"
+#define RS_VLAN_MAP_PATH           "/sys/fs/bpf/rs_vlan_map"
+#define RS_XDP_DEVMAP_PATH         "/sys/fs/bpf/rs_xdp_devmap"
+#define RS_MAC_TABLE_PATH          "/sys/fs/bpf/rs_mac_table"
+
+#define RS_VLAN_MODE_ACCESS 1
+#define RS_MAX_VLANS 4
+
+#define MDNS_PORT 5353
+#define MDNS_ADDR "224.0.0.251"
+
+static volatile int g_mdns_running;
+static pthread_t g_mdns_thread;
+static struct rs_mgmt_iface_config g_mdns_cfg;
 
 static int run_cmd(const char *cmd)
 {
@@ -120,16 +150,234 @@ static int create_veth_pair(const struct rs_mgmt_iface_config *cfg)
 	return 0;
 }
 
-/*
- * No explicit forwarding setup needed — mgmt-br participates as an
- * XDP pipeline port.  The loader registers it in rs_xdp_devmap,
- * rs_port_config_map, and the VLAN membership bitmap so that L2
- * flooding/unicast forwarding reaches mgmt-br through the same BPF
- * pipeline that connects the physical switch ports.
- *
- * Previously this function set up link-local addresses + iptables NAT.
- * That approach is removed in favour of the XDP-integrated model.
- */
+struct rs_port_config {
+	__u32 ifindex;
+	__u8  enabled;
+	__u8  mgmt_type;
+	__u8  vlan_mode;
+	__u8  learning;
+	__u16 pvid;
+	__u16 native_vlan;
+	__u16 access_vlan;
+	__u16 allowed_vlan_count;
+	__u16 allowed_vlans[128];
+	__u16 tagged_vlan_count;
+	__u16 tagged_vlans[64];
+	__u16 untagged_vlan_count;
+	__u16 untagged_vlans[64];
+	__u8  default_prio;
+	__u8  trust_dscp;
+	__u16 rate_limit_kbps;
+	__u8  port_security;
+	__u8  max_macs;
+	__u16 reserved;
+	__u32 reserved2[4];
+};
+
+struct rs_vlan_members {
+	__u16 vlan_id;
+	__u16 member_count;
+	__u64 tagged_members[4];
+	__u64 untagged_members[4];
+	__u32 reserved[4];
+};
+
+struct rs_mac_key {
+	__u8 mac[6];
+	__u16 vlan;
+} __attribute__((packed));
+
+struct rs_mac_entry {
+	__u32 ifindex;
+	__u8  static_entry;
+	__u8  reserved[3];
+	__u64 last_seen;
+	__u32 hit_count;
+} __attribute__((packed));
+
+static int get_ns_iface_mac(const char *ns_name, const char *iface_name, __u8 *mac)
+{
+	char cmd[256];
+	char mac_str[32];
+	int ret;
+
+	snprintf(cmd, sizeof(cmd),
+		 "ip netns exec %s cat /sys/class/net/%s/address 2>/dev/null",
+		 ns_name, iface_name);
+
+	ret = run_cmd_output(cmd, mac_str, sizeof(mac_str));
+	if (ret != 0)
+		return ret;
+
+	/* Parse MAC address string "aa:bb:cc:dd:ee:ff" */
+	unsigned int m[6];
+	if (sscanf(mac_str, "%02x:%02x:%02x:%02x:%02x:%02x",
+		   &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) != 6) {
+		return -EINVAL;
+	}
+
+	for (int i = 0; i < 6; i++)
+		mac[i] = (__u8)m[i];
+
+	return 0;
+}
+
+static int register_mgmt_br_xdp(const struct rs_mgmt_iface_config *cfg)
+{
+	__u32 mgmt_ifindex;
+	__u16 mgmt_vlan;
+	int port_config_fd, ifindex_to_port_fd, vlan_map_fd, devmap_fd;
+	int err = 0;
+
+	mgmt_ifindex = if_nametoindex(cfg->veth_host);
+	if (mgmt_ifindex == 0) {
+		RS_LOG_WARN("mgmt-br ifindex lookup failed");
+		return -ENOENT;
+	}
+
+	mgmt_vlan = cfg->mgmt_vlan > 0 ? cfg->mgmt_vlan : 1;
+
+	port_config_fd = bpf_obj_get(RS_PORT_CONFIG_MAP_PATH);
+	ifindex_to_port_fd = bpf_obj_get(RS_IFINDEX_TO_PORT_MAP_PATH);
+	vlan_map_fd = bpf_obj_get(RS_VLAN_MAP_PATH);
+	devmap_fd = bpf_obj_get(RS_XDP_DEVMAP_PATH);
+
+	if (port_config_fd < 0 || ifindex_to_port_fd < 0 ||
+	    vlan_map_fd < 0 || devmap_fd < 0) {
+		RS_LOG_WARN("BPF maps not available (loader not running?)");
+		if (port_config_fd >= 0) close(port_config_fd);
+		if (ifindex_to_port_fd >= 0) close(ifindex_to_port_fd);
+		if (vlan_map_fd >= 0) close(vlan_map_fd);
+		if (devmap_fd >= 0) close(devmap_fd);
+		return -ENOENT;
+	}
+
+	__u32 port_idx = 254;
+	err = bpf_map_update_elem(ifindex_to_port_fd, &mgmt_ifindex, &port_idx, BPF_ANY);
+	if (err)
+		RS_LOG_WARN("Failed to set ifindex->port for mgmt-br: %s", strerror(errno));
+
+	struct rs_port_config pcfg = {
+		.ifindex = mgmt_ifindex,
+		.enabled = 1,
+		.mgmt_type = 1,
+		.vlan_mode = RS_VLAN_MODE_ACCESS,
+		.learning = 1,
+		.pvid = mgmt_vlan,
+		.native_vlan = mgmt_vlan,
+		.access_vlan = mgmt_vlan,
+	};
+	err = bpf_map_update_elem(port_config_fd, &mgmt_ifindex, &pcfg, BPF_ANY);
+	if (err)
+		RS_LOG_WARN("Failed to configure mgmt-br port: %s", strerror(errno));
+	else
+		RS_LOG_INFO("mgmt-br port_config: ifindex=%u, ACCESS vlan=%u", mgmt_ifindex, mgmt_vlan);
+
+	struct rs_vlan_members vlan = {0};
+	__u16 vkey = mgmt_vlan;
+	bpf_map_lookup_elem(vlan_map_fd, &vkey, &vlan);
+	vlan.vlan_id = mgmt_vlan;
+
+	int word_idx = (mgmt_ifindex - 1) / 64;
+	int bit_idx = (mgmt_ifindex - 1) % 64;
+	if (word_idx < RS_MAX_VLANS) {
+		vlan.untagged_members[word_idx] |= (1ULL << bit_idx);
+		vlan.member_count++;
+	}
+	err = bpf_map_update_elem(vlan_map_fd, &vkey, &vlan, BPF_ANY);
+	if (err)
+		RS_LOG_WARN("Failed to add mgmt-br to VLAN %u: %s", mgmt_vlan, strerror(errno));
+	else
+		RS_LOG_INFO("VLAN %u: added mgmt-br (ifindex=%u) as untagged member", mgmt_vlan, mgmt_ifindex);
+
+	struct bpf_devmap_val xdp_val = {
+		.ifindex = mgmt_ifindex,
+		.bpf_prog = { .fd = -1 },
+	};
+	err = bpf_map_update_elem(devmap_fd, &mgmt_ifindex, &xdp_val, BPF_ANY);
+	if (err)
+		RS_LOG_WARN("Failed to add mgmt-br to XDP devmap: %s", strerror(errno));
+	else
+		RS_LOG_INFO("mgmt-br added to XDP devmap (ifindex=%u)", mgmt_ifindex);
+
+	/* Get XDP dispatcher from an existing switch port.
+	 * rs_progs[0] contains the first module (dhcp_snoop), not the dispatcher.
+	 * The dispatcher is attached to switch ports by the loader. */
+	int disp_prog_fd = -1;
+	__u32 disp_prog_id = 0;
+
+	const char *probe_ports[] = {"ens34", "ens35", "ens36", "ens37",
+				     "eth1", "eth2", "eth3", "eth4", NULL};
+	for (int i = 0; probe_ports[i]; i++) {
+		__u32 ifidx = if_nametoindex(probe_ports[i]);
+		if (ifidx == 0)
+			continue;
+
+		struct bpf_xdp_query_opts opts = { .sz = sizeof(opts) };
+		if (bpf_xdp_query(ifidx, 0, &opts) == 0 && opts.prog_id > 0) {
+			disp_prog_id = opts.prog_id;
+			RS_LOG_INFO("Found XDP dispatcher on %s (prog_id=%u)",
+				    probe_ports[i], disp_prog_id);
+			break;
+		}
+	}
+
+	if (disp_prog_id > 0) {
+		disp_prog_fd = bpf_prog_get_fd_by_id(disp_prog_id);
+		if (disp_prog_fd < 0)
+			RS_LOG_WARN("Failed to get FD for dispatcher prog ID %u: %s",
+				    disp_prog_id, strerror(errno));
+	}
+
+	if (disp_prog_fd >= 0) {
+		err = bpf_xdp_attach(mgmt_ifindex, disp_prog_fd, XDP_FLAGS_SKB_MODE, NULL);
+		if (err)
+			RS_LOG_WARN("Failed to attach XDP to mgmt-br: %s", strerror(-err));
+		else
+			RS_LOG_INFO("XDP dispatcher attached to mgmt-br (generic mode)");
+		close(disp_prog_fd);
+	} else {
+		RS_LOG_WARN("No XDP dispatcher found, mgmt-br may not receive traffic");
+	}
+
+	int mac_table_fd = bpf_obj_get(RS_MAC_TABLE_PATH);
+	if (mac_table_fd >= 0) {
+		__u8 mgmt0_mac[6];
+		if (get_ns_iface_mac(cfg->mgmt_ns, cfg->veth_ns, mgmt0_mac) == 0) {
+			struct rs_mac_key mkey = {0};
+			memcpy(mkey.mac, mgmt0_mac, 6);
+			mkey.vlan = mgmt_vlan;
+
+			struct rs_mac_entry mentry = {
+				.ifindex = mgmt_ifindex,
+				.static_entry = 1,
+				.last_seen = 0,
+				.hit_count = 0,
+			};
+
+			err = bpf_map_update_elem(mac_table_fd, &mkey, &mentry, BPF_ANY);
+			if (err)
+				RS_LOG_WARN("Failed to add MAC entry for mgmt0: %s", strerror(errno));
+			else
+				RS_LOG_INFO("MAC table: %02x:%02x:%02x:%02x:%02x:%02x -> mgmt-br (ifindex=%u, vlan=%u)",
+					    mgmt0_mac[0], mgmt0_mac[1], mgmt0_mac[2],
+					    mgmt0_mac[3], mgmt0_mac[4], mgmt0_mac[5],
+					    mgmt_ifindex, mgmt_vlan);
+		} else {
+			RS_LOG_WARN("Could not get mgmt0 MAC address");
+		}
+		close(mac_table_fd);
+	} else {
+		RS_LOG_WARN("MAC table not available: %s", strerror(errno));
+	}
+
+	close(port_config_fd);
+	close(ifindex_to_port_fd);
+	close(vlan_map_fd);
+	close(devmap_fd);
+
+	return 0;
+}
 
 int rs_mgmt_iface_create(const struct rs_mgmt_iface_config *cfg)
 {
@@ -145,6 +393,14 @@ int rs_mgmt_iface_create(const struct rs_mgmt_iface_config *cfg)
 	ret = create_veth_pair(cfg);
 	if (ret < 0)
 		return ret;
+
+	/* Register mgmt-br in BPF maps so DHCP traffic can reach it.
+	 * This is only needed when running standalone (loader not active).
+	 * If maps aren't available, we continue anyway — loader may be
+	 * managing the interface.                                        */
+	ret = register_mgmt_br_xdp(cfg);
+	if (ret < 0)
+		RS_LOG_WARN("Could not register mgmt-br in XDP pipeline");
 
 	run_cmd("mkdir -p " MGMT_STATE_DIR);
 	return 0;
@@ -226,12 +482,206 @@ int rs_mgmt_iface_get_ip(const struct rs_mgmt_iface_config *cfg,
 	return 0;
 }
 
+static int enter_netns(const char *ns_name)
+{
+	char path[128];
+	int fd;
+
+	snprintf(path, sizeof(path), "/var/run/netns/%s", ns_name);
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return -errno;
+
+	if (setns(fd, CLONE_NEWNET) < 0) {
+		int err = errno;
+		close(fd);
+		return -err;
+	}
+	close(fd);
+	return 0;
+}
+
+static void *mdns_responder_thread(void *arg)
+{
+	(void)arg;
+	int sock = -1;
+	struct sockaddr_in addr, mcast;
+	struct ip_mreq mreq;
+	uint8_t buf[512];
+	uint8_t resp[256];
+	char mgmt_ip[64];
+	struct in_addr ip_addr;
+
+	if (enter_netns(g_mdns_cfg.mgmt_ns) < 0) {
+		RS_LOG_ERROR("mDNS: failed to enter namespace %s", g_mdns_cfg.mgmt_ns);
+		return NULL;
+	}
+
+	sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sock < 0) {
+		RS_LOG_ERROR("mDNS: socket failed: %s", strerror(errno));
+		return NULL;
+	}
+
+	int reuse = 1;
+	setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(MDNS_PORT);
+	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+	if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		RS_LOG_ERROR("mDNS: bind failed: %s", strerror(errno));
+		close(sock);
+		return NULL;
+	}
+
+	int joined = 0;
+	for (int retry = 0; retry < 30 && g_mdns_running && !joined; retry++) {
+		if (rs_mgmt_iface_get_ip(&g_mdns_cfg, mgmt_ip, sizeof(mgmt_ip)) == 0 &&
+		    inet_pton(AF_INET, mgmt_ip, &ip_addr) == 1) {
+			mreq.imr_multiaddr.s_addr = inet_addr(MDNS_ADDR);
+			mreq.imr_interface = ip_addr;
+			if (setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == 0) {
+				joined = 1;
+				RS_LOG_INFO("mDNS: joined multicast on %s", mgmt_ip);
+			}
+		}
+		if (!joined)
+			sleep(1);
+	}
+
+	if (!joined) {
+		RS_LOG_ERROR("mDNS: multicast join failed after retries");
+		close(sock);
+		return NULL;
+	}
+
+	memset(&mcast, 0, sizeof(mcast));
+	mcast.sin_family = AF_INET;
+	mcast.sin_port = htons(MDNS_PORT);
+	mcast.sin_addr.s_addr = inet_addr(MDNS_ADDR);
+
+	RS_LOG_INFO("mDNS responder started in namespace %s", g_mdns_cfg.mgmt_ns);
+
+	struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+	while (g_mdns_running) {
+		struct sockaddr_in from;
+		socklen_t fromlen = sizeof(from);
+		ssize_t n = recvfrom(sock, buf, sizeof(buf), 0,
+				     (struct sockaddr *)&from, &fromlen);
+		if (n <= 0)
+			continue;
+
+		if (n < 12)
+			continue;
+
+		uint16_t flags = (buf[2] << 8) | buf[3];
+		if (flags & 0x8000)
+			continue;
+
+		uint16_t qdcount = (buf[4] << 8) | buf[5];
+		if (qdcount < 1)
+			continue;
+
+		size_t off = 12;
+		char name[256] = {0};
+		size_t name_off = 0;
+		while (off < (size_t)n && buf[off] != 0) {
+			uint8_t len = buf[off++];
+			if (off + len > (size_t)n)
+				break;
+			if (name_off > 0)
+				name[name_off++] = '.';
+			memcpy(name + name_off, buf + off, len);
+			name_off += len;
+			off += len;
+		}
+		off++;
+
+		if (off + 4 > (size_t)n)
+			continue;
+		uint16_t qtype = (buf[off] << 8) | buf[off + 1];
+		if (qtype != 1)
+			continue;
+
+		if (strcasecmp(name, "rswitch.local") != 0)
+			continue;
+
+		if (rs_mgmt_iface_get_ip(&g_mdns_cfg, mgmt_ip, sizeof(mgmt_ip)) != 0)
+			continue;
+		if (inet_pton(AF_INET, mgmt_ip, &ip_addr) != 1)
+			continue;
+
+		size_t roff = 0;
+		resp[roff++] = buf[0]; resp[roff++] = buf[1];
+		resp[roff++] = 0x84; resp[roff++] = 0x00;
+		resp[roff++] = 0x00; resp[roff++] = 0x00;
+		resp[roff++] = 0x00; resp[roff++] = 0x01;
+		resp[roff++] = 0x00; resp[roff++] = 0x00;
+		resp[roff++] = 0x00; resp[roff++] = 0x00;
+
+		resp[roff++] = 7;
+		memcpy(resp + roff, "rswitch", 7); roff += 7;
+		resp[roff++] = 5;
+		memcpy(resp + roff, "local", 5); roff += 5;
+		resp[roff++] = 0;
+
+		resp[roff++] = 0x00; resp[roff++] = 0x01;
+		resp[roff++] = 0x80; resp[roff++] = 0x01;
+		resp[roff++] = 0x00; resp[roff++] = 0x00;
+		resp[roff++] = 0x00; resp[roff++] = 0x78;
+		resp[roff++] = 0x00; resp[roff++] = 0x04;
+		memcpy(resp + roff, &ip_addr, 4); roff += 4;
+
+		sendto(sock, resp, roff, 0, (struct sockaddr *)&mcast, sizeof(mcast));
+		RS_LOG_DEBUG("mDNS: responded rswitch.local -> %s", mgmt_ip);
+	}
+
+	close(sock);
+	RS_LOG_INFO("mDNS responder stopped");
+	return NULL;
+}
+
+int rs_mgmt_iface_start_mdns(const struct rs_mgmt_iface_config *cfg)
+{
+	if (!cfg)
+		return -EINVAL;
+
+	if (g_mdns_running)
+		return 0;
+
+	memcpy(&g_mdns_cfg, cfg, sizeof(g_mdns_cfg));
+	g_mdns_running = 1;
+
+	if (pthread_create(&g_mdns_thread, NULL, mdns_responder_thread, NULL) != 0) {
+		g_mdns_running = 0;
+		return -errno;
+	}
+
+	pthread_detach(g_mdns_thread);
+	return 0;
+}
+
+void rs_mgmt_iface_stop_mdns(void)
+{
+	if (!g_mdns_running)
+		return;
+
+	g_mdns_running = 0;
+}
+
 int rs_mgmt_iface_destroy(const struct rs_mgmt_iface_config *cfg)
 {
 	char cmd[512];
 
 	if (!cfg)
 		return -EINVAL;
+
+	rs_mgmt_iface_stop_mdns();
 
 	snprintf(cmd, sizeof(cmd),
 		 "ip netns exec %s dhcpcd -k %s 2>/dev/null || true",

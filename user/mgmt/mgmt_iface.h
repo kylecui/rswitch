@@ -65,4 +65,15 @@ int rs_mgmt_iface_is_healthy(const struct rs_mgmt_iface_config *cfg);
  */
 int rs_mgmt_iface_reconfigure(const struct rs_mgmt_iface_config *cfg);
 
+/*
+ * Start mDNS responder for rswitch.local in the management namespace.
+ * Returns 0 on success, negative errno on failure.
+ */
+int rs_mgmt_iface_start_mdns(const struct rs_mgmt_iface_config *cfg);
+
+/*
+ * Stop mDNS responder.
+ */
+void rs_mgmt_iface_stop_mdns(void);
+
 #endif

@@ -4373,6 +4373,14 @@ int main(int argc, char **argv)
 	}
 
 	RS_LOG_INFO("rSwitch Management Portal listening on %s", g_ctx.cfg.listen_addr);
+
+	if (g_ctx.cfg.use_namespace) {
+		if (rs_mgmt_iface_start_mdns(&g_ctx.mgmt_cfg) == 0)
+			RS_LOG_INFO("mDNS responder enabled for rswitch.local");
+		else
+			RS_LOG_WARN("Failed to start mDNS responder");
+	}
+
 	mg_timer_add(&mgr, (uint64_t) g_ctx.cfg.ws_poll_ms, MG_TIMER_REPEAT, ws_timer_fn, &mgr);
 
 	while (g_running)
