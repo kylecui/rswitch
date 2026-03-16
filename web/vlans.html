@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>rSwitch — VLANs</title>
 <link rel="stylesheet" href="style.css">
+<style>
+.port-dropdown {
+  position:absolute;top:100%;left:0;z-index:50;min-width:160px;max-height:220px;overflow-y:auto;
+  background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);
+  padding:6px 0;margin-top:4px;box-shadow:0 4px 12px rgba(0,0,0,.4);
+}
+.port-check {
+  display:flex;align-items:center;gap:6px;padding:4px 12px;font-size:13px;
+  font-family:var(--font-mono);cursor:pointer;color:var(--text-primary);
+}
+.port-check:hover { background:var(--bg-hover); }
+.port-check input[type="checkbox"] { accent-color:var(--accent-blue); }
+</style>
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 <script src="auth.js"></script>
 <script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
@@ -32,6 +45,7 @@
   <a href="logs.html"><span class="icon">&#x2630;</span> Logs</a>
   <a href="network.html"><span class="icon">&#x2316;</span> Network</a>
   <a href="dhcp.html"><span class="icon">&#x2690;</span> DHCP Snooping</a>
+  <a href="profiles.html"><span class="icon">&#x2699;</span> Profiles</a>
 </nav>
 
 <main class="main" :style="pendingChanges.length > 0 ? 'padding-bottom:64px' : ''">
@@ -47,13 +61,37 @@
         <label>VLAN ID</label>
         <input type="number" x-model.number="newVlan.id" min="1" max="4094" style="width:100px;">
       </div>
-      <div class="form-group">
+      <div class="form-group" x-data="{open:false}" @click.outside="open=false" style="position:relative;">
         <label>Tagged Ports</label>
-        <input type="text" x-model="newVlan.tagged" placeholder="3,4,5" style="width:140px;">
+        <button type="button" class="btn btn-sm" @click="open=!open"
+                style="min-width:140px;text-align:left;font-family:var(--font-mono);font-size:12px;"
+                x-text="newVlan.tagged.length ? newVlan.tagged.map(i => portName(i)).join(', ') : 'Select...'"></button>
+        <div x-show="open" x-transition class="port-dropdown">
+          <template x-for="ifidx in portList" :key="'ct-'+ifidx">
+            <label class="port-check">
+              <input type="checkbox" :value="ifidx"
+                     :checked="newVlan.tagged.includes(ifidx)"
+                     @change="togglePort(newVlan.tagged, ifidx, $event.target.checked)">
+              <span x-text="portName(ifidx)"></span>
+            </label>
+          </template>
+        </div>
       </div>
-      <div class="form-group">
+      <div class="form-group" x-data="{open:false}" @click.outside="open=false" style="position:relative;">
         <label>Untagged Ports</label>
-        <input type="text" x-model="newVlan.untagged" placeholder="6,7" style="width:140px;">
+        <button type="button" class="btn btn-sm" @click="open=!open"
+                style="min-width:140px;text-align:left;font-family:var(--font-mono);font-size:12px;"
+                x-text="newVlan.untagged.length ? newVlan.untagged.map(i => portName(i)).join(', ') : 'Select...'"></button>
+        <div x-show="open" x-transition class="port-dropdown">
+          <template x-for="ifidx in portList" :key="'cu-'+ifidx">
+            <label class="port-check">
+              <input type="checkbox" :value="ifidx"
+                     :checked="newVlan.untagged.includes(ifidx)"
+                     @change="togglePort(newVlan.untagged, ifidx, $event.target.checked)">
+              <span x-text="portName(ifidx)"></span>
+            </label>
+          </template>
+        </div>
       </div>
       <button type="submit" class="btn btn-primary">Stage</button>
       <button type="button" class="btn" @click="showCreate=false">Cancel</button>
@@ -82,8 +120,21 @@
 
               <template x-if="editingId === row.id">
                 <td>
-                  <input type="text" x-model="editForm.tagged" placeholder="3,4,5"
-                         style="width:120px;padding:2px 6px;font-size:12px;font-family:var(--font-mono);">
+                  <div x-data="{open:false}" @click.outside="open=false" style="position:relative;display:inline-block;">
+                    <button type="button" class="btn btn-sm" @click="open=!open"
+                            style="min-width:120px;text-align:left;font-family:var(--font-mono);font-size:12px;"
+                            x-text="editForm.tagged.length ? editForm.tagged.map(i => portName(i)).join(', ') : 'Select...'"></button>
+                    <div x-show="open" x-transition class="port-dropdown">
+                      <template x-for="ifidx in portList" :key="'et-'+ifidx">
+                        <label class="port-check">
+                          <input type="checkbox" :value="ifidx"
+                                 :checked="editForm.tagged.includes(ifidx)"
+                                 @change="togglePort(editForm.tagged, ifidx, $event.target.checked)">
+                          <span x-text="portName(ifidx)"></span>
+                        </label>
+                      </template>
+                    </div>
+                  </div>
                 </td>
               </template>
               <template x-if="editingId !== row.id">
@@ -92,8 +143,21 @@
 
               <template x-if="editingId === row.id">
                 <td>
-                  <input type="text" x-model="editForm.untagged" placeholder="6,7"
-                         style="width:120px;padding:2px 6px;font-size:12px;font-family:var(--font-mono);">
+                  <div x-data="{open:false}" @click.outside="open=false" style="position:relative;display:inline-block;">
+                    <button type="button" class="btn btn-sm" @click="open=!open"
+                            style="min-width:120px;text-align:left;font-family:var(--font-mono);font-size:12px;"
+                            x-text="editForm.untagged.length ? editForm.untagged.map(i => portName(i)).join(', ') : 'Select...'"></button>
+                    <div x-show="open" x-transition class="port-dropdown">
+                      <template x-for="ifidx in portList" :key="'eu-'+ifidx">
+                        <label class="port-check">
+                          <input type="checkbox" :value="ifidx"
+                                 :checked="editForm.untagged.includes(ifidx)"
+                                 @change="togglePort(editForm.untagged, ifidx, $event.target.checked)">
+                          <span x-text="portName(ifidx)"></span>
+                        </label>
+                      </template>
+                    </div>
+                  </div>
                 </td>
               </template>
               <template x-if="editingId !== row.id">
@@ -158,9 +222,9 @@ function vlansPage() {
     pendingChanges: [],
     showCreate: false,
     portMap: {},
-    newVlan: { id: '', tagged: '', untagged: '' },
+    newVlan: { id: '', tagged: [], untagged: [] },
     editingId: null,
-    editForm: { tagged: '', untagged: '' },
+    editForm: { tagged: [], untagged: [] },
     toast: false, toastMsg: '', toastClass: '',
     applying: false,
     _refreshTimer: null,
@@ -194,6 +258,16 @@ function vlansPage() {
     portName(ifidx) { return this.portMap[ifidx] || String(ifidx); },
 
     portNames(arr) { return (arr || []).map(i => this.portName(i)).join(', ') || '\u2014'; },
+
+    get portList() {
+      return Object.keys(this.portMap).map(Number).sort((a, b) => a - b);
+    },
+
+    togglePort(arr, ifidx, checked) {
+      const idx = arr.indexOf(ifidx);
+      if (checked && idx === -1) arr.push(ifidx);
+      if (!checked && idx !== -1) arr.splice(idx, 1);
+    },
 
     portsToStr(arr) { return (arr || []).join(','); },
 
@@ -251,11 +325,11 @@ function vlansPage() {
         id: id,
         data: {
           id: id,
-          tagged_ports: this.parsePorts(this.newVlan.tagged),
-          untagged_ports: this.parsePorts(this.newVlan.untagged)
+          tagged_ports: [...this.newVlan.tagged],
+          untagged_ports: [...this.newVlan.untagged]
         }
       });
-      this.newVlan = { id: '', tagged: '', untagged: '' };
+      this.newVlan = { id: '', tagged: [], untagged: [] };
       this.showCreate = false;
       this.showToast('VLAN ' + id + ' staged for creation', 'toast-info');
     },
@@ -269,15 +343,15 @@ function vlansPage() {
 
     startEdit(row) {
       this.editingId = row.id;
-      this.editForm.tagged = this.portsToStr(row.tagged_ports);
-      this.editForm.untagged = this.portsToStr(row.untagged_ports);
+      this.editForm.tagged = [...(row.tagged_ports || [])];
+      this.editForm.untagged = [...(row.untagged_ports || [])];
     },
 
     cancelEdit() { this.editingId = null; },
 
     saveEdit(id) {
-      const tagged = this.parsePorts(this.editForm.tagged);
-      const untagged = this.parsePorts(this.editForm.untagged);
+      const tagged = [...this.editForm.tagged];
+      const untagged = [...this.editForm.untagged];
       this.pendingChanges = this.pendingChanges.filter(c => !(c.action === 'update' && c.id === id));
       this.pendingChanges.push({ action: 'update', id: id, data: { tagged_ports: tagged, untagged_ports: untagged } });
       this.editingId = null;

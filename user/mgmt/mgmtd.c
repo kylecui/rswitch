@@ -3127,6 +3127,21 @@ static void handle_nat_conntrack(struct mg_connection *c, struct mg_http_message
 	json_printf(c, 200, "{\"output\":\"%s\"}", esc);
 }
 
+static const char *profile_dir(void)
+{
+	static char dir[PATH_MAX];
+	const char *home;
+
+	if (dir[0])
+		return dir;
+	home = getenv("RSWITCH_HOME");
+	if (home && home[0])
+		snprintf(dir, sizeof(dir), "%s/etc/profiles/", home);
+	else
+		snprintf(dir, sizeof(dir), "/etc/rswitch/profiles/");
+	return dir;
+}
+
 static void handle_profiles_list(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
 	DIR *dir;
@@ -3138,7 +3153,7 @@ static void handle_profiles_list(struct mg_connection *c, struct mg_http_message
 	(void) hm;
 	(void) userdata;
 
-	dir = opendir("/etc/rswitch/profiles/");
+	dir = opendir(profile_dir());
 	if (!dir) {
 		json_printf(c, 200, "{\"profiles\":[]}");
 		return;
@@ -3205,7 +3220,7 @@ static void handle_profiles_apply(struct mg_connection *c, struct mg_http_messag
 		return;
 	}
 
-	snprintf(cmd, sizeof(cmd), "rswitch_loader -f /etc/rswitch/profiles/%s", profile);
+	snprintf(cmd, sizeof(cmd), "rswitch_loader -f %s%s", profile_dir(), profile);
 	if (cmd_system(cmd) != 0) {
 		free(profile);
 		json_printf(c, 500, "{\"error\":\"profile apply failed\"}");
@@ -3215,6 +3230,123 @@ static void handle_profiles_apply(struct mg_connection *c, struct mg_http_messag
 	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_PROFILE, "profile_apply", 1,
 			    "profile=%s", profile);
 	free(profile);
+	json_printf(c, 200, "{\"status\":\"ok\"}");
+}
+
+static void handle_profile_read(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
+{
+	struct mg_str name;
+	char path[PATH_MAX];
+	char namebuf[256];
+	FILE *fp;
+	char raw[65536];
+	char escaped[131072];
+	size_t nread;
+
+	(void) userdata;
+
+	name = extract_name_from_uri(hm, "/api/profiles/");
+	if (name.len == 0 || name.len >= sizeof(namebuf)) {
+		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
+		return;
+	}
+	memcpy(namebuf, name.buf, name.len);
+	namebuf[name.len] = '\0';
+
+	/* Reject path traversal */
+	if (strstr(namebuf, "..") || strchr(namebuf, '/')) {
+		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
+		return;
+	}
+
+	snprintf(path, sizeof(path), "%s%s", profile_dir(), namebuf);
+	fp = fopen(path, "r");
+	if (!fp) {
+		json_printf(c, 404, "{\"error\":\"profile not found\"}");
+		return;
+	}
+	nread = fread(raw, 1, sizeof(raw) - 1, fp);
+	fclose(fp);
+	raw[nread] = '\0';
+
+	json_escape(raw, escaped, sizeof(escaped));
+	json_printf(c, 200, "{\"name\":\"%s\",\"content\":\"%s\"}", namebuf, escaped);
+}
+
+static void handle_profile_save(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
+{
+	struct mg_str name;
+	char namebuf[256];
+	char path[PATH_MAX];
+	char *content;
+	FILE *fp;
+
+	(void) userdata;
+
+	name = extract_name_from_uri(hm, "/api/profiles/");
+	if (name.len == 0 || name.len >= sizeof(namebuf)) {
+		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
+		return;
+	}
+	memcpy(namebuf, name.buf, name.len);
+	namebuf[name.len] = '\0';
+
+	if (strstr(namebuf, "..") || strchr(namebuf, '/')) {
+		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
+		return;
+	}
+
+	content = mg_json_get_str(hm->body, "$.content");
+	if (!content) {
+		json_printf(c, 400, "{\"error\":\"content required\"}");
+		return;
+	}
+
+	snprintf(path, sizeof(path), "%s%s", profile_dir(), namebuf);
+	fp = fopen(path, "w");
+	if (!fp) {
+		free(content);
+		json_printf(c, 500, "{\"error\":\"failed to write profile\"}");
+		return;
+	}
+	fputs(content, fp);
+	fclose(fp);
+
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_PROFILE, "profile_save", 1,
+			    "profile=%s", namebuf);
+	free(content);
+	json_printf(c, 200, "{\"status\":\"ok\"}");
+}
+
+static void handle_profile_delete(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
+{
+	struct mg_str name;
+	char namebuf[256];
+	char path[PATH_MAX];
+
+	(void) userdata;
+
+	name = extract_name_from_uri(hm, "/api/profiles/");
+	if (name.len == 0 || name.len >= sizeof(namebuf)) {
+		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
+		return;
+	}
+	memcpy(namebuf, name.buf, name.len);
+	namebuf[name.len] = '\0';
+
+	if (strstr(namebuf, "..") || strchr(namebuf, '/')) {
+		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
+		return;
+	}
+
+	snprintf(path, sizeof(path), "%s%s", profile_dir(), namebuf);
+	if (unlink(path) != 0) {
+		json_printf(c, 404, "{\"error\":\"profile not found\"}");
+		return;
+	}
+
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_PROFILE, "profile_delete", 1,
+			    "profile=%s", namebuf);
 	json_printf(c, 200, "{\"status\":\"ok\"}");
 }
 
@@ -3915,6 +4047,12 @@ static void dispatch_api(struct mg_connection *c, struct mg_http_message *hm, vo
 		return handle_profiles_active(c, hm, userdata);
 	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/profiles/apply"), NULL))
 		return handle_profiles_apply(c, hm, userdata);
+	if (method_is(hm->method, "GET") && mg_match(hm->uri, mg_str("/api/profiles/#"), NULL))
+		return handle_profile_read(c, hm, userdata);
+	if (method_is(hm->method, "PUT") && mg_match(hm->uri, mg_str("/api/profiles/#"), NULL))
+		return handle_profile_save(c, hm, userdata);
+	if (method_is(hm->method, "DELETE") && mg_match(hm->uri, mg_str("/api/profiles/#"), NULL))
+		return handle_profile_delete(c, hm, userdata);
 
 	if (method_is(hm->method, "GET") && mg_match(hm->uri, mg_str("/api/topology"), NULL))
 		return handle_topology(c, hm, userdata);

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rSwitch — Profiles</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="auth.js"></script>
+<script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+</head>
+<body x-data="profilesPage()" x-init="init()">
+
+<header class="header">
+  <div class="header-brand">&#x2B21; rSwitch <span>Management</span></div>
+  <div class="header-stats">
+    <span>Profiles: <span class="stat-val" x-text="profiles.length"></span></span>
+    <span>Active: <span class="stat-val stat-up" x-text="activeProfile || '—'"></span></span>
+  </div>
+  <button class="btn btn-sm" type="button" onclick="authLogout()">Logout</button>
+</header>
+
+<nav class="sidebar">
+  <a href="index.html"><span class="icon">&#x25C8;</span> Dashboard</a>
+  <a href="ports.html"><span class="icon">&#x229E;</span> Ports</a>
+  <a href="modules.html"><span class="icon">&#x25EC;</span> Modules</a>
+  <a href="vlans.html"><span class="icon">&#x2261;</span> VLANs</a>
+  <a href="acls.html"><span class="icon">&#x26CA;</span> ACLs</a>
+  <a href="routes.html"><span class="icon">&#x21C4;</span> Routes</a>
+  <a href="logs.html"><span class="icon">&#x2630;</span> Logs</a>
+  <a href="network.html"><span class="icon">&#x2316;</span> Network</a>
+  <a href="dhcp.html"><span class="icon">&#x2690;</span> DHCP Snooping</a>
+  <a href="profiles.html" class="active"><span class="icon">&#x2699;</span> Profiles</a>
+</nav>
+
+<main class="main">
+  <div class="page-title flex-between">
+    <span><span class="icon">&#x2699;</span> Profile Management</span>
+    <button class="btn btn-primary" @click="showCreateForm()">+ New Profile</button>
+  </div>
+
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Profile</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="p in profiles" :key="p">
+            <tr :style="p === activeProfile ? 'border-left:3px solid var(--accent-green)' : ''">
+              <td class="mono" x-text="p"></td>
+              <td>
+                <span x-show="p === activeProfile" class="badge badge-active">Active</span>
+                <span x-show="p !== activeProfile" class="badge" style="color:var(--text-secondary)">Inactive</span>
+              </td>
+              <td style="white-space:nowrap;">
+                <button class="btn btn-sm" @click="openEditor(p)">Edit</button>
+                <button class="btn btn-sm btn-primary" @click="applyProfile(p)"
+                        :disabled="p === activeProfile || applying">
+                  <span x-show="!(applyingName === p && applying)">Load</span>
+                  <span x-show="applyingName === p && applying"><span class="spinner"></span></span>
+                </button>
+                <button class="btn btn-sm btn-danger" @click="deleteProfile(p)"
+                        x-show="p !== activeProfile">Delete</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+    <div x-show="profiles.length === 0" class="empty-state">
+      <div class="icon">&#x2699;</div>
+      <div>No profiles found</div>
+    </div>
+  </div>
+
+  <template x-if="editorOpen">
+    <div class="card" style="margin-top:16px;">
+      <div class="card-header flex-between">
+        <span x-text="isNew ? 'Create Profile' : ('Edit — ' + editorName)"></span>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-sm btn-primary" @click="saveProfile()" :disabled="saving">
+            <span x-show="!saving">Save</span>
+            <span x-show="saving"><span class="spinner"></span> Saving...</span>
+          </button>
+          <button class="btn btn-sm" @click="closeEditor()">Close</button>
+        </div>
+      </div>
+      <div x-show="isNew" class="form-inline mt-12" style="padding:0 16px;">
+        <div class="form-group">
+          <label>Filename</label>
+          <input type="text" x-model="newFileName" placeholder="my-profile.yaml" style="width:260px;">
+        </div>
+      </div>
+      <div style="padding:8px 16px 16px;">
+        <textarea x-model="editorContent"
+                  style="width:100%;min-height:480px;background:var(--bg-primary);color:var(--text-primary);
+                         border:1px solid var(--border);border-radius:var(--radius);padding:12px;
+                         font-family:var(--font-mono);font-size:13px;line-height:1.6;resize:vertical;
+                         tab-size:2;"
+                  @keydown.tab.prevent="insertTab($event)"
+                  spellcheck="false"></textarea>
+      </div>
+    </div>
+  </template>
+</main>
+
+<div x-show="toast" x-transition class="toast" :class="toastClass" x-text="toastMsg"
+     x-init="$watch('toast', v => { if(v) setTimeout(()=>toast=false, 3000) })"></div>
+
+<script>
+function profilesPage() {
+  return {
+    profiles: [],
+    activeProfile: '',
+    editorOpen: false,
+    editorName: '',
+    editorContent: '',
+    isNew: false,
+    newFileName: '',
+    applying: false,
+    applyingName: '',
+    saving: false,
+    toast: false, toastMsg: '', toastClass: '',
+
+    init() {
+      this.fetchProfiles();
+      this.fetchActive();
+    },
+
+    async fetchProfiles() {
+      try {
+        const d = await (await apiFetch('/api/profiles')).json();
+        this.profiles = (d.profiles || []).sort();
+      } catch {}
+    },
+
+    async fetchActive() {
+      try {
+        const d = await (await apiFetch('/api/profiles/active')).json();
+        const raw = d.active || '';
+        this.activeProfile = raw.split('/').pop();
+      } catch {}
+    },
+
+    async openEditor(name) {
+      this.isNew = false;
+      this.editorName = name;
+      this.newFileName = '';
+      try {
+        const d = await (await apiFetch('/api/profiles/' + encodeURIComponent(name))).json();
+        this.editorContent = d.content || '';
+        this.editorOpen = true;
+      } catch {
+        this.showToast('Failed to load profile', 'toast-error');
+      }
+    },
+
+    showCreateForm() {
+      this.isNew = true;
+      this.editorName = '';
+      this.newFileName = '';
+      this.editorContent = 'name: my-profile\ndescription: New profile\nversion: "1.0"\n\nsettings:\n  mac_learning: true\n  vlan_enforcement: false\n\ningress_pipeline:\n  - stats\n  - mac_learn\n  - vlan_filter\n  - l2_forward\n\negress_pipeline:\n  - egress_stats\n';
+      this.editorOpen = true;
+    },
+
+    closeEditor() {
+      this.editorOpen = false;
+      this.editorContent = '';
+    },
+
+    async saveProfile() {
+      let name = this.isNew ? this.newFileName.trim() : this.editorName;
+      if (!name) {
+        this.showToast('Filename required', 'toast-error');
+        return;
+      }
+      if (this.isNew && !name.endsWith('.yaml') && !name.endsWith('.yml')) {
+        name += '.yaml';
+      }
+      this.saving = true;
+      try {
+        const r = await apiFetch('/api/profiles/' + encodeURIComponent(name), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: this.editorContent })
+        });
+        if (r.ok) {
+          this.showToast('Profile saved: ' + name, 'toast-success');
+          this.editorName = name;
+          this.isNew = false;
+          this.newFileName = '';
+          await this.fetchProfiles();
+        } else {
+          const e = await r.json().catch(() => ({}));
+          this.showToast(e.error || 'Save failed', 'toast-error');
+        }
+      } catch { this.showToast('Request failed', 'toast-error'); }
+      this.saving = false;
+    },
+
+    async applyProfile(name) {
+      if (!confirm('Load profile "' + name + '"? This will restart the data plane.')) return;
+      this.applying = true;
+      this.applyingName = name;
+      try {
+        const r = await apiFetch('/api/profiles/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ profile: name })
+        });
+        if (r.ok) {
+          this.showToast('Profile loaded: ' + name, 'toast-success');
+          await this.fetchActive();
+        } else {
+          const e = await r.json().catch(() => ({}));
+          this.showToast(e.error || 'Apply failed', 'toast-error');
+        }
+      } catch { this.showToast('Request failed', 'toast-error'); }
+      this.applying = false;
+      this.applyingName = '';
+    },
+
+    async deleteProfile(name) {
+      if (!confirm('Delete profile "' + name + '"?')) return;
+      try {
+        const r = await apiFetch('/api/profiles/' + encodeURIComponent(name), { method: 'DELETE' });
+        if (r.ok) {
+          this.showToast('Deleted: ' + name, 'toast-success');
+          if (this.editorOpen && this.editorName === name) this.closeEditor();
+          await this.fetchProfiles();
+        } else {
+          this.showToast('Delete failed', 'toast-error');
+        }
+      } catch { this.showToast('Request failed', 'toast-error'); }
+    },
+
+    insertTab(e) {
+      const ta = e.target;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      this.editorContent = this.editorContent.substring(0, start) + '  ' + this.editorContent.substring(end);
+      this.$nextTick(() => { ta.selectionStart = ta.selectionEnd = start + 2; });
+    },
+
+    showToast(msg, cls) { this.toastMsg = msg; this.toastClass = cls; this.toast = true; }
+  };
+}
+</script>
+</body>
+</html>
