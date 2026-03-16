@@ -18,30 +18,18 @@
 char _license[] SEC("license") = "GPL";
 
 /*
- * Force the compiler to emit direct ctx field accesses with immediate offsets.
+ * Reload ctx->data and ctx->data_end as verifier-safe direct accesses.
  *
- * After bpf_xdp_adjust_head(), the BPF verifier requires ctx->data and
- * ctx->data_end to be loaded via constant-offset dereferences from the ctx
- * pointer (e.g. *(u32 *)(r6 + 0)).  When LLVM inlines aggressively — 
- * especially inside unrolled loops that alternate between ctx field reads
- * and bpf_xdp_adjust_head calls — register pressure can cause LLVM to
- * spill the field offset (4) to the stack and reload it into a register,
- * producing  r2 = ctx; r3 = load_from_stack; r2 += r3; load (r2 + 0).
- * The verifier sees "modified ctx ptr" and rejects the program.
+ * After bpf_xdp_adjust_head(), the verifier requires ctx field loads via
+ * constant-offset dereferences (e.g. *(u32 *)(r6 + 0)).  A compiler barrier
+ * after adjust_head prevents LLVM from computing the offset via register
+ * arithmetic (r2 = ctx; r2 += 4; load r2) which the verifier rejects as
+ * "dereference of modified ctx ptr".
  *
- * __noinline subprograms are guaranteed their own clean stack frame and
- * receive ctx as argument r1, so the compiler always emits the access
- * as *(u32 *)(r1 + 0) / *(u32 *)(r1 + 4) — deterministic and verifier-safe.
+ * Previously __noinline helpers were used for this purpose, but on kernel
+ * 6.8.0-106 + LLVM, the __noinline call frame itself triggers the same
+ * verifier error.  Direct inline access with barriers is more robust.
  */
-static __noinline void *xdp_get_data(struct xdp_md *ctx)
-{
-    return (void *)(long)ctx->data;
-}
-
-static __noinline void *xdp_get_data_end(struct xdp_md *ctx)
-{
-    return (void *)(long)ctx->data_end;
-}
 
 // Module metadata
 RS_DECLARE_MODULE(
@@ -124,8 +112,9 @@ static __always_inline int should_send_tagged(struct rs_port_config *port, __u16
 // Helper: Add VLAN tag to packet with PCP (using parsing_helpers)
 static __always_inline int egress_add_vlan_tag(struct xdp_md *ctx, __u16 vlan_id, __u8 pcp)
 {
-    void *data = xdp_get_data(ctx);
-    void *data_end = xdp_get_data_end(ctx);
+    barrier_var(ctx);
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = data;
     
     // Bounds check
@@ -148,8 +137,9 @@ static __always_inline int egress_add_vlan_tag(struct xdp_md *ctx, __u16 vlan_id
 // Helper: Remove VLAN tag from packet (egress version)
 static __always_inline int egress_remove_vlan_tag(struct xdp_md *ctx)
 {
-    void *data = xdp_get_data(ctx);
-    void *data_end = xdp_get_data_end(ctx);
+    barrier_var(ctx);
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = data;
     
     if ((void *)(eth + 1) > data_end)
@@ -172,8 +162,9 @@ static __always_inline int egress_remove_vlan_tag(struct xdp_md *ctx)
 
 static __always_inline int egress_packet_is_vlan_tagged(struct xdp_md *ctx)
 {
-    void *data = xdp_get_data(ctx);
-    void *data_end = xdp_get_data_end(ctx);
+    barrier_var(ctx);
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = data;
 
     if ((void *)(eth + 1) > data_end)
@@ -188,8 +179,9 @@ static __always_inline int egress_add_vlan_tag_with_tpid(struct xdp_md *ctx,
                                                           __u8 pcp,
                                                           __u16 tpid)
 {
-    void *data = xdp_get_data(ctx);
-    void *data_end = xdp_get_data_end(ctx);
+    barrier_var(ctx);
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
     struct ethhdr *eth = data;
     struct ethhdr eth_cpy;
     struct vlan_hdr *vhdr;
@@ -203,8 +195,10 @@ static __always_inline int egress_add_vlan_tag_with_tpid(struct xdp_md *ctx,
     if (bpf_xdp_adjust_head(ctx, -4))
         return -1;
 
-    data = xdp_get_data(ctx);
-    data_end = xdp_get_data_end(ctx);
+    barrier_var(ctx);
+
+    data = (void *)(long)ctx->data;
+    data_end = (void *)(long)ctx->data_end;
     eth = data;
     if ((void *)(eth + 1) > data_end)
         return -1;

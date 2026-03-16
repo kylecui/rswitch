@@ -21,7 +21,7 @@
 /* Constants */
 #define RS_ONLYKEY          0       /* Single-entry per-CPU map key */
 #define RS_MAX_PROGS        256     /* Maximum tail-call programs */
-#define RS_MAX_INTERFACES   64      /* Maximum network interfaces */
+#define RS_MAX_INTERFACES   256     /* Maximum network interfaces (must cover highest ifindex) */
 #define RS_MAX_VLANS        4096    /* Maximum VLAN IDs */
 #define RS_MAX_ALLOWED_VLANS 128    /* Maximum allowed VLANs per port (trunk/hybrid) */
 #define RS_VLAN_MAX_DEPTH   2       /* Q-in-Q support (802.1ad) */
