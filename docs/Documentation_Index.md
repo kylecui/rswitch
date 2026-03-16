@@ -6,6 +6,18 @@
 
 ---
 
+## 💡 Concepts (Bilingual / 双语)
+
+Core platform concepts and architectural philosophy. All documents in this section are bilingual (English + Chinese).
+
+| Document | Description |
+|----------|-------------|
+| [Reconfigurable Architecture](concepts/Reconfigurable_Architecture.md) | Platform philosophy — what "reconfigurable" means and why it matters / 平台理念 |
+| [Network Device Gallery](concepts/Network_Device_Gallery.md) | Types of network devices you can build with rSwitch / 可构建的网络设备类型 |
+| [Framework Guide](concepts/Framework_Guide.md) | How to use the rSwitch framework effectively / 框架使用指南 |
+
+---
+
 ## 📘 Usage
 
 Getting started and day-to-day operation guides.
@@ -72,6 +84,10 @@ Forward-looking development plans organized by area.
 
 ```
 docs/
+├── concepts/                  # Core concepts (bilingual / 双语)
+│   ├── Reconfigurable_Architecture.md
+│   ├── Network_Device_Gallery.md
+│   └── Framework_Guide.md
 ├── usage/                     # User-facing operation guides
 │   ├── Quick_Start.md
 │   ├── How_To_Use.md
@@ -106,7 +122,10 @@ docs/
 │   ├── style.css
 │   ├── modules.json
 │   └── README.md
-├── zh-CN/                     # Chinese translations
+├── zh-CN/                     # Chinese translations (中文翻译)
+│   ├── README.md
+│   ├── Quick_Start.md
+│   └── Configuration.md
 ├── archive/                   # Historical documents (preserved)
 └── paperwork/                 # Administrative records (preserved)
 ```
@@ -117,6 +136,9 @@ docs/
 
 - **Just want to run it?** → [Quick Start](usage/Quick_Start.md)
 - **Platform overview?** → [Platform Architecture](development/Platform_Architecture.md)
+- **What is "reconfigurable"?** → [Reconfigurable Architecture](concepts/Reconfigurable_Architecture.md)
+- **What can I build?** → [Network Device Gallery](concepts/Network_Device_Gallery.md)
+- **How to use the framework?** → [Framework Guide](concepts/Framework_Guide.md)
 - **Building a module?** → [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) or [Module Developer Guide](development/Module_Developer_Guide.md)
 - **Deploying to production?** → [Systemd Integration](deployment/Systemd_Integration.md)
 - **Management UI?** → [Management Portal](deployment/Management_Portal.md)
@@ -147,4 +169,4 @@ The following original documents are preserved for reference. Their content has 
 
 ---
 
-*Last updated: 2026-03-11*
+*Last updated: 2026-03-17*
