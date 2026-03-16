@@ -179,7 +179,8 @@ struct loader_ctx {
     
     /* Shared maps */
     int rs_ctx_map_fd;
-    int rs_progs_fd;
+    int rs_progs_fd;           /* Ingress prog_array (BPF_PROG_TYPE_XDP) */
+    int rs_egress_progs_fd;    /* Egress prog_array (BPF_XDP_DEVMAP) — separate instance */
     int rs_prog_chain_fd;
     int rs_port_config_map_fd;
     int rs_ifindex_to_port_map_fd;
@@ -790,19 +791,83 @@ static int load_core_programs(struct loader_ctx *ctx)
         return -1;
     }
     
-    /* Load egress (same opts — reuses already-pinned maps) */
+    /* Load egress — WITHOUT pin_root_path to avoid reusing dispatcher's
+     * prog_array map (rs_progs). On newer kernels (6.8.0-106+), prog_array
+     * maps enforce owner_prog_type matching. The dispatcher's rs_progs has
+     * owner_prog_type=XDP, which is incompatible with egress programs that
+     * have expected_attach_type=BPF_XDP_DEVMAP.
+     *
+     * Solution: Open egress without pin_root_path, then manually reuse
+     * only compatible maps (non-prog_array). The egress object creates its
+     * own rs_progs instance with XDP_DEVMAP-compatible owner_prog_type.
+     */
     snprintf(path, sizeof(path), "%s/egress.bpf.o", g_build_dir);
-    ctx->egress_obj = bpf_object__open_file(path, &opts);
+    ctx->egress_obj = bpf_object__open_file(path, NULL);
     err = libbpf_get_error(ctx->egress_obj);
     if (err) {
         RS_LOG_ERROR("Failed to open egress: %s", strerror(-err));
         return -1;
     }
     
+    {
+        struct bpf_program *prog;
+        bpf_object__for_each_program(prog, ctx->egress_obj) {
+            bpf_program__set_type(prog, BPF_PROG_TYPE_XDP);
+            bpf_program__set_expected_attach_type(prog, BPF_XDP_DEVMAP);
+        }
+    }
+    
+    /* Manually reuse compatible shared maps from dispatcher (skip rs_progs).
+     * Get map FDs directly from the already-loaded dispatcher object to avoid
+     * triggering libbpf's auto-pin-reuse when using bpf_obj_get(). */
+    {
+        struct bpf_map *map;
+        bpf_object__for_each_map(map, ctx->egress_obj) {
+            const char *name = bpf_map__name(map);
+            
+            /* Skip rs_progs — egress needs its own prog_array with
+             * XDP_DEVMAP owner_prog_type (incompatible with dispatcher's XDP) */
+            if (strcmp(name, "rs_progs") == 0) {
+                bpf_map__set_pin_path(map, NULL);
+                continue;
+            }
+            
+            /* Skip egress-private maps (rodata, bss, etc.) */
+            if (strstr(name, ".rodata") || strstr(name, ".bss") ||
+                strstr(name, ".data") || strstr(name, "libbpf"))
+                continue;
+            
+            struct bpf_map *disp_map = bpf_object__find_map_by_name(
+                ctx->dispatcher_obj, name);
+            if (!disp_map)
+                continue;
+            
+            int disp_fd = bpf_map__fd(disp_map);
+            if (disp_fd < 0)
+                continue;
+            
+            int ret = bpf_map__reuse_fd(map, disp_fd);
+            if (ret)
+                RS_LOG_WARN("egress: reuse_fd failed for %s: %s", name, strerror(-ret));
+        }
+    }
+    
     err = bpf_object__load(ctx->egress_obj);
     if (err) {
         RS_LOG_ERROR("Failed to load egress: %s", strerror(-err));
         return -1;
+    }
+    
+    /* Capture egress's own rs_progs (XDP_DEVMAP-compatible prog_array) */
+    {
+        struct bpf_map *egress_progs_map = bpf_object__find_map_by_name(ctx->egress_obj, "rs_progs");
+        if (egress_progs_map) {
+            ctx->rs_egress_progs_fd = bpf_map__fd(egress_progs_map);
+            RS_LOG_INFO("Egress rs_progs (XDP_DEVMAP): fd=%d", ctx->rs_egress_progs_fd);
+        } else {
+            RS_LOG_ERROR("Failed to find rs_progs in egress object");
+            return -1;
+        }
     }
     
     ctx->egress_prog = bpf_object__find_program_by_name(ctx->egress_obj, 
@@ -1049,12 +1114,15 @@ static int load_modules(struct loader_ctx *ctx)
     
     for (i = 0; i < ctx->num_modules; i++) {
         struct loaded_module *mod = &ctx->modules[i];
+        int is_egress = (mod->desc.hook == RS_HOOK_XDP_EGRESS);
         
-        /* Open BPF object with pin_root_path so LIBBPF_PIN_BY_NAME maps are reused */
+        /* Egress modules: open WITHOUT pin_root_path (same reason as egress core —
+         * prog_array owner_prog_type incompatibility on newer kernels).
+         * Ingress modules: open WITH pin_root_path for auto-pinning. */
         LIBBPF_OPTS(bpf_object_open_opts, opts,
-            .pin_root_path = "/sys/fs/bpf",
+            .pin_root_path = is_egress ? NULL : "/sys/fs/bpf",
         );
-        mod->obj = bpf_object__open_file(mod->path, &opts);
+        mod->obj = bpf_object__open_file(mod->path, is_egress ? NULL : &opts);
         err = libbpf_get_error(mod->obj);
         if (err) {
             RS_LOG_ERROR("Failed to open module %s: %s",
@@ -1062,15 +1130,55 @@ static int load_modules(struct loader_ctx *ctx)
             continue;
         }
         
-        /* CRITICAL: Reuse shared maps BEFORE loading!
-         * Without this, each module creates its own copies of rs_ctx_map, rs_progs, etc.
-         * which breaks the tail-call pipeline since modules aren't in the dispatcher's prog_array.
-         */
-        RS_LOG_DEBUG("[%s] Calling reuse_shared_maps", mod->name);
-        err = reuse_shared_maps(mod->obj, ctx);
-        if (err) {
-            RS_LOG_WARN("Failed to reuse shared maps for %s", mod->name);
-            /* Continue anyway - module may work with its own maps */
+        if (is_egress) {
+            /* Egress modules: clear rs_progs pin path to prevent libbpf from
+             * auto-reusing the dispatcher's prog_array (which has incompatible
+             * owner_prog_type on kernel 6.8.0-106+). Then reuse all other shared
+             * maps from the egress core object which already has correct FDs. */
+            struct bpf_map *map;
+            bpf_object__for_each_map(map, mod->obj) {
+                const char *name = bpf_map__name(map);
+                
+                if (strcmp(name, "rs_progs") == 0) {
+                    bpf_map__set_pin_path(map, NULL);
+                    /* Reuse egress core's own rs_progs (XDP_DEVMAP owner_prog_type) */
+                    if (ctx->rs_egress_progs_fd > 0) {
+                        int ret = bpf_map__reuse_fd(map, ctx->rs_egress_progs_fd);
+                        if (ret)
+                            RS_LOG_WARN("[%s] reuse_fd(rs_progs egress) failed: %s",
+                                        mod->name, strerror(-ret));
+                    }
+                    continue;
+                }
+                
+                /* Skip module-private maps (rodata, bss, etc.) */
+                if (strstr(name, ".rodata") || strstr(name, ".bss") ||
+                    strstr(name, ".data") || strstr(name, "libbpf"))
+                    continue;
+                
+                /* Reuse data maps from egress core (which shares dispatcher's maps) */
+                struct bpf_map *egress_map = bpf_object__find_map_by_name(
+                    ctx->egress_obj, name);
+                if (egress_map) {
+                    int fd = bpf_map__fd(egress_map);
+                    if (fd >= 0) {
+                        int ret = bpf_map__reuse_fd(map, fd);
+                        if (ret)
+                            RS_LOG_WARN("[%s] reuse_fd(%s) failed: %s",
+                                        mod->name, name, strerror(-ret));
+                    }
+                }
+            }
+        } else {
+            /* CRITICAL: Reuse shared maps BEFORE loading!
+             * Without this, each module creates its own copies of rs_ctx_map, rs_progs, etc.
+             * which breaks the tail-call pipeline since modules aren't in the dispatcher's prog_array.
+             */
+            RS_LOG_DEBUG("[%s] Calling reuse_shared_maps", mod->name);
+            err = reuse_shared_maps(mod->obj, ctx);
+            if (err) {
+                RS_LOG_WARN("Failed to reuse shared maps for %s", mod->name);
+            }
         }
         
         /* Load BPF object */
@@ -1083,7 +1191,6 @@ static int load_modules(struct loader_ctx *ctx)
             continue;
         }
         
-        /* Find XDP program (modules should have SEC("xdp") programs) */
         bpf_object__for_each_program(mod->prog, mod->obj) {
             const char *sec_name = bpf_program__section_name(mod->prog);
             if (strncmp(sec_name, "xdp", 3) == 0) {
@@ -1207,8 +1314,9 @@ static int build_prog_array(struct loader_ctx *ctx)
         if (mod->desc.hook != RS_HOOK_XDP_EGRESS)
             continue;  /* Skip ingress modules in this pass */
         
-        /* Insert into prog_array at egress_slot (255, 254, 253, ...) */
-        err = bpf_map_update_elem(ctx->rs_progs_fd, &egress_slot, &mod->prog_fd, BPF_ANY);
+        /* Insert into egress's own prog_array (XDP_DEVMAP-compatible) */
+        int egress_progs_fd = (ctx->rs_egress_progs_fd > 0) ? ctx->rs_egress_progs_fd : ctx->rs_progs_fd;
+        err = bpf_map_update_elem(egress_progs_fd, &egress_slot, &mod->prog_fd, BPF_ANY);
         if (err) {
             RS_LOG_ERROR("Failed to insert %s into prog_array[%u]: %s",
                          mod->name, egress_slot, strerror(errno));
@@ -2361,6 +2469,10 @@ static void close_map_fds(struct loader_ctx *ctx)
     if (ctx->rs_progs_fd >= 0) {
         close(ctx->rs_progs_fd);
         printf("  Closed rs_progs_fd\n");
+    }
+    if (ctx->rs_egress_progs_fd >= 0) {
+        close(ctx->rs_egress_progs_fd);
+        printf("  Closed rs_egress_progs_fd\n");
     }
     if (ctx->rs_port_config_map_fd >= 0) {
         close(ctx->rs_port_config_map_fd);
