@@ -2235,6 +2235,155 @@ static void handle_vlans_list(struct mg_connection *c, struct mg_http_message *h
 	json_printf(c, 200, "%s", out);
 }
 
+/*
+ * sync_port_vlan_config() — Auto-derive per-port VLAN config from rs_vlan_map.
+ *
+ * Scans all VLAN entries and for each port that appears in any VLAN,
+ * determines the correct vlan_mode, pvid, allowed_vlans, tagged_vlans,
+ * untagged_vlans and writes the updated config to rs_port_config_map.
+ *
+ * Rules:
+ *   - Port appears ONLY in untagged VLANs → ACCESS mode, access_vlan = lowest untagged VLAN
+ *   - Port appears ONLY in tagged VLANs  → TRUNK mode, allowed_vlans = tagged list, native_vlan = 1
+ *   - Port appears in both              → HYBRID mode, both lists populated, pvid = lowest untagged
+ *   - Port appears in NO VLANs          → leave config unchanged (preserves loader defaults)
+ *
+ * Non-VLAN fields (enabled, learning, QoS, security) are always preserved.
+ */
+#define SYNC_MAX_PORTS 256
+
+struct port_vlan_info {
+	__u16 tagged_vlans[128];
+	int   tagged_count;
+	__u16 untagged_vlans[64];
+	int   untagged_count;
+};
+
+static void sync_port_vlan_config(void)
+{
+	struct port_vlan_info pinfo[SYNC_MAX_PORTS];
+	__u16 vlan_key, vlan_next;
+	struct rs_vlan_members vm;
+	int i, j, port_idx;
+
+	if (g_maps.vlan_fd < 0 || g_maps.port_config_fd < 0)
+		return;
+
+	memset(pinfo, 0, sizeof(pinfo));
+
+	/* Pass 1: scan all VLANs, accumulate per-port tagged/untagged lists */
+	if (bpf_map_get_next_key(g_maps.vlan_fd, NULL, &vlan_next) != 0)
+		goto apply;  /* No VLANs at all — still need to reset ports */
+
+	do {
+		vlan_key = vlan_next;
+		if (bpf_map_lookup_elem(g_maps.vlan_fd, &vlan_key, &vm) != 0)
+			continue;
+
+		for (i = 0; i < 4; i++) {
+			for (j = 0; j < 64; j++) {
+				port_idx = i * 64 + j + 1;  /* ifindex is 1-based */
+				if (port_idx <= 0 || port_idx >= SYNC_MAX_PORTS)
+					continue;
+
+				if (vm.tagged_members[i] & (1ULL << j)) {
+					struct port_vlan_info *pi = &pinfo[port_idx];
+					if (pi->tagged_count < 128)
+						pi->tagged_vlans[pi->tagged_count++] = vlan_key;
+				}
+				if (vm.untagged_members[i] & (1ULL << j)) {
+					struct port_vlan_info *pi = &pinfo[port_idx];
+					if (pi->untagged_count < 64)
+						pi->untagged_vlans[pi->untagged_count++] = vlan_key;
+				}
+			}
+		}
+	} while (bpf_map_get_next_key(g_maps.vlan_fd, &vlan_key, &vlan_next) == 0);
+
+apply:
+	/* Pass 2: for each known port, compute and write vlan_mode + lists */
+	{
+		__u32 port_key, port_next;
+		if (bpf_map_get_next_key(g_maps.port_config_fd, NULL, &port_next) != 0)
+			return;
+
+		do {
+			port_key = port_next;
+			struct rs_port_config cfg;
+
+			if (bpf_map_lookup_elem(g_maps.port_config_fd, &port_key, &cfg) != 0)
+				continue;
+
+			/* Skip ports with QinQ mode — never auto-change */
+			if (cfg.vlan_mode == 4 /* RS_VLAN_MODE_QINQ */)
+				continue;
+
+			if (port_key == 0 || port_key >= SYNC_MAX_PORTS)
+				continue;
+
+			struct port_vlan_info *pi = &pinfo[port_key];
+			int has_tagged = pi->tagged_count > 0;
+			int has_untagged = pi->untagged_count > 0;
+
+			if (!has_tagged && !has_untagged) {
+				/* Port not in any VLAN — leave as-is (loader default) */
+				continue;
+			}
+
+			/* Clear VLAN arrays before rebuild */
+			memset(cfg.allowed_vlans, 0, sizeof(cfg.allowed_vlans));
+			cfg.allowed_vlan_count = 0;
+			memset(cfg.tagged_vlans, 0, sizeof(cfg.tagged_vlans));
+			cfg.tagged_vlan_count = 0;
+			memset(cfg.untagged_vlans, 0, sizeof(cfg.untagged_vlans));
+			cfg.untagged_vlan_count = 0;
+
+			if (has_tagged && !has_untagged) {
+				/* TRUNK: only tagged VLANs */
+				cfg.vlan_mode = 2; /* RS_VLAN_MODE_TRUNK */
+				cfg.native_vlan = 1; /* default native */
+				for (i = 0; i < pi->tagged_count && i < 128; i++) {
+					cfg.allowed_vlans[i] = pi->tagged_vlans[i];
+				}
+				cfg.allowed_vlan_count = (__u16) pi->tagged_count;
+			} else if (!has_tagged && has_untagged) {
+				/* ACCESS: only untagged VLANs */
+				cfg.vlan_mode = 1; /* RS_VLAN_MODE_ACCESS */
+				cfg.access_vlan = pi->untagged_vlans[0]; /* lowest */
+				cfg.pvid = pi->untagged_vlans[0];
+			} else {
+				/* HYBRID: both tagged and untagged */
+				cfg.vlan_mode = 3; /* RS_VLAN_MODE_HYBRID */
+				cfg.pvid = pi->untagged_vlans[0];
+				for (i = 0; i < pi->tagged_count && i < 64; i++) {
+					cfg.tagged_vlans[i] = pi->tagged_vlans[i];
+				}
+				cfg.tagged_vlan_count = (__u16) (pi->tagged_count > 64 ? 64 : pi->tagged_count);
+				for (i = 0; i < pi->untagged_count && i < 64; i++) {
+					cfg.untagged_vlans[i] = pi->untagged_vlans[i];
+				}
+				cfg.untagged_vlan_count = (__u16) (pi->untagged_count > 64 ? 64 : pi->untagged_count);
+				/* Also populate allowed_vlans with the union for trunk-compat checks */
+				int ac = 0;
+				for (i = 0; i < pi->tagged_count && ac < 128; i++)
+					cfg.allowed_vlans[ac++] = pi->tagged_vlans[i];
+				for (i = 0; i < pi->untagged_count && ac < 128; i++)
+					cfg.allowed_vlans[ac++] = pi->untagged_vlans[i];
+				cfg.allowed_vlan_count = (__u16) ac;
+			}
+
+			bpf_map_update_elem(g_maps.port_config_fd, &port_key, &cfg, BPF_ANY);
+
+			RS_LOG_INFO("sync_port_vlan: ifindex=%u mode=%s pvid=%u tagged=%d untagged=%d",
+				    port_key,
+				    cfg.vlan_mode == 1 ? "ACCESS" :
+				    cfg.vlan_mode == 2 ? "TRUNK" :
+				    cfg.vlan_mode == 3 ? "HYBRID" : "OFF",
+				    cfg.pvid, pi->tagged_count, pi->untagged_count);
+		} while (bpf_map_get_next_key(g_maps.port_config_fd, &port_key, &port_next) == 0);
+	}
+}
+
 static void handle_vlan_create(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
 	struct rs_vlan_members v;
@@ -2299,6 +2448,7 @@ static void handle_vlan_create(struct mg_connection *c, struct mg_http_message *
 
 	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "vlan_create", 1,
 			    "vlan_id=%ld members=%d", vlan_id, member_count);
+	sync_port_vlan_config();
 	json_printf(c, 201, "{\"status\":\"created\",\"vlan_id\":%ld}", vlan_id);
 }
 
@@ -2369,6 +2519,7 @@ static void handle_vlan_update(struct mg_connection *c, struct mg_http_message *
 
 	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "vlan_update", 1,
 			    "vlan_id=%d member_count=%d", vlan_id, member_count);
+	sync_port_vlan_config();
 	json_printf(c, 200, "{\"status\":\"ok\"}");
 }
 
@@ -2398,6 +2549,7 @@ static void handle_vlan_delete(struct mg_connection *c, struct mg_http_message *
 
 	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "vlan_delete", 1,
 			    "vlan_id=%d", vlan_id);
+	sync_port_vlan_config();
 	json_printf(c, 200, "{\"status\":\"deleted\"}");
 }
 
