@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <ctype.h>
 #include <limits.h>
 #include <linux/limits.h>
 #include <dirent.h>
@@ -286,6 +287,162 @@ static volatile int g_event_thread_running;
 static int g_stats_event_counter;
 
 #define STATS_EVENT_INTERVAL 15
+
+static struct mg_str extract_name_from_uri(struct mg_http_message *hm, const char *prefix);
+
+static int profile_name_valid(const char *name)
+{
+	const unsigned char *p;
+
+	if (!name || name[0] == '\0')
+		return 0;
+	if (strstr(name, "..") || strchr(name, '/'))
+		return 0;
+
+	for (p = (const unsigned char *) name; *p != '\0'; p++) {
+		if (isalnum(*p) || *p == '.' || *p == '_' || *p == '-' || *p == ' ')
+			continue;
+		return 0;
+	}
+
+	return 1;
+}
+
+static int extract_profile_name(struct mg_http_message *hm, const char *prefix,
+				       char *out, size_t out_len)
+{
+	struct mg_str name;
+	int decoded_len;
+
+	if (!out || out_len == 0)
+		return -EINVAL;
+
+	name = extract_name_from_uri(hm, prefix);
+	if (name.len == 0)
+		return -EINVAL;
+
+	decoded_len = mg_url_decode(name.buf, name.len, out, out_len, 0);
+	if (decoded_len <= 0 || (size_t) decoded_len >= out_len)
+		return -EINVAL;
+	out[decoded_len] = '\0';
+
+	if (!profile_name_valid(out))
+		return -EINVAL;
+
+	return 0;
+}
+
+static void set_active_profile_path(const char *path)
+{
+	FILE *fp;
+	const char *base;
+
+	if (!path || path[0] == '\0')
+		return;
+
+	strncpy(g_ctx.profile_path, path, sizeof(g_ctx.profile_path) - 1);
+	g_ctx.profile_path[sizeof(g_ctx.profile_path) - 1] = '\0';
+
+	base = strrchr(path, '/');
+	if (base)
+		base++;
+	else
+		base = path;
+
+	strncpy(g_ctx.profile_name, base, sizeof(g_ctx.profile_name) - 1);
+	g_ctx.profile_name[sizeof(g_ctx.profile_name) - 1] = '\0';
+
+	if (mkdir("/var/lib/rswitch", 0755) != 0 && errno != EEXIST)
+		return;
+
+	fp = fopen("/var/lib/rswitch/active_profile", "w");
+	if (!fp)
+		return;
+
+	fprintf(fp, "%s\n", path);
+	fclose(fp);
+}
+
+static int detect_loader_ifaces(char *ifaces, size_t ifaces_len)
+{
+	DIR *proc;
+	struct dirent *de;
+
+	if (!ifaces || ifaces_len == 0)
+		return -EINVAL;
+	ifaces[0] = '\0';
+
+	proc = opendir("/proc");
+	if (!proc)
+		return -errno;
+
+	while ((de = readdir(proc)) != NULL) {
+		char *endptr = NULL;
+		long pid = strtol(de->d_name, &endptr, 10);
+		char comm_path[64];
+		char cmdline_path[64];
+		FILE *fp;
+		char comm[64];
+		char cmdline[4096];
+		size_t nread;
+		size_t i;
+
+		if (endptr == NULL || *endptr != '\0' || pid <= 0)
+			continue;
+
+		snprintf(comm_path, sizeof(comm_path), "/proc/%ld/comm", pid);
+		fp = fopen(comm_path, "r");
+		if (!fp)
+			continue;
+		if (!fgets(comm, sizeof(comm), fp)) {
+			fclose(fp);
+			continue;
+		}
+		fclose(fp);
+		comm[strcspn(comm, "\r\n")] = '\0';
+		if (strcmp(comm, "rswitch_loader") != 0)
+			continue;
+
+		snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%ld/cmdline", pid);
+		fp = fopen(cmdline_path, "r");
+		if (!fp)
+			continue;
+		nread = fread(cmdline, 1, sizeof(cmdline) - 1, fp);
+		fclose(fp);
+		if (nread == 0)
+			continue;
+		cmdline[nread] = '\0';
+
+		i = 0;
+		while (i < nread) {
+			char *arg = &cmdline[i];
+			size_t arg_len = strlen(arg);
+
+			if (arg_len == 0) {
+				i++;
+				continue;
+			}
+
+			if ((strcmp(arg, "--ifaces") == 0 || strcmp(arg, "-i") == 0) &&
+			    i + arg_len + 1 < nread) {
+				char *val = &cmdline[i + arg_len + 1];
+				size_t val_len = strlen(val);
+
+				if (val_len > 0 && val_len < ifaces_len) {
+					strncpy(ifaces, val, ifaces_len - 1);
+					ifaces[ifaces_len - 1] = '\0';
+					closedir(proc);
+					return 0;
+				}
+			}
+
+			i += arg_len + 1;
+		}
+	}
+
+	closedir(proc);
+	return -ENOENT;
+}
 
 static __u32 resolve_ifindex(const char *name)
 {
@@ -842,7 +999,8 @@ static int build_cmd(char *out, size_t out_len, const char *cmd)
 		return -EINVAL;
 
 	if (g_ctx.cfg.use_namespace) {
-		if (snprintf(out, out_len, "ip netns exec default-ns %s", cmd) >= (int) out_len)
+		if (snprintf(out, out_len, "nsenter --net=/proc/1/ns/net -- /bin/sh -c '%s'", cmd)
+		    >= (int) out_len)
 			return -ENAMETOOLONG;
 	} else {
 		if (snprintf(out, out_len, "%s", cmd) >= (int) out_len)
@@ -3198,6 +3356,10 @@ static void handle_profiles_active(struct mg_connection *c, struct mg_http_messa
 	if (!fp || !fgets(resolved, sizeof(resolved), fp)) {
 		if (fp)
 			fclose(fp);
+		if (g_ctx.profile_path[0] != '\0') {
+			json_printf(c, 200, "{\"active\":\"%s\"}", g_ctx.profile_path);
+			return;
+		}
 		json_printf(c, 404, "{\"error\":\"no active profile\"}");
 		return;
 	}
@@ -3209,33 +3371,87 @@ static void handle_profiles_active(struct mg_connection *c, struct mg_http_messa
 static void handle_profiles_apply(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
 	char *profile;
-	char cmd[1024];
+	char cmd[2048];
+	char profile_path[PATH_MAX];
+	char ifaces[256];
+	const char *ifaces_env;
 
 	(void) userdata;
 
 	profile = mg_json_get_str(hm->body, "$.profile");
-	if (!profile || profile[0] == '\0') {
+	if (!profile || !profile_name_valid(profile)) {
 		free(profile);
 		json_printf(c, 400, "{\"error\":\"profile required\"}");
 		return;
 	}
 
-	snprintf(cmd, sizeof(cmd), "rswitch_loader -f %s%s", profile_dir(), profile);
-	if (cmd_system(cmd) != 0) {
+	snprintf(profile_path, sizeof(profile_path), "%s%s", profile_dir(), profile);
+
+	ifaces_env = getenv("RSWITCH_INTERFACES");
+	if (ifaces_env && ifaces_env[0]) {
+		strncpy(ifaces, ifaces_env, sizeof(ifaces) - 1);
+		ifaces[sizeof(ifaces) - 1] = '\0';
+	} else if (detect_loader_ifaces(ifaces, sizeof(ifaces)) != 0) {
 		free(profile);
-		json_printf(c, 500, "{\"error\":\"profile apply failed\"}");
+		json_printf(c, 500, "{\"error\":\"unable to detect switch interfaces\"}");
 		return;
 	}
 
+	set_active_profile_path(profile_path);
+
 	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_PROFILE, "profile_apply", 1,
 			    "profile=%s", profile);
+
+	json_printf(c, 200, "{\"status\":\"restarting\"}");
+	c->is_draining = 1;
+
+	/*
+	 * Use a transient systemd service to run the restart outside
+	 * mgmtd's cgroup (BindsTo kills the mgmtd cgroup during restart).
+	 * A runtime drop-in overrides RSWITCH_PROFILE from the unit file,
+	 * since Environment= in the unit takes precedence over the global
+	 * manager environment set by systemctl set-environment.
+	 *
+	 * We also create a drop-in for rswitch-mgmtd so it picks up the
+	 * new profile environment. The restart of rswitch will trigger
+	 * mgmtd restart via BindsTo, so both read the new profile.
+	 */
+	if (g_ctx.cfg.use_namespace)
+		snprintf(cmd, sizeof(cmd),
+			 "nsenter --net=/proc/1/ns/net --"
+			 " systemd-run --slice=system --no-block"
+			 " /bin/sh -c '"
+			 "sleep 1"
+			 " && mkdir -p /run/systemd/system/rswitch.service.d"
+			 " && mkdir -p /run/systemd/system/rswitch-mgmtd.service.d"
+			 " && printf \"[Service]\\nEnvironment=RSWITCH_PROFILE=%s RSWITCH_INTERFACES=%s\\n\""
+			 " > /run/systemd/system/rswitch.service.d/profile-override.conf"
+			 " && printf \"[Service]\\nEnvironment=RSWITCH_PROFILE=%s\\n\""
+			 " > /run/systemd/system/rswitch-mgmtd.service.d/profile-override.conf"
+			 " && systemctl daemon-reload"
+			 " && systemctl restart rswitch'",
+			 profile, ifaces, profile);
+	else
+		snprintf(cmd, sizeof(cmd),
+			 "systemd-run --slice=system --no-block"
+			 " /bin/sh -c '"
+			 "sleep 1"
+			 " && mkdir -p /run/systemd/system/rswitch.service.d"
+			 " && mkdir -p /run/systemd/system/rswitch-mgmtd.service.d"
+			 " && printf \"[Service]\\nEnvironment=RSWITCH_PROFILE=%s RSWITCH_INTERFACES=%s\\n\""
+			 " > /run/systemd/system/rswitch.service.d/profile-override.conf"
+			 " && printf \"[Service]\\nEnvironment=RSWITCH_PROFILE=%s\\n\""
+			 " > /run/systemd/system/rswitch-mgmtd.service.d/profile-override.conf"
+			 " && systemctl daemon-reload"
+			 " && systemctl restart rswitch'",
+			 profile, ifaces, profile);
+
 	free(profile);
-	json_printf(c, 200, "{\"status\":\"ok\"}");
+	system(cmd);
 }
 
 static void handle_profile_read(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
-	struct mg_str name;
 	char path[PATH_MAX];
 	char namebuf[256];
 	FILE *fp;
@@ -3245,16 +3461,7 @@ static void handle_profile_read(struct mg_connection *c, struct mg_http_message 
 
 	(void) userdata;
 
-	name = extract_name_from_uri(hm, "/api/profiles/");
-	if (name.len == 0 || name.len >= sizeof(namebuf)) {
-		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
-		return;
-	}
-	memcpy(namebuf, name.buf, name.len);
-	namebuf[name.len] = '\0';
-
-	/* Reject path traversal */
-	if (strstr(namebuf, "..") || strchr(namebuf, '/')) {
+	if (extract_profile_name(hm, "/api/profiles/", namebuf, sizeof(namebuf)) != 0) {
 		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
 		return;
 	}
@@ -3275,7 +3482,6 @@ static void handle_profile_read(struct mg_connection *c, struct mg_http_message 
 
 static void handle_profile_save(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
-	struct mg_str name;
 	char namebuf[256];
 	char path[PATH_MAX];
 	char *content;
@@ -3283,15 +3489,7 @@ static void handle_profile_save(struct mg_connection *c, struct mg_http_message 
 
 	(void) userdata;
 
-	name = extract_name_from_uri(hm, "/api/profiles/");
-	if (name.len == 0 || name.len >= sizeof(namebuf)) {
-		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
-		return;
-	}
-	memcpy(namebuf, name.buf, name.len);
-	namebuf[name.len] = '\0';
-
-	if (strstr(namebuf, "..") || strchr(namebuf, '/')) {
+	if (extract_profile_name(hm, "/api/profiles/", namebuf, sizeof(namebuf)) != 0) {
 		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
 		return;
 	}
@@ -3320,21 +3518,12 @@ static void handle_profile_save(struct mg_connection *c, struct mg_http_message 
 
 static void handle_profile_delete(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
-	struct mg_str name;
 	char namebuf[256];
 	char path[PATH_MAX];
 
 	(void) userdata;
 
-	name = extract_name_from_uri(hm, "/api/profiles/");
-	if (name.len == 0 || name.len >= sizeof(namebuf)) {
-		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
-		return;
-	}
-	memcpy(namebuf, name.buf, name.len);
-	namebuf[name.len] = '\0';
-
-	if (strstr(namebuf, "..") || strchr(namebuf, '/')) {
+	if (extract_profile_name(hm, "/api/profiles/", namebuf, sizeof(namebuf)) != 0) {
 		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
 		return;
 	}
@@ -4357,6 +4546,23 @@ int main(int argc, char **argv)
 	event_bus_init();
 	if (event_db_open(NULL) != 0)
 		RS_LOG_WARN("Event database init failed — events will not be persisted");
+
+	/*
+	 * In self-managed mode the process is still in the root namespace.
+	 * Switch into the mgmt namespace so the HTTP listener binds on
+	 * mgmt0's address, reachable via XDP-forwarded traffic.
+	 * BPF map FDs and the event-bus ringbuf opened above remain valid
+	 * across the setns() call — only the network namespace changes.
+	 */
+	if (g_ctx.cfg.use_namespace && !g_ctx.loader_managed_veth) {
+		if (rs_mgmt_iface_enter_netns(g_ctx.mgmt_cfg.mgmt_ns) == 0)
+			RS_LOG_INFO("Entered namespace %s for HTTP listener",
+				    g_ctx.mgmt_cfg.mgmt_ns);
+		else
+			RS_LOG_WARN("Failed to enter namespace %s — "
+				    "portal may not be reachable via mgmt IP",
+				    g_ctx.mgmt_cfg.mgmt_ns);
+	}
 
 	mg_mgr_init(&mgr);
 	g_mgr = &mgr;

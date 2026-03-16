@@ -492,7 +492,7 @@ Type=simple
 Environment=RSWITCH_HOME=${INSTALL_PREFIX}
 Environment=RSWITCH_PROFILE=default.yaml
 Environment=MGMT_NAMESPACE=rswitch-mgmt
-Environment=MGMT_NS_TIMEOUT=60
+Environment=MGMT_NS_TIMEOUT=10
 ExecStart=${INSTALL_PREFIX}/scripts/rswitch-mgmtd-start.sh
 Restart=on-failure
 RestartSec=5

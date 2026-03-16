@@ -76,4 +76,11 @@ int rs_mgmt_iface_start_mdns(const struct rs_mgmt_iface_config *cfg);
  */
 void rs_mgmt_iface_stop_mdns(void);
 
+/*
+ * Enter a network namespace by name.
+ * Calls setns(CLONE_NEWNET) to switch the calling thread's network namespace.
+ * Returns 0 on success, negative errno on failure.
+ */
+int rs_mgmt_iface_enter_netns(const char *ns_name);
+
 #endif

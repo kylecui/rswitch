@@ -482,7 +482,7 @@ int rs_mgmt_iface_get_ip(const struct rs_mgmt_iface_config *cfg,
 	return 0;
 }
 
-static int enter_netns(const char *ns_name)
+int rs_mgmt_iface_enter_netns(const char *ns_name)
 {
 	char path[128];
 	int fd;
@@ -512,7 +512,7 @@ static void *mdns_responder_thread(void *arg)
 	char mgmt_ip[64];
 	struct in_addr ip_addr;
 
-	if (enter_netns(g_mdns_cfg.mgmt_ns) < 0) {
+	if (rs_mgmt_iface_enter_netns(g_mdns_cfg.mgmt_ns) < 0) {
 		RS_LOG_ERROR("mDNS: failed to enter namespace %s", g_mdns_cfg.mgmt_ns);
 		return NULL;
 	}

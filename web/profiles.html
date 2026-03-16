@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>rSwitch — Profiles</title>
 <link rel="stylesheet" href="style.css">
-<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="vendor/htmx.min.js"></script>
 <script src="auth.js"></script>
-<script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+<script src="vendor/alpine.min.js" defer></script>
 </head>
 <body x-data="profilesPage()" x-init="init()">
 
@@ -152,11 +152,16 @@ function profilesPage() {
       this.editorName = name;
       this.newFileName = '';
       try {
-        const d = await (await apiFetch('/api/profiles/' + encodeURIComponent(name))).json();
+        const r = await apiFetch('/api/profiles/' + encodeURIComponent(name));
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          throw new Error(e.error || 'Failed to load profile');
+        }
+        const d = await r.json();
         this.editorContent = d.content || '';
         this.editorOpen = true;
-      } catch {
-        this.showToast('Failed to load profile', 'toast-error');
+      } catch (err) {
+        this.showToast(err && err.message ? err.message : 'Failed to load profile', 'toast-error');
       }
     },
 
@@ -214,8 +219,17 @@ function profilesPage() {
           body: JSON.stringify({ profile: name })
         });
         if (r.ok) {
-          this.showToast('Profile loaded: ' + name, 'toast-success');
-          await this.fetchActive();
+          const d = await r.json().catch(() => ({}));
+          if (d.status === 'restarting') {
+            this.showToast('Restarting data plane…', 'toast-success');
+            await this._waitForReconnect();
+            this.showToast('Profile loaded: ' + name, 'toast-success');
+            await this.fetchActive();
+            await this.fetchProfiles();
+          } else {
+            this.showToast('Profile loaded: ' + name, 'toast-success');
+            await this.fetchActive();
+          }
         } else {
           const e = await r.json().catch(() => ({}));
           this.showToast(e.error || 'Apply failed', 'toast-error');
@@ -223,6 +237,18 @@ function profilesPage() {
       } catch { this.showToast('Request failed', 'toast-error'); }
       this.applying = false;
       this.applyingName = '';
+    },
+
+    async _waitForReconnect() {
+      const deadline = Date.now() + 90000;
+      await new Promise(r => setTimeout(r, 5000));
+      while (Date.now() < deadline) {
+        try {
+          const r = await apiFetch('/api/profiles/active');
+          if (r.ok) return;
+        } catch {}
+        await new Promise(r => setTimeout(r, 3000));
+      }
     },
 
     async deleteProfile(name) {
