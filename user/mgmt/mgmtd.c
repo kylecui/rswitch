@@ -4407,6 +4407,28 @@ int main(int argc, char **argv)
 		if (profile.mgmt.enabled) {
 			g_ctx.cfg.port = profile.mgmt.port;
 			strncpy(g_ctx.cfg.web_root, profile.mgmt.web_root, sizeof(g_ctx.cfg.web_root) - 1);
+
+			/* Validate web_root directory exists, fallback to default if not */
+			struct stat web_root_st;
+			if (g_ctx.cfg.web_root[0] == '\0' ||
+			    stat(g_ctx.cfg.web_root, &web_root_st) != 0 ||
+			    !S_ISDIR(web_root_st.st_mode)) {
+				const char *rswitch_home = getenv("RSWITCH_HOME");
+				char fallback_web_root[256];
+				if (rswitch_home && rswitch_home[0]) {
+					snprintf(fallback_web_root, sizeof(fallback_web_root),
+						 "%s/web", rswitch_home);
+				} else {
+					strncpy(fallback_web_root, MGMTD_DEFAULT_WEB_ROOT,
+						sizeof(fallback_web_root) - 1);
+					fallback_web_root[sizeof(fallback_web_root) - 1] = '\0';
+				}
+				RS_LOG_WARN("web_root '%s' invalid or missing, using fallback: %s",
+					    g_ctx.cfg.web_root, fallback_web_root);
+				strncpy(g_ctx.cfg.web_root, fallback_web_root,
+					sizeof(g_ctx.cfg.web_root) - 1);
+			}
+
 			g_ctx.cfg.use_namespace = profile.mgmt.use_namespace;
 			g_ctx.cfg.auth_enabled = profile.mgmt.auth_enabled;
 			strncpy(g_ctx.cfg.auth_user, profile.mgmt.auth_user, sizeof(g_ctx.cfg.auth_user) - 1);

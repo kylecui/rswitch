@@ -92,7 +92,6 @@ voqd_config:
 management:
   enabled: true
   port: 8080
-  web_root: /home/kylecui/dev/rswitch/web
   use_namespace: true
   namespace_name: rswitch-mgmt
   iface_mode: dhcp
