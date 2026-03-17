@@ -55,9 +55,12 @@ BANNER
     echo -e "${NC}"
 }
 
-info()  { echo -e "${GREEN}[rSwitch]${NC} $*" | tee -a "$LOG_FILE" 2>/dev/null; }
-warn()  { echo -e "${YELLOW}[WARNING]${NC} $*" | tee -a "$LOG_FILE" 2>/dev/null; }
-error() { echo -e "${RED}[ERROR]${NC} $*" | tee -a "$LOG_FILE" 2>/dev/null; }
+# Ensure log directory exists before any logging
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+
+info()  { echo -e "${GREEN}[rSwitch]${NC} $*" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${GREEN}[rSwitch]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[WARNING]${NC} $*" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} $*"; }
+error() { echo -e "${RED}[ERROR]${NC} $*" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${RED}[ERROR]${NC} $*"; }
 fatal() { error "$*"; exit 1; }
 
 step() {
