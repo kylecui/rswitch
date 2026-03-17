@@ -8,6 +8,18 @@
 <script src="vendor/htmx.min.js"></script>
 <script src="auth.js"></script>
 <script src="vendor/alpine.min.js" defer></script>
+<style>
+.modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 100px;
+}
+</style>
 </head>
 <body x-data="profilesPage()" x-init="init()">
 
@@ -38,6 +50,51 @@
     <span><span class="icon">&#x2699;</span> Profile Management</span>
     <button class="btn btn-primary" @click="showCreateForm()">+ New Profile</button>
   </div>
+
+  <div class="card" style="margin-bottom:16px;">
+    <div class="card-header">Running Configuration</div>
+    <div style="padding:16px;">
+      <p style="margin:0 0 12px;color:var(--text-secondary);">
+        Save the current running configuration (ACLs, VLANs, routes) to the state file associated with the active profile.
+        The state file will be automatically loaded on next startup.
+      </p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-primary" @click="saveConfig()" :disabled="savingConfig">
+          <span x-show="!savingConfig">&#x1F4BE; Save Running Config</span>
+          <span x-show="savingConfig"><span class="spinner"></span> Saving...</span>
+        </button>
+        <button class="btn" @click="resetConfig()" :disabled="resettingConfig">
+          <span x-show="!resettingConfig">&#x21BA; Reset to Base Profile</span>
+          <span x-show="resettingConfig"><span class="spinner"></span></span>
+        </button>
+        <button class="btn btn-primary" @click="showExportDialog()">&#x1F4E4; Export as New Profile</button>
+      </div>
+      <div x-show="statePath" style="margin-top:12px;color:var(--text-secondary);font-size:12px;">
+        State file: <span class="mono" x-text="statePath"></span>
+      </div>
+    </div>
+  </div>
+
+  <template x-if="exportDialogOpen">
+    <div class="modal-overlay" @click.self="exportDialogOpen=false">
+      <div class="card" style="width:400px;margin:100px auto;">
+        <div class="card-header">Export Running Config as Profile</div>
+        <div style="padding:16px;">
+          <div class="form-group">
+            <label>New Profile Name</label>
+            <input type="text" x-model="exportName" placeholder="my-exported-profile.yaml" style="width:100%;">
+          </div>
+          <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;">
+            <button class="btn" @click="exportDialogOpen=false">Cancel</button>
+            <button class="btn btn-primary" @click="exportConfig()" :disabled="exporting">
+              <span x-show="!exporting">Export</span>
+              <span x-show="exporting"><span class="spinner"></span></span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
 
   <div class="card">
     <div class="table-wrap">
@@ -126,6 +183,12 @@ function profilesPage() {
     applyingName: '',
     saving: false,
     toast: false, toastMsg: '', toastClass: '',
+    savingConfig: false,
+    resettingConfig: false,
+    statePath: '',
+    exportDialogOpen: false,
+    exportName: '',
+    exporting: false,
 
     init() {
       this.fetchProfiles();
@@ -271,6 +334,70 @@ function profilesPage() {
       const end = ta.selectionEnd;
       this.editorContent = this.editorContent.substring(0, start) + '  ' + this.editorContent.substring(end);
       this.$nextTick(() => { ta.selectionStart = ta.selectionEnd = start + 2; });
+    },
+
+    async saveConfig() {
+      this.savingConfig = true;
+      try {
+        const r = await apiFetch('/api/config/save', { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) {
+          this.statePath = d.path || '';
+          this.showToast('Running config saved: ' + (d.path || ''), 'toast-success');
+        } else {
+          this.showToast(d.error || 'Save failed', 'toast-error');
+        }
+      } catch { this.showToast('Request failed', 'toast-error'); }
+      this.savingConfig = false;
+    },
+
+    async resetConfig() {
+      if (!confirm('Reset to base profile? This will delete the state file. You must restart mgmtd for changes to take effect.')) return;
+      this.resettingConfig = true;
+      try {
+        const r = await apiFetch('/api/config/reset', { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) {
+          this.statePath = '';
+          this.showToast(d.message || 'Config reset', 'toast-success');
+        } else {
+          this.showToast(d.error || 'Reset failed', 'toast-error');
+        }
+      } catch { this.showToast('Request failed', 'toast-error'); }
+      this.resettingConfig = false;
+    },
+
+    showExportDialog() {
+      this.exportName = '';
+      this.exportDialogOpen = true;
+    },
+
+    async exportConfig() {
+      let name = this.exportName.trim();
+      if (!name) {
+        this.showToast('Profile name required', 'toast-error');
+        return;
+      }
+      if (!name.endsWith('.yaml') && !name.endsWith('.yml')) {
+        name += '.yaml';
+      }
+      this.exporting = true;
+      try {
+        const r = await apiFetch('/api/config/export', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) {
+          this.showToast('Exported: ' + (d.path || name), 'toast-success');
+          this.exportDialogOpen = false;
+          await this.fetchProfiles();
+        } else {
+          this.showToast(d.error || 'Export failed', 'toast-error');
+        }
+      } catch { this.showToast('Request failed', 'toast-error'); }
+      this.exporting = false;
     },
 
     showToast(msg, cls) { this.toastMsg = msg; this.toastClass = cls; this.toast = true; }

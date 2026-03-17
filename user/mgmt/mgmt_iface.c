@@ -501,6 +501,36 @@ int rs_mgmt_iface_enter_netns(const char *ns_name)
 	return 0;
 }
 
+int rs_mgmt_iface_ns_probe(const char *ns_name)
+{
+	char path[128];
+	int ns_fd, self_fd, ret = 0;
+
+	/* Save current namespace so we can restore after probe */
+	self_fd = open("/proc/self/ns/net", O_RDONLY);
+	if (self_fd < 0)
+		return 0;
+
+	/* Try to open target namespace */
+	snprintf(path, sizeof(path), "/var/run/netns/%s", ns_name);
+	ns_fd = open(path, O_RDONLY);
+	if (ns_fd < 0) {
+		close(self_fd);
+		return 0;
+	}
+
+	/* Try setns to verify namespace is enterable */
+	if (setns(ns_fd, CLONE_NEWNET) == 0) {
+		ret = 1;
+		/* Restore original namespace */
+		setns(self_fd, CLONE_NEWNET);
+	}
+
+	close(ns_fd);
+	close(self_fd);
+	return ret;
+}
+
 static void *mdns_responder_thread(void *arg)
 {
 	(void)arg;

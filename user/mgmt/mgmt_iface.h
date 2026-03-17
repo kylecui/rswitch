@@ -83,4 +83,12 @@ void rs_mgmt_iface_stop_mdns(void);
  */
 int rs_mgmt_iface_enter_netns(const char *ns_name);
 
+/*
+ * Probe if a namespace exists and is enterable.
+ * Attempts to open /var/run/netns/{name} and verify setns() would succeed.
+ * Does NOT actually switch namespaces (restores original ns after probe).
+ * Returns 1 if namespace is healthy (exists and enterable), 0 otherwise.
+ */
+int rs_mgmt_iface_ns_probe(const char *ns_name);
+
 #endif

@@ -1893,6 +1893,14 @@ static int cmd_dhcp_snoop_stats(void)
 static void usage(const char *prog)
 {
     fprintf(stderr, "Usage: %s <command> [options]\n\n", prog);
+    fprintf(stderr, "Rule Types (checked in order, first match wins):\n");
+    fprintf(stderr, "  Level 1: 5-tuple   - Exact match on all 5 fields (no wildcards)\n");
+    fprintf(stderr, "  Level 2: Proto+Dst - Match proto + dst_ip + port (any source)\n");
+    fprintf(stderr, "  Level 3: Proto+Src - Match proto + src_ip + port (any destination)\n");
+    fprintf(stderr, "  Level 4: Proto+Port- Match proto + port only (any src/dst IP)\n");
+    fprintf(stderr, "  Level 5: LPM Src   - Match source IP prefix (CIDR)\n");
+    fprintf(stderr, "  Level 6: LPM Dst   - Match destination IP prefix (CIDR)\n");
+    fprintf(stderr, "  Level 7: Default   - Fallback action if no rule matches\n\n");
     fprintf(stderr, "Commands:\n");
     fprintf(stderr, "  add-5t          Add 5-tuple exact match rule (Level 1)\n");
     fprintf(stderr, "  add-proto-dst   Add proto+dst_ip+port rule (Level 2)\n");

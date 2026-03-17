@@ -35,27 +35,27 @@
 <main class="main">
   <div class="page-title flex-between">
     <span><span class="icon">&#x26CA;</span> Access Control Lists</span>
-    <button class="btn btn-primary" @click="showCreate = !showCreate">+ Add Rule</button>
+    <button class="btn btn-primary" @click="showCreate = !showCreate; editingAcl = null">+ Add Rule</button>
   </div>
 
-  <div x-show="showCreate" x-transition class="card">
-    <div class="card-header">Add ACL Rule</div>
-    <form @submit.prevent="createAcl()">
+  <div x-show="showCreate || editingAcl" x-transition class="card">
+    <div class="card-header" x-text="editingAcl ? 'Edit ACL Rule #' + editingAcl.id : 'Add ACL Rule'"></div>
+    <form @submit.prevent="editingAcl ? updateAcl() : createAcl()">
       <div class="form-inline mt-12">
         <div class="form-group">
           <label>Priority</label>
-          <input type="number" x-model.number="newAcl.priority" min="0" max="65535" style="width:80px;" required>
+          <input type="number" x-model.number="formAcl.priority" min="0" max="65535" style="width:80px;" required>
         </div>
         <div class="form-group">
           <label>Action</label>
-          <select x-model="newAcl.action">
+          <select x-model="formAcl.action">
             <option value="permit">Permit</option>
             <option value="deny">Deny</option>
           </select>
         </div>
         <div class="form-group">
           <label>Protocol</label>
-          <select x-model="newAcl.protocol">
+          <select x-model="formAcl.protocol">
             <option value="any">Any</option>
             <option value="tcp">TCP</option>
             <option value="udp">UDP</option>
@@ -66,22 +66,22 @@
       <div class="form-inline mt-12">
         <div class="form-group">
           <label>Source IP</label>
-          <input type="text" x-model="newAcl.src_ip" placeholder="0.0.0.0/0" style="width:160px;">
+          <input type="text" x-model="formAcl.src_ip" placeholder="any" style="width:160px;">
         </div>
         <div class="form-group">
           <label>Source Port</label>
-          <input type="text" x-model="newAcl.src_port" placeholder="any" style="width:80px;">
+          <input type="text" x-model="formAcl.src_port" placeholder="any" style="width:80px;">
         </div>
         <div class="form-group">
           <label>Dest IP</label>
-          <input type="text" x-model="newAcl.dst_ip" placeholder="0.0.0.0/0" style="width:160px;">
+          <input type="text" x-model="formAcl.dst_ip" placeholder="any" style="width:160px;">
         </div>
         <div class="form-group">
           <label>Dest Port</label>
-          <input type="text" x-model="newAcl.dst_port" placeholder="any" style="width:80px;">
+          <input type="text" x-model="formAcl.dst_port" placeholder="any" style="width:80px;">
         </div>
-        <button type="submit" class="btn btn-primary">Add</button>
-        <button type="button" class="btn" @click="showCreate=false">Cancel</button>
+        <button type="submit" class="btn btn-primary" x-text="editingAcl ? 'Update' : 'Add'"></button>
+        <button type="button" class="btn" @click="cancelForm()">Cancel</button>
       </div>
     </form>
   </div>
@@ -92,6 +92,7 @@
         <thead>
           <tr>
             <th>#</th>
+            <th>Type</th>
             <th>Priority</th>
             <th>Action</th>
             <th>Protocol</th>
@@ -102,19 +103,21 @@
           </tr>
         </thead>
         <tbody>
-          <template x-for="(acl, idx) in acls" :key="acl.id || idx">
+          <template x-for="(acl, idx) in acls" :key="acl.id ?? idx">
             <tr>
-              <td class="text-muted" x-text="acl.id || idx"></td>
+              <td class="text-muted" x-text="acl.id ?? idx"></td>
+              <td class="mono text-muted" x-text="acl.type || '5tuple'"></td>
               <td x-text="acl.priority"></td>
               <td>
                 <span class="badge" :class="acl.action === 'permit' ? 'badge-permit' : 'badge-deny'" x-text="acl.action"></span>
               </td>
-              <td class="mono" x-text="acl.protocol || 'any'"></td>
-              <td class="mono" x-text="(acl.src_ip || 'any') + (acl.src_port && acl.src_port !== 'any' ? ':'+acl.src_port : '')"></td>
-              <td class="mono" x-text="(acl.dst_ip || 'any') + (acl.dst_port && acl.dst_port !== 'any' ? ':'+acl.dst_port : '')"></td>
+              <td class="mono" x-text="formatProto(acl.protocol)"></td>
+              <td class="mono" x-text="formatSrc(acl)"></td>
+              <td class="mono" x-text="formatDst(acl)"></td>
               <td class="mono" x-text="acl.hits || 0"></td>
               <td>
-                <button class="btn btn-sm btn-danger" @click="deleteAcl(acl.id || idx)">Delete</button>
+                <button class="btn btn-sm" @click="editAcl(acl)">Edit</button>
+                <button class="btn btn-sm btn-danger" @click="deleteAcl(acl.id ?? idx)">Delete</button>
               </td>
             </tr>
           </template>
@@ -134,13 +137,45 @@
 <script>
 function aclsPage() {
   return {
-    acls: [], showCreate: false,
-    newAcl: { priority: 100, action: 'permit', protocol: 'any', src_ip: '', src_port: '', dst_ip: '', dst_port: '' },
+    acls: [],
+    showCreate: false,
+    editingAcl: null,
+    formAcl: { priority: 100, action: 'permit', protocol: 'any', src_ip: '', src_port: '', dst_ip: '', dst_port: '' },
     toast: false, toastMsg: '', toastClass: '',
 
     init() {
       this.fetchAcls();
       setInterval(() => this.fetchAcls(), 5000);
+    },
+
+    resetForm() {
+      this.formAcl = { priority: 100, action: 'permit', protocol: 'any', src_ip: '', src_port: '', dst_ip: '', dst_port: '' };
+    },
+
+    cancelForm() {
+      this.showCreate = false;
+      this.editingAcl = null;
+      this.resetForm();
+    },
+
+    formatProto(p) {
+      if (p === 1 || p === 'icmp') return 'ICMP';
+      if (p === 6 || p === 'tcp') return 'TCP';
+      if (p === 17 || p === 'udp') return 'UDP';
+      if (p === 0 || p === 'any' || !p) return 'any';
+      return String(p);
+    },
+
+    formatSrc(acl) {
+      const ip = (acl.src_ip === '0.0.0.0' || !acl.src_ip) ? 'any' : acl.src_ip;
+      const port = acl.src_port && acl.src_port !== 0 ? ':' + acl.src_port : '';
+      return ip + port;
+    },
+
+    formatDst(acl) {
+      const ip = (acl.dst_ip === '0.0.0.0' || !acl.dst_ip) ? 'any' : acl.dst_ip;
+      const port = acl.dst_port && acl.dst_port !== 0 ? ':' + acl.dst_port : '';
+      return ip + port;
     },
 
     async fetchAcls() {
@@ -151,13 +186,52 @@ function aclsPage() {
     },
 
     async createAcl() {
-      const body = { ...this.newAcl };
-      if (body.src_port) body.src_port = parseInt(body.src_port) || body.src_port;
-      if (body.dst_port) body.dst_port = parseInt(body.dst_port) || body.dst_port;
+      const body = { ...this.formAcl };
+      if (body.src_port) body.src_port = parseInt(body.src_port) || 0;
+      if (body.dst_port) body.dst_port = parseInt(body.dst_port) || 0;
       try {
         const r = await apiFetch('/api/acls', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (r.ok) { this.showToast('ACL rule added', 'toast-success'); this.showCreate = false; this.fetchAcls(); }
-        else this.showToast('Failed to add rule', 'toast-error');
+        if (r.ok) {
+          this.showToast('ACL rule added', 'toast-success');
+          this.cancelForm();
+          this.fetchAcls();
+        } else {
+          const err = await r.json().catch(() => ({}));
+          this.showToast(err.error || 'Failed to add rule', 'toast-error');
+        }
+      } catch { this.showToast('Request failed', 'toast-error'); }
+    },
+
+    editAcl(acl) {
+      this.editingAcl = acl;
+      this.showCreate = false;
+      this.formAcl = {
+        priority: acl.priority || 0,
+        action: acl.action || 'permit',
+        protocol: this.formatProto(acl.protocol).toLowerCase(),
+        src_ip: (acl.src_ip === '0.0.0.0' || acl.src_ip === 'any') ? '' : acl.src_ip,
+        src_port: acl.src_port || '',
+        dst_ip: (acl.dst_ip === '0.0.0.0' || acl.dst_ip === 'any') ? '' : acl.dst_ip,
+        dst_port: acl.dst_port || ''
+      };
+    },
+
+    async updateAcl() {
+      if (!this.editingAcl) return;
+      const id = this.editingAcl.id ?? 0;
+      const body = { ...this.formAcl };
+      if (body.src_port) body.src_port = parseInt(body.src_port) || 0;
+      if (body.dst_port) body.dst_port = parseInt(body.dst_port) || 0;
+      try {
+        const r = await apiFetch('/api/acls/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (r.ok) {
+          this.showToast('ACL rule updated', 'toast-success');
+          this.cancelForm();
+          this.fetchAcls();
+        } else {
+          const err = await r.json().catch(() => ({}));
+          this.showToast(err.error || 'Failed to update rule', 'toast-error');
+        }
       } catch { this.showToast('Request failed', 'toast-error'); }
     },
 

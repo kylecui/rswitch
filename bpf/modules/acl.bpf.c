@@ -1,33 +1,30 @@
 // SPDX-License-Identifier: GPL-2.0
 /* 
- * rSwitch ACL (Access Control List) Module - Multi-Level Partial Match Design
+ * rSwitch ACL (Access Control List) Module - Priority-based Multi-Map Design
  * 
- * Architecture: 7-Level Priority-based Lookup
+ * Architecture: Two-Phase Priority Lookup
  * 
- * Level 1: 5-tuple exact match {proto, src_ip, dst_ip, sport, dport}
- *   → Use: Specific connection control (10.1.2.3:12345 → 192.168.1.1:22)
+ * Phase 1: Check all 6 map types for matches:
+ *   - 5-tuple exact match {proto, src_ip, dst_ip, sport, dport}
+ *   - Proto + Dst IP + Dst Port {proto, dst_ip, dport}
+ *   - Proto + Src IP + Dst Port {proto, src_ip, dport}
+ *   - Proto + Dst Port {proto, dport}
+ *   - Src IP prefix (LPM)
+ *   - Dst IP prefix (LPM)
  * 
- * Level 2: Proto + Dst IP + Dst Port {proto, dst_ip, dport}
- *   → Use: Block services (* → malicious.site:443)
+ * Phase 2: Select match with highest priority (0-7, where 7 is highest)
  * 
- * Level 3: Proto + Src IP + Dst Port {proto, src_ip, dport}
- *   → Use: Restrict source (attacker:* → *:22)
+ * Priority Semantics:
+ *   - User-defined priority (0-7) determines which rule wins
+ *   - Higher priority rules ALWAYS win, regardless of map type
+ *   - Same priority: more specific match wins (5-tuple > partial > LPM)
  * 
- * Level 4: Proto + Dst Port {proto, dport}
- *   → Use: Global port filter (* → *:443/UDP for QUIC)
- * 
- * Level 5: Src IP prefix (LPM)
- *   → Use: Block attacker networks (10.0.0.0/8 → *)
- * 
- * Level 6: Dst IP prefix (LPM)
- *   → Use: Protect subnets (* → 192.168.0.0/16)
- * 
- * Level 7: Default policy
- *   → Use: Baseline allow/deny
+ * Example: permit 10.174.129.0/24 → 10.174.1.5 ICMP @ priority=7
+ *          deny any → 10.174.1.5 ICMP @ priority=0
+ *          → permit wins because priority 7 > priority 0
  * 
  * Performance:
- * - Best case: 1 lookup (~10ns)
- * - Worst case: 7 lookups (~70ns)
+ * - Fixed 6 lookups per packet (all maps checked)
  * - All O(1) or O(log N), NO linear iteration
  */
 
@@ -55,14 +52,16 @@ enum acl_action {
     ACL_ACTION_REDIRECT = 2,  // Redirect to another port or AF_XDP
 };
 
-/* ACL Action Result
- * Returned by lookup functions
+/* ACL Action Result - stored in all ACL maps
+ * priority field determines which match wins when multiple rules match
  */
 struct acl_result {
     __u8 action;           // enum acl_action
     __u8 log_event;        // Whether to emit event to ringbuf
     __u16 redirect_ifindex; // Target ifindex (0 = AF_XDP via queue)
-    __u32 stats_id;        // Statistics counter ID
+    __u32 stats_id;        // Statistics counter ID (rule ID for display)
+    __u8  priority;        // User priority 0-7 (7 = highest)
+    __u8  pad[3];
 } __attribute__((packed));
 
 //
@@ -169,13 +168,28 @@ struct acl_lpm_key {
     __u32 ip;              // Network byte order
 };
 
+/* Extended LPM value with priority and additional match criteria */
+struct acl_lpm_value {
+    __u8 action;           // enum acl_action
+    __u8 log_event;        // Whether to emit event to ringbuf
+    __u16 redirect_ifindex; // Target ifindex (0 = AF_XDP via queue)
+    __u32 stats_id;        // Statistics counter ID (rule ID for display)
+    __u8  priority;        // User priority 0-7 (7 = highest)
+    __u8  proto;           // Protocol to match (0 = any)
+    __u16 sport;           // Source port to match (0 = any, network byte order)
+    __u16 dport;           // Dest port to match (0 = any, network byte order)
+    __u16 pad;
+    __u32 other_ip;        // For src LPM: dst_ip to match; for dst LPM: src_ip (0 = any)
+} __attribute__((packed));
+
 /* Source IP prefix match
  * Example: Block all traffic from 10.0.0.0/8
+ * With extended value: Block 10.0.0.0/8 → 192.168.1.5:22 TCP
  */
 struct {
     __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __type(key, struct acl_lpm_key);
-    __type(value, struct acl_result);
+    __type(value, struct acl_lpm_value);
     __uint(map_flags, BPF_F_NO_PREALLOC);
     __uint(max_entries, 16384);  // Reasonable for prefix rules
     __uint(pinning, LIBBPF_PIN_BY_NAME);
@@ -183,11 +197,12 @@ struct {
 
 /* Destination IP prefix match
  * Example: Allow all traffic to 192.168.0.0/16
+ * With extended value: Allow 10.1.2.3 → 192.168.0.0/16:443 TCP
  */
 struct {
     __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __type(key, struct acl_lpm_key);
-    __type(value, struct acl_result);
+    __type(value, struct acl_lpm_value);
     __uint(map_flags, BPF_F_NO_PREALLOC);
     __uint(max_entries, 16384);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
@@ -306,121 +321,133 @@ int acl_filter(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
     
-    /* Check if ACL is enabled */
     __u32 cfg_key = 0;
     struct acl_config *cfg = bpf_map_lookup_elem(&acl_config_map, &cfg_key);
     if (!cfg || !cfg->enabled) {
         rs_debug("ACL: disabled, passing through. target=%d", ctx->egress_ifindex);
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-        return XDP_DROP;  // Tail-call failed
+        return XDP_DROP;
     }
     
-    /* Only process IPv4 for now (IPv6 support can be added later) */
     if (ctx->layers.eth_proto != 0x0800) {
         rs_debug("ACL: non-IPv4 packet, skipping");
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
         return XDP_DROP;
     }
     
-    struct acl_result *result = NULL;
+    /* Two-phase priority lookup:
+     * Phase 1: Check all maps, track best (highest priority) match
+     * Phase 2: Apply the winning rule
+     * Specificity order within same priority: 5tuple > pdp > psp > pp > lpm_src > lpm_dst
+     */
+    struct acl_result best_match = {0};
+    __s8 best_priority = -1;
+    __u32 best_stat_id = 0;
+    struct acl_result *result;
     
-    /* Level 1: Exact 5-tuple match (highest priority) */
-    struct acl_5tuple_key key_l1 = {
+    struct acl_5tuple_key key_5t = {
         .proto = ctx->layers.ip_proto,
         .src_ip = ctx->layers.saddr,
         .dst_ip = ctx->layers.daddr,
         .sport = ctx->layers.sport,
         .dport = ctx->layers.dport,
     };
-    
-    result = bpf_map_lookup_elem(&acl_5tuple_map, &key_l1);
-    if (result) {
-        rs_debug("ACL: L1 5-tuple hit");
-        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L1_5TUPLE_HIT);
-        if (ret == XDP_DROP) {
-            return XDP_DROP;
-        }
-        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-        return XDP_DROP;
+    result = bpf_map_lookup_elem(&acl_5tuple_map, &key_5t);
+    if (result && (__s8)result->priority > best_priority) {
+        best_match = *result;
+        best_priority = result->priority;
+        best_stat_id = ACL_STAT_L1_5TUPLE_HIT;
     }
     
-    /* Level 2: Proto + Dst IP + Dst Port */
-    struct acl_proto_dstip_port_key key_l2 = {
+    struct acl_proto_dstip_port_key key_pdp = {
         .proto = ctx->layers.ip_proto,
         .dst_ip = ctx->layers.daddr,
         .dst_port = ctx->layers.dport,
     };
-    
-    result = bpf_map_lookup_elem(&acl_pdp_map, &key_l2);
-    if (result) {
-        rs_debug("ACL: L2 proto+dstip+port hit");
-        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L2_PROTO_DSTIP_PORT_HIT);
-        if (ret == XDP_DROP) {
-            return XDP_DROP;
-        }
-        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-        return XDP_DROP;
+    result = bpf_map_lookup_elem(&acl_pdp_map, &key_pdp);
+    if (result && (__s8)result->priority > best_priority) {
+        best_match = *result;
+        best_priority = result->priority;
+        best_stat_id = ACL_STAT_L2_PROTO_DSTIP_PORT_HIT;
     }
     
-    /* Level 3: Proto + Src IP + Dst Port */
-    struct acl_proto_srcip_port_key key_l3 = {
+    struct acl_proto_srcip_port_key key_psp = {
         .proto = ctx->layers.ip_proto,
         .src_ip = ctx->layers.saddr,
         .dst_port = ctx->layers.dport,
     };
-    
-    result = bpf_map_lookup_elem(&acl_psp_map, &key_l3);
-    if (result) {
-        rs_debug("ACL: L3 proto+srcip+port hit");
-        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L3_PROTO_SRCIP_PORT_HIT);
-        if (ret == XDP_DROP) {
-            return XDP_DROP;
-        }
-        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-        return XDP_DROP;
+    result = bpf_map_lookup_elem(&acl_psp_map, &key_psp);
+    if (result && (__s8)result->priority > best_priority) {
+        best_match = *result;
+        best_priority = result->priority;
+        best_stat_id = ACL_STAT_L3_PROTO_SRCIP_PORT_HIT;
     }
     
-    /* Level 4: Proto + Dst Port */
-    struct acl_proto_port_key key_l4 = {
+    struct acl_proto_port_key key_pp = {
         .proto = ctx->layers.ip_proto,
         .dst_port = ctx->layers.dport,
     };
-    
-    result = bpf_map_lookup_elem(&acl_pp_map, &key_l4);
-    if (result) {
-        rs_debug("ACL: L4 proto+port hit");
-        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L4_PROTO_PORT_HIT);
-        if (ret == XDP_DROP) {
-            return XDP_DROP;
-        }
-        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-        return XDP_DROP;
+    result = bpf_map_lookup_elem(&acl_pp_map, &key_pp);
+    if (result && (__s8)result->priority > best_priority) {
+        best_match = *result;
+        best_priority = result->priority;
+        best_stat_id = ACL_STAT_L4_PROTO_PORT_HIT;
     }
     
-    /* Level 5: Source IP prefix match */
     struct acl_lpm_key lpm_key = {
         .prefixlen = 32,
         .ip = ctx->layers.saddr,
     };
-    
-    result = bpf_map_lookup_elem(&acl_lpm_src_map, &lpm_key);
-    if (result) {
-        rs_debug("ACL: L5 LPM src hit");
-        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L5_LPM_SRC_HIT);
-        if (ret == XDP_DROP) {
-            return XDP_DROP;
+    struct acl_lpm_value *lpm_val = bpf_map_lookup_elem(&acl_lpm_src_map, &lpm_key);
+    if (lpm_val) {
+        int match = 1;
+        if (lpm_val->other_ip != 0 && lpm_val->other_ip != ctx->layers.daddr)
+            match = 0;
+        if (lpm_val->proto != 0 && lpm_val->proto != ctx->layers.ip_proto)
+            match = 0;
+        if (lpm_val->sport != 0 && lpm_val->sport != ctx->layers.sport)
+            match = 0;
+        if (lpm_val->dport != 0 && lpm_val->dport != ctx->layers.dport)
+            match = 0;
+        
+        if (match && (__s8)lpm_val->priority > best_priority) {
+            best_match.action = lpm_val->action;
+            best_match.log_event = lpm_val->log_event;
+            best_match.redirect_ifindex = lpm_val->redirect_ifindex;
+            best_match.stats_id = lpm_val->stats_id;
+            best_match.priority = lpm_val->priority;
+            best_priority = lpm_val->priority;
+            best_stat_id = ACL_STAT_L5_LPM_SRC_HIT;
         }
-        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-        return XDP_DROP;
     }
     
-    /* Level 6: Destination IP prefix match */
     lpm_key.ip = ctx->layers.daddr;
+    lpm_val = bpf_map_lookup_elem(&acl_lpm_dst_map, &lpm_key);
+    if (lpm_val) {
+        int match = 1;
+        if (lpm_val->other_ip != 0 && lpm_val->other_ip != ctx->layers.saddr)
+            match = 0;
+        if (lpm_val->proto != 0 && lpm_val->proto != ctx->layers.ip_proto)
+            match = 0;
+        if (lpm_val->sport != 0 && lpm_val->sport != ctx->layers.sport)
+            match = 0;
+        if (lpm_val->dport != 0 && lpm_val->dport != ctx->layers.dport)
+            match = 0;
+        
+        if (match && (__s8)lpm_val->priority > best_priority) {
+            best_match.action = lpm_val->action;
+            best_match.log_event = lpm_val->log_event;
+            best_match.redirect_ifindex = lpm_val->redirect_ifindex;
+            best_match.stats_id = lpm_val->stats_id;
+            best_match.priority = lpm_val->priority;
+            best_priority = lpm_val->priority;
+            best_stat_id = ACL_STAT_L6_LPM_DST_HIT;
+        }
+    }
     
-    result = bpf_map_lookup_elem(&acl_lpm_dst_map, &lpm_key);
-    if (result) {
-        rs_debug("ACL: L6 LPM dst hit");
-        int ret = apply_acl_action(xdp_ctx, ctx, result, ACL_STAT_L6_LPM_DST_HIT);
+    if (best_priority >= 0) {
+        rs_debug("ACL: matched priority=%d action=%d", best_priority, best_match.action);
+        int ret = apply_acl_action(xdp_ctx, ctx, &best_match, best_stat_id);
         if (ret == XDP_DROP) {
             return XDP_DROP;
         }
@@ -428,18 +455,16 @@ int acl_filter(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
     
-    /* Level 7: Default policy */
     if (cfg->default_action == ACL_ACTION_DROP) {
-        rs_debug("ACL: L7 default DROP");
+        rs_debug("ACL: default DROP");
         ctx->drop_reason = RS_DROP_ACL_BLOCK;
         update_stat(ACL_STAT_L7_DEFAULT_DROP);
         update_stat(ACL_STAT_TOTAL_DROPS);
         return XDP_DROP;
     }
     
-    /* Default PASS */
-    rs_debug("ACL: L7 default PASS");
+    rs_debug("ACL: default PASS");
     update_stat(ACL_STAT_L7_DEFAULT_PASS);
     RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
-    return XDP_DROP;  // Tail-call failed
+    return XDP_DROP;
 }

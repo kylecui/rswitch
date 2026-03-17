@@ -63,6 +63,8 @@
 #define ACL_PSP_MAP_PATH "/sys/fs/bpf/acl_psp_map"
 #define ACL_PP_MAP_PATH "/sys/fs/bpf/acl_pp_map"
 #define ACL_CONFIG_MAP_PATH "/sys/fs/bpf/acl_config_map"
+#define ACL_LPM_SRC_MAP_PATH "/sys/fs/bpf/acl_lpm_src_map"
+#define ACL_LPM_DST_MAP_PATH "/sys/fs/bpf/acl_lpm_dst_map"
 #define ROUTE_TBL_MAP_PATH "/sys/fs/bpf/route_tbl"
 #define RS_EVENT_BUS_PATH "/sys/fs/bpf/rs_event_bus"
 #define DHCP_SNOOP_CONFIG_MAP_PATH "/sys/fs/bpf/dhcp_snoop_config_map"
@@ -103,6 +105,8 @@ struct acl_result {
 	__u8 log_event;
 	__u16 redirect_ifindex;
 	__u32 stats_id;
+	__u8  priority;
+	__u8  pad[3];
 } __attribute__((packed));
 
 struct acl_proto_dstip_port_key {
@@ -127,10 +131,30 @@ struct acl_proto_port_key {
 	__u16 dst_port;
 } __attribute__((packed));
 
+struct acl_config {
+	__u8 default_action;
+	__u8 enabled;
+	__u8 log_drops;
+	__u8 pad;
+};
+
 struct lpm_key {
 	__u32 prefixlen;
 	__u32 addr;
 };
+
+struct acl_lpm_value {
+	__u8 action;
+	__u8 log_event;
+	__u16 redirect_ifindex;
+	__u32 stats_id;
+	__u8  priority;
+	__u8  proto;
+	__u16 sport;
+	__u16 dport;
+	__u16 pad;
+	__u32 other_ip;
+} __attribute__((packed));
 
 struct route_entry {
 	__u32 nexthop;
@@ -255,6 +279,8 @@ static struct {
 	int acl_psp_fd;
 	int acl_pp_fd;
 	int acl_config_fd;
+	int acl_lpm_src_fd;
+	int acl_lpm_dst_fd;
 	int route_tbl_fd;
 	int dhcp_snoop_config_fd;
 	int dhcp_trusted_ports_fd;
@@ -264,7 +290,8 @@ static struct {
 	     .vlan_fd = -1, .mac_table_fd = -1, .module_config_fd = -1,
 	     .voqd_state_fd = -1, .qdepth_fd = -1, .acl_5tuple_fd = -1,
 	     .acl_pdp_fd = -1, .acl_psp_fd = -1, .acl_pp_fd = -1,
-	     .acl_config_fd = -1, .route_tbl_fd = -1,
+	     .acl_config_fd = -1, .acl_lpm_src_fd = -1, .acl_lpm_dst_fd = -1,
+	     .route_tbl_fd = -1,
 	     .dhcp_snoop_config_fd = -1, .dhcp_trusted_ports_fd = -1,
 	     .ncpus = 0, .initialized = false };
 
@@ -306,6 +333,48 @@ static int profile_name_valid(const char *name)
 	}
 
 	return 1;
+}
+
+/*
+ * Parse CIDR notation (e.g., "10.174.229.0/24") or plain IP (e.g., "10.1.2.3")
+ * Returns 0 on success, -1 on failure
+ * Output: ip in network byte order, prefixlen in bits (32 for single host)
+ */
+static int parse_cidr(const char *str, __u32 *ip, __u32 *prefixlen)
+{
+	char buf[64];
+	char *slash;
+	struct in_addr addr;
+	long prefix;
+	char *endptr;
+
+	if (!str || !ip || !prefixlen)
+		return -1;
+
+	/* Copy to mutable buffer */
+	if (strlen(str) >= sizeof(buf))
+		return -1;
+	strcpy(buf, str);
+
+	/* Check for CIDR notation (slash) */
+	slash = strchr(buf, '/');
+	if (slash) {
+		*slash = '\0';
+		prefix = strtol(slash + 1, &endptr, 10);
+		if (*endptr != '\0' || prefix < 0 || prefix > 32)
+			return -1;
+		*prefixlen = (__u32)prefix;
+	} else {
+		/* Single IP = /32 */
+		*prefixlen = 32;
+	}
+
+	/* Parse IP address */
+	if (inet_pton(AF_INET, buf, &addr) != 1)
+		return -1;
+
+	*ip = addr.s_addr;
+	return 0;
 }
 
 static int extract_profile_name(struct mg_http_message *hm, const char *prefix,
@@ -1122,6 +1191,8 @@ static int mgmtd_maps_init(void)
 	map_try_open(&g_maps.acl_psp_fd, ACL_PSP_MAP_PATH);
 	map_try_open(&g_maps.acl_pp_fd, ACL_PP_MAP_PATH);
 	map_try_open(&g_maps.acl_config_fd, ACL_CONFIG_MAP_PATH);
+	map_try_open(&g_maps.acl_lpm_src_fd, ACL_LPM_SRC_MAP_PATH);
+	map_try_open(&g_maps.acl_lpm_dst_fd, ACL_LPM_DST_MAP_PATH);
 	map_try_open(&g_maps.route_tbl_fd, ROUTE_TBL_MAP_PATH);
 	map_try_open(&g_maps.dhcp_snoop_config_fd, DHCP_SNOOP_CONFIG_MAP_PATH);
 	map_try_open(&g_maps.dhcp_trusted_ports_fd, DHCP_TRUSTED_PORTS_MAP_PATH);
@@ -1158,6 +1229,10 @@ static void mgmtd_maps_close(void)
 		close(g_maps.acl_pp_fd);
 	if (g_maps.acl_config_fd >= 0)
 		close(g_maps.acl_config_fd);
+	if (g_maps.acl_lpm_src_fd >= 0)
+		close(g_maps.acl_lpm_src_fd);
+	if (g_maps.acl_lpm_dst_fd >= 0)
+		close(g_maps.acl_lpm_dst_fd);
 	if (g_maps.route_tbl_fd >= 0)
 		close(g_maps.route_tbl_fd);
 	if (g_maps.dhcp_snoop_config_fd >= 0)
@@ -1178,6 +1253,8 @@ static void mgmtd_maps_close(void)
 	g_maps.acl_psp_fd = -1;
 	g_maps.acl_pp_fd = -1;
 	g_maps.acl_config_fd = -1;
+	g_maps.acl_lpm_src_fd = -1;
+	g_maps.acl_lpm_dst_fd = -1;
 	g_maps.route_tbl_fd = -1;
 	g_maps.dhcp_snoop_config_fd = -1;
 	g_maps.dhcp_trusted_ports_fd = -1;
@@ -2459,36 +2536,37 @@ static void sync_port_vlan_config(void)
 	} while (bpf_map_get_next_key(g_maps.vlan_fd, &vlan_key, &vlan_next) == 0);
 
 apply:
-	/* Pass 2: for each known port, compute and write vlan_mode + lists */
+	/* Pass 2: collect all port keys first, then update (avoids map mutation during iteration) */
 	{
+		__u32 port_keys[SYNC_MAX_PORTS];
+		int port_count = 0;
 		__u32 port_key, port_next;
-		if (bpf_map_get_next_key(g_maps.port_config_fd, NULL, &port_next) != 0)
-			return;
 
-		do {
-			port_key = port_next;
+		if (bpf_map_get_next_key(g_maps.port_config_fd, NULL, &port_next) == 0) {
+			do {
+				port_key = port_next;
+				if (port_key > 0 && port_key < SYNC_MAX_PORTS && port_count < SYNC_MAX_PORTS)
+					port_keys[port_count++] = port_key;
+			} while (bpf_map_get_next_key(g_maps.port_config_fd, &port_key, &port_next) == 0);
+		}
+
+		for (int p = 0; p < port_count; p++) {
+			port_key = port_keys[p];
 			struct rs_port_config cfg;
 
 			if (bpf_map_lookup_elem(g_maps.port_config_fd, &port_key, &cfg) != 0)
 				continue;
 
-			/* Skip ports with QinQ mode — never auto-change */
 			if (cfg.vlan_mode == 4 /* RS_VLAN_MODE_QINQ */)
-				continue;
-
-			if (port_key == 0 || port_key >= SYNC_MAX_PORTS)
 				continue;
 
 			struct port_vlan_info *pi = &pinfo[port_key];
 			int has_tagged = pi->tagged_count > 0;
 			int has_untagged = pi->untagged_count > 0;
 
-			if (!has_tagged && !has_untagged) {
-				/* Port not in any VLAN — leave as-is (loader default) */
+			if (!has_tagged && !has_untagged)
 				continue;
-			}
 
-			/* Clear VLAN arrays before rebuild */
 			memset(cfg.allowed_vlans, 0, sizeof(cfg.allowed_vlans));
 			cfg.allowed_vlan_count = 0;
 			memset(cfg.tagged_vlans, 0, sizeof(cfg.tagged_vlans));
@@ -2497,31 +2575,24 @@ apply:
 			cfg.untagged_vlan_count = 0;
 
 			if (has_tagged && !has_untagged) {
-				/* TRUNK: only tagged VLANs */
 				cfg.vlan_mode = 2; /* RS_VLAN_MODE_TRUNK */
-				cfg.native_vlan = 1; /* default native */
-				for (i = 0; i < pi->tagged_count && i < 128; i++) {
+				cfg.native_vlan = 1;
+				for (i = 0; i < pi->tagged_count && i < 128; i++)
 					cfg.allowed_vlans[i] = pi->tagged_vlans[i];
-				}
 				cfg.allowed_vlan_count = (__u16) pi->tagged_count;
 			} else if (!has_tagged && has_untagged) {
-				/* ACCESS: only untagged VLANs */
 				cfg.vlan_mode = 1; /* RS_VLAN_MODE_ACCESS */
-				cfg.access_vlan = pi->untagged_vlans[0]; /* lowest */
+				cfg.access_vlan = pi->untagged_vlans[0];
 				cfg.pvid = pi->untagged_vlans[0];
 			} else {
-				/* HYBRID: both tagged and untagged */
 				cfg.vlan_mode = 3; /* RS_VLAN_MODE_HYBRID */
 				cfg.pvid = pi->untagged_vlans[0];
-				for (i = 0; i < pi->tagged_count && i < 64; i++) {
+				for (i = 0; i < pi->tagged_count && i < 64; i++)
 					cfg.tagged_vlans[i] = pi->tagged_vlans[i];
-				}
 				cfg.tagged_vlan_count = (__u16) (pi->tagged_count > 64 ? 64 : pi->tagged_count);
-				for (i = 0; i < pi->untagged_count && i < 64; i++) {
+				for (i = 0; i < pi->untagged_count && i < 64; i++)
 					cfg.untagged_vlans[i] = pi->untagged_vlans[i];
-				}
 				cfg.untagged_vlan_count = (__u16) (pi->untagged_count > 64 ? 64 : pi->untagged_count);
-				/* Also populate allowed_vlans with the union for trunk-compat checks */
 				int ac = 0;
 				for (i = 0; i < pi->tagged_count && ac < 128; i++)
 					cfg.allowed_vlans[ac++] = pi->tagged_vlans[i];
@@ -2538,7 +2609,7 @@ apply:
 				    cfg.vlan_mode == 2 ? "TRUNK" :
 				    cfg.vlan_mode == 3 ? "HYBRID" : "OFF",
 				    cfg.pvid, pi->tagged_count, pi->untagged_count);
-		} while (bpf_map_get_next_key(g_maps.port_config_fd, &port_key, &port_next) == 0);
+		}
 	}
 }
 
@@ -2749,7 +2820,7 @@ static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm
 						 "\"protocol\":%u,\"src_ip\":\"%s\",\"src_port\":%u,"
 						 "\"dst_ip\":\"%s\",\"dst_port\":%u,\"hits\":0}",
 						 first ? "" : ",",
-						 acl_idx, res.stats_id,
+						 acl_idx, res.priority,
 						 res.action == 0 ? "permit" : (res.action == 1 ? "deny" : "redirect"),
 						 nk.proto, src, ntohs(nk.sport),
 						 dst, ntohs(nk.dport));
@@ -2782,7 +2853,7 @@ static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm
 						 "\"protocol\":%u,\"src_ip\":\"any\",\"src_port\":0,"
 						 "\"dst_ip\":\"%s\",\"dst_port\":%u,\"hits\":0}",
 						 first ? "" : ",",
-						 acl_idx, res.stats_id,
+						 acl_idx, res.priority,
 						 res.action == 0 ? "permit" : (res.action == 1 ? "deny" : "redirect"),
 						 nk.proto, dst, ntohs(nk.dst_port));
 				first = 0;
@@ -2814,7 +2885,7 @@ static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm
 						 "\"protocol\":%u,\"src_ip\":\"%s\",\"src_port\":0,"
 						 "\"dst_ip\":\"any\",\"dst_port\":%u,\"hits\":0}",
 						 first ? "" : ",",
-						 acl_idx, res.stats_id,
+						 acl_idx, res.priority,
 						 res.action == 0 ? "permit" : (res.action == 1 ? "deny" : "redirect"),
 						 nk.proto, src, ntohs(nk.dst_port));
 				first = 0;
@@ -2841,9 +2912,99 @@ static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm
 						 "\"protocol\":%u,\"src_ip\":\"any\",\"src_port\":0,"
 						 "\"dst_ip\":\"any\",\"dst_port\":%u,\"hits\":0}",
 						 first ? "" : ",",
-						 acl_idx, res.stats_id,
+						 acl_idx, res.priority,
 						 res.action == 0 ? "permit" : (res.action == 1 ? "deny" : "redirect"),
 						 nk.proto, ntohs(nk.dst_port));
+				first = 0;
+				acl_idx++;
+			}
+			k = nk;
+			has_prev = 1;
+			if (off + 512 >= sizeof(out))
+				break;
+		}
+	}
+
+	if (g_maps.acl_lpm_src_fd >= 0) {
+		struct lpm_key k, nk;
+		struct acl_lpm_value val;
+		int has_prev = 0;
+
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_lpm_src_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (bpf_map_lookup_elem(g_maps.acl_lpm_src_fd, &nk, &val) == 0) {
+				char src[INET_ADDRSTRLEN + 4];
+				char dst[INET_ADDRSTRLEN + 4];
+				struct in_addr sa, da;
+				sa.s_addr = nk.addr;
+				inet_ntop(AF_INET, &sa, src, INET_ADDRSTRLEN);
+				if (nk.prefixlen < 32) {
+					char tmp[INET_ADDRSTRLEN + 4];
+					snprintf(tmp, sizeof(tmp), "%s/%u", src, nk.prefixlen);
+					strcpy(src, tmp);
+				}
+				if (val.other_ip != 0) {
+					da.s_addr = val.other_ip;
+					inet_ntop(AF_INET, &da, dst, INET_ADDRSTRLEN);
+				} else {
+					strcpy(dst, "any");
+				}
+
+				off += (size_t) snprintf(out + off, sizeof(out) - off,
+						 "%s{\"id\":%d,\"type\":\"lpm_src\","
+						 "\"priority\":%u,\"action\":\"%s\","
+						 "\"protocol\":%u,\"src_ip\":\"%s\",\"src_port\":%u,"
+						 "\"dst_ip\":\"%s\",\"dst_port\":%u,\"hits\":0}",
+						 first ? "" : ",",
+						 acl_idx, val.priority,
+						 val.action == 0 ? "permit" : (val.action == 1 ? "deny" : "redirect"),
+						 val.proto, src, ntohs(val.sport),
+						 dst, ntohs(val.dport));
+				first = 0;
+				acl_idx++;
+			}
+			k = nk;
+			has_prev = 1;
+			if (off + 512 >= sizeof(out))
+				break;
+		}
+	}
+
+	if (g_maps.acl_lpm_dst_fd >= 0) {
+		struct lpm_key k, nk;
+		struct acl_lpm_value val;
+		int has_prev = 0;
+
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_lpm_dst_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (bpf_map_lookup_elem(g_maps.acl_lpm_dst_fd, &nk, &val) == 0) {
+				char src[INET_ADDRSTRLEN + 4];
+				char dst[INET_ADDRSTRLEN + 4];
+				struct in_addr sa, da;
+				da.s_addr = nk.addr;
+				inet_ntop(AF_INET, &da, dst, INET_ADDRSTRLEN);
+				if (nk.prefixlen < 32) {
+					char tmp[INET_ADDRSTRLEN + 4];
+					snprintf(tmp, sizeof(tmp), "%s/%u", dst, nk.prefixlen);
+					strcpy(dst, tmp);
+				}
+				if (val.other_ip != 0) {
+					sa.s_addr = val.other_ip;
+					inet_ntop(AF_INET, &sa, src, INET_ADDRSTRLEN);
+				} else {
+					strcpy(src, "any");
+				}
+
+				off += (size_t) snprintf(out + off, sizeof(out) - off,
+						 "%s{\"id\":%d,\"type\":\"lpm_dst\","
+						 "\"priority\":%u,\"action\":\"%s\","
+						 "\"protocol\":%u,\"src_ip\":\"%s\",\"src_port\":%u,"
+						 "\"dst_ip\":\"%s\",\"dst_port\":%u,\"hits\":0}",
+						 first ? "" : ",",
+						 acl_idx, val.priority,
+						 val.action == 0 ? "permit" : (val.action == 1 ? "deny" : "redirect"),
+						 val.proto, src, ntohs(val.sport),
+						 dst, ntohs(val.dport));
 				first = 0;
 				acl_idx++;
 			}
@@ -2858,22 +3019,140 @@ static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm
 	json_printf(c, 200, "%s", out);
 }
 
+/* Helper: Count total ACL rules across all maps */
+static int acl_count_rules(void)
+{
+	int count = 0;
+
+	if (g_maps.acl_5tuple_fd >= 0) {
+		struct acl_5tuple_key k, nk;
+		memset(&k, 0, sizeof(k));
+		int has_prev = 0;
+		while (bpf_map_get_next_key(g_maps.acl_5tuple_fd, has_prev ? &k : NULL, &nk) == 0) {
+			count++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (g_maps.acl_pdp_fd >= 0) {
+		struct acl_proto_dstip_port_key k, nk;
+		memset(&k, 0, sizeof(k));
+		int has_prev = 0;
+		while (bpf_map_get_next_key(g_maps.acl_pdp_fd, has_prev ? &k : NULL, &nk) == 0) {
+			count++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (g_maps.acl_psp_fd >= 0) {
+		struct acl_proto_srcip_port_key k, nk;
+		memset(&k, 0, sizeof(k));
+		int has_prev = 0;
+		while (bpf_map_get_next_key(g_maps.acl_psp_fd, has_prev ? &k : NULL, &nk) == 0) {
+			count++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (g_maps.acl_pp_fd >= 0) {
+		struct acl_proto_port_key k, nk;
+		memset(&k, 0, sizeof(k));
+		int has_prev = 0;
+		while (bpf_map_get_next_key(g_maps.acl_pp_fd, has_prev ? &k : NULL, &nk) == 0) {
+			count++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (g_maps.acl_lpm_src_fd >= 0) {
+		struct lpm_key k, nk;
+		memset(&k, 0, sizeof(k));
+		int has_prev = 0;
+		while (bpf_map_get_next_key(g_maps.acl_lpm_src_fd, has_prev ? &k : NULL, &nk) == 0) {
+			count++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (g_maps.acl_lpm_dst_fd >= 0) {
+		struct lpm_key k, nk;
+		memset(&k, 0, sizeof(k));
+		int has_prev = 0;
+		while (bpf_map_get_next_key(g_maps.acl_lpm_dst_fd, has_prev ? &k : NULL, &nk) == 0) {
+			count++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	return count;
+}
+
+/* Helper: Set ACL enabled state */
+static int acl_set_enabled(int enable)
+{
+	if (g_maps.acl_config_fd < 0)
+		return -1;
+
+	struct acl_config cfg;
+	__u32 key = 0;
+
+	if (bpf_map_lookup_elem(g_maps.acl_config_fd, &key, &cfg) < 0) {
+		/* Initialize config if not exists */
+		memset(&cfg, 0, sizeof(cfg));
+		cfg.default_action = 0; /* PASS */
+	}
+
+	cfg.enabled = enable ? 1 : 0;
+
+	if (bpf_map_update_elem(g_maps.acl_config_fd, &key, &cfg, BPF_ANY) < 0) {
+		RS_LOG_ERROR("Failed to update ACL config: %s", strerror(errno));
+		return -1;
+	}
+
+	RS_LOG_INFO("ACL %s (auto)", enable ? "enabled" : "disabled");
+	return 0;
+}
+
+/* Helper: Check if ACL is currently enabled */
+static int acl_is_enabled(void)
+{
+	if (g_maps.acl_config_fd < 0)
+		return 0;
+
+	struct acl_config cfg;
+	__u32 key = 0;
+
+	if (bpf_map_lookup_elem(g_maps.acl_config_fd, &key, &cfg) < 0)
+		return 0;
+
+	return cfg.enabled ? 1 : 0;
+}
+
 static void handle_acl_create(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
-	struct acl_5tuple_key key;
 	struct acl_result res;
 	char *action_str, *src_ip_str, *dst_ip_str, *proto_str;
 	long src_port, dst_port, priority;
-	struct in_addr addr;
+	__u8 proto = 0;
+	__u32 src_ip = 0, dst_ip = 0;
+	__u32 src_prefixlen = 32, dst_prefixlen = 32;
+	int has_src_ip = 0, has_dst_ip = 0;
+	int src_is_cidr = 0, dst_is_cidr = 0;
+	const char *map_used = "unknown";
 
 	(void) userdata;
 
-	if (mgmtd_maps_ensure() != 0 || g_maps.acl_5tuple_fd < 0) {
+	if (mgmtd_maps_ensure() != 0) {
 		json_printf(c, 503, "{\"error\":\"acl map unavailable\"}");
 		return;
 	}
 
-	memset(&key, 0, sizeof(key));
 	memset(&res, 0, sizeof(res));
 
 	action_str = mg_json_get_str(hm->body, "$.action");
@@ -2884,34 +3163,44 @@ static void handle_acl_create(struct mg_connection *c, struct mg_http_message *h
 	dst_port = mg_json_get_long(hm->body, "$.dst_port", 0);
 	priority = mg_json_get_long(hm->body, "$.priority", 0);
 
+	/* Parse protocol */
 	if (proto_str) {
 		if (strcmp(proto_str, "tcp") == 0 || strcmp(proto_str, "TCP") == 0)
-			key.proto = 6;
+			proto = 6;
 		else if (strcmp(proto_str, "udp") == 0 || strcmp(proto_str, "UDP") == 0)
-			key.proto = 17;
+			proto = 17;
 		else if (strcmp(proto_str, "icmp") == 0 || strcmp(proto_str, "ICMP") == 0)
-			key.proto = 1;
-		else
-			key.proto = (__u8) atoi(proto_str);
+			proto = 1;
+		else if (strcmp(proto_str, "any") != 0)
+			proto = (__u8) atoi(proto_str);
 		free(proto_str);
 	} else {
-		key.proto = (__u8) mg_json_get_long(hm->body, "$.protocol", 0);
+		proto = (__u8) mg_json_get_long(hm->body, "$.protocol", 0);
 	}
 
+	/* Parse source IP with CIDR support */
 	if (src_ip_str) {
-		if (strcmp(src_ip_str, "any") != 0 && inet_pton(AF_INET, src_ip_str, &addr) == 1)
-			key.src_ip = addr.s_addr;
+		if (strcmp(src_ip_str, "any") != 0 && strcmp(src_ip_str, "") != 0) {
+			if (parse_cidr(src_ip_str, &src_ip, &src_prefixlen) == 0) {
+				has_src_ip = 1;
+				src_is_cidr = (src_prefixlen < 32) ? 1 : 0;
+			}
+		}
 		free(src_ip_str);
 	}
+
+	/* Parse destination IP with CIDR support */
 	if (dst_ip_str) {
-		if (strcmp(dst_ip_str, "any") != 0 && inet_pton(AF_INET, dst_ip_str, &addr) == 1)
-			key.dst_ip = addr.s_addr;
+		if (strcmp(dst_ip_str, "any") != 0 && strcmp(dst_ip_str, "") != 0) {
+			if (parse_cidr(dst_ip_str, &dst_ip, &dst_prefixlen) == 0) {
+				has_dst_ip = 1;
+				dst_is_cidr = (dst_prefixlen < 32) ? 1 : 0;
+			}
+		}
 		free(dst_ip_str);
 	}
 
-	key.sport = htons((__u16) src_port);
-	key.dport = htons((__u16) dst_port);
-
+	/* Parse action */
 	if (action_str) {
 		if (strcmp(action_str, "deny") == 0 || strcmp(action_str, "drop") == 0)
 			res.action = 1;
@@ -2921,17 +3210,150 @@ static void handle_acl_create(struct mg_connection *c, struct mg_http_message *h
 			res.action = 0;
 		free(action_str);
 	}
-	res.stats_id = (__u32) priority;
+	res.priority = (__u8) (priority > 7 ? 7 : priority);
+	res.stats_id = 0;
 
-	if (bpf_map_update_elem(g_maps.acl_5tuple_fd, &key, &res, BPF_ANY) != 0) {
-		json_printf(c, 500, "{\"error\":\"failed to add ACL rule: %s\"}", strerror(errno));
-		return;
+	/*
+	 * Select appropriate ACL map based on which fields are specified:
+	 * - CIDR src IP (prefixlen < 32): LPM source map (Level 5)
+	 * - CIDR dst IP (prefixlen < 32): LPM destination map (Level 6)
+	 * - Both exact IPs: 5-tuple map (exact match)
+	 * - Dst IP only: proto_dst map (Level 2)
+	 * - Src IP only: proto_src map (Level 3)
+	 * - Neither IP: proto_port map (Level 4)
+	 */
+	if (src_is_cidr && has_src_ip) {
+		struct lpm_key key;
+		struct acl_lpm_value lpm_val;
+		memset(&key, 0, sizeof(key));
+		memset(&lpm_val, 0, sizeof(lpm_val));
+		key.prefixlen = src_prefixlen;
+		key.addr = src_ip;
+		lpm_val.action = res.action;
+		lpm_val.log_event = res.log_event;
+		lpm_val.redirect_ifindex = res.redirect_ifindex;
+		lpm_val.stats_id = res.stats_id;
+		lpm_val.priority = res.priority;
+		lpm_val.other_ip = has_dst_ip ? dst_ip : 0;
+		lpm_val.proto = proto;
+		lpm_val.sport = htons((__u16) src_port);
+		lpm_val.dport = htons((__u16) dst_port);
+
+		if (g_maps.acl_lpm_src_fd < 0) {
+			json_printf(c, 503, "{\"error\":\"LPM source ACL map unavailable\"}");
+			return;
+		}
+		if (bpf_map_update_elem(g_maps.acl_lpm_src_fd, &key, &lpm_val, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to add ACL rule: %s\"}", strerror(errno));
+			return;
+		}
+		map_used = "lpm_src";
+
+	} else if (dst_is_cidr && has_dst_ip) {
+		struct lpm_key key;
+		struct acl_lpm_value lpm_val;
+		memset(&key, 0, sizeof(key));
+		memset(&lpm_val, 0, sizeof(lpm_val));
+		key.prefixlen = dst_prefixlen;
+		key.addr = dst_ip;
+		lpm_val.action = res.action;
+		lpm_val.log_event = res.log_event;
+		lpm_val.redirect_ifindex = res.redirect_ifindex;
+		lpm_val.stats_id = res.stats_id;
+		lpm_val.priority = res.priority;
+		lpm_val.other_ip = has_src_ip ? src_ip : 0;
+		lpm_val.proto = proto;
+		lpm_val.sport = htons((__u16) src_port);
+		lpm_val.dport = htons((__u16) dst_port);
+
+		if (g_maps.acl_lpm_dst_fd < 0) {
+			json_printf(c, 503, "{\"error\":\"LPM destination ACL map unavailable\"}");
+			return;
+		}
+		if (bpf_map_update_elem(g_maps.acl_lpm_dst_fd, &key, &lpm_val, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to add ACL rule: %s\"}", strerror(errno));
+			return;
+		}
+		map_used = "lpm_dst";
+
+	} else if (has_src_ip && has_dst_ip) {
+		struct acl_5tuple_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.src_ip = src_ip;
+		key.dst_ip = dst_ip;
+		key.sport = htons((__u16) src_port);
+		key.dport = htons((__u16) dst_port);
+
+		if (g_maps.acl_5tuple_fd < 0) {
+			json_printf(c, 503, "{\"error\":\"5-tuple ACL map unavailable\"}");
+			return;
+		}
+		if (bpf_map_update_elem(g_maps.acl_5tuple_fd, &key, &res, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to add ACL rule: %s\"}", strerror(errno));
+			return;
+		}
+		map_used = "5tuple";
+
+	} else if (has_dst_ip && !has_src_ip) {
+		struct acl_proto_dstip_port_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.dst_ip = dst_ip;
+		key.dst_port = htons((__u16) dst_port);
+
+		if (g_maps.acl_pdp_fd < 0) {
+			json_printf(c, 503, "{\"error\":\"proto_dst ACL map unavailable\"}");
+			return;
+		}
+		if (bpf_map_update_elem(g_maps.acl_pdp_fd, &key, &res, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to add ACL rule: %s\"}", strerror(errno));
+			return;
+		}
+		map_used = "proto_dst";
+
+	} else if (has_src_ip && !has_dst_ip) {
+		struct acl_proto_srcip_port_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.src_ip = src_ip;
+		key.dst_port = htons((__u16) dst_port);
+
+		if (g_maps.acl_psp_fd < 0) {
+			json_printf(c, 503, "{\"error\":\"proto_src ACL map unavailable\"}");
+			return;
+		}
+		if (bpf_map_update_elem(g_maps.acl_psp_fd, &key, &res, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to add ACL rule: %s\"}", strerror(errno));
+			return;
+		}
+		map_used = "proto_src";
+
+	} else {
+		struct acl_proto_port_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.dst_port = htons((__u16) dst_port);
+
+		if (g_maps.acl_pp_fd < 0) {
+			json_printf(c, 503, "{\"error\":\"proto_port ACL map unavailable\"}");
+			return;
+		}
+		if (bpf_map_update_elem(g_maps.acl_pp_fd, &key, &res, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to add ACL rule: %s\"}", strerror(errno));
+			return;
+		}
+		map_used = "proto_port";
+	}
+
+	if (!acl_is_enabled()) {
+		acl_set_enabled(1);
 	}
 
 	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_ACL, "acl_add", 1,
-			    "proto=%u src_port=%ld dst_port=%ld action=%u", key.proto,
-			    src_port, dst_port, res.action);
-	json_printf(c, 200, "{\"status\":\"ok\"}");
+			    "proto=%u src_port=%ld dst_port=%ld action=%u map=%s",
+			    proto, src_port, dst_port, res.action, map_used);
+	json_printf(c, 200, "{\"status\":\"ok\",\"map\":\"%s\"}", map_used);
 }
 
 static void handle_acl_delete(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -3017,14 +3439,343 @@ static void handle_acl_delete(struct mg_connection *c, struct mg_http_message *h
 		}
 	}
 
+	if (!deleted && g_maps.acl_lpm_src_fd >= 0) {
+		struct lpm_key k, nk;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_lpm_src_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (cur_id == target_id) {
+				bpf_map_delete_elem(g_maps.acl_lpm_src_fd, &nk);
+				deleted = 1;
+				break;
+			}
+			cur_id++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (!deleted && g_maps.acl_lpm_dst_fd >= 0) {
+		struct lpm_key k, nk;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_lpm_dst_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (cur_id == target_id) {
+				bpf_map_delete_elem(g_maps.acl_lpm_dst_fd, &nk);
+				deleted = 1;
+				break;
+			}
+			cur_id++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
 	if (!deleted) {
 		json_printf(c, 404, "{\"error\":\"acl rule not found\"}");
 		return;
 	}
 
+	/* Auto-disable ACL when last rule is removed */
+	if (acl_count_rules() == 0 && acl_is_enabled()) {
+		acl_set_enabled(0);
+	}
+
 	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_ACL, "acl_delete", 1,
 			    "acl_id=%d", target_id);
 	json_printf(c, 200, "{\"status\":\"deleted\"}");
+}
+
+static void handle_acl_update(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
+{
+	int target_id;
+	int cur_id = 0;
+	int found = 0;
+	struct acl_result res;
+	char *action_str, *src_ip_str, *dst_ip_str, *proto_str;
+	long src_port, dst_port, priority;
+	__u8 proto = 0;
+	__u32 src_ip = 0, dst_ip = 0;
+	__u32 src_prefixlen = 32, dst_prefixlen = 32;
+	int has_src_ip = 0, has_dst_ip = 0;
+	int src_is_cidr = 0, dst_is_cidr = 0;
+	const char *map_used = "unknown";
+
+	(void) userdata;
+
+	target_id = extract_id_from_uri(hm, "/api/acls/");
+	if (target_id < 0) {
+		json_printf(c, 400, "{\"error\":\"invalid acl id\"}");
+		return;
+	}
+
+	if (mgmtd_maps_ensure() != 0) {
+		json_printf(c, 503, "{\"error\":\"maps unavailable\"}");
+		return;
+	}
+
+	if (g_maps.acl_5tuple_fd >= 0) {
+		struct acl_5tuple_key k, nk;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_5tuple_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (cur_id == target_id) {
+				bpf_map_delete_elem(g_maps.acl_5tuple_fd, &nk);
+				found = 1;
+				break;
+			}
+			cur_id++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (!found && g_maps.acl_pdp_fd >= 0) {
+		struct acl_proto_dstip_port_key k, nk;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_pdp_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (cur_id == target_id) {
+				bpf_map_delete_elem(g_maps.acl_pdp_fd, &nk);
+				found = 1;
+				break;
+			}
+			cur_id++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (!found && g_maps.acl_psp_fd >= 0) {
+		struct acl_proto_srcip_port_key k, nk;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_psp_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (cur_id == target_id) {
+				bpf_map_delete_elem(g_maps.acl_psp_fd, &nk);
+				found = 1;
+				break;
+			}
+			cur_id++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (!found && g_maps.acl_pp_fd >= 0) {
+		struct acl_proto_port_key k, nk;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_pp_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (cur_id == target_id) {
+				bpf_map_delete_elem(g_maps.acl_pp_fd, &nk);
+				found = 1;
+				break;
+			}
+			cur_id++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (!found && g_maps.acl_lpm_src_fd >= 0) {
+		struct lpm_key k, nk;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_lpm_src_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (cur_id == target_id) {
+				bpf_map_delete_elem(g_maps.acl_lpm_src_fd, &nk);
+				found = 1;
+				break;
+			}
+			cur_id++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (!found && g_maps.acl_lpm_dst_fd >= 0) {
+		struct lpm_key k, nk;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_lpm_dst_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (cur_id == target_id) {
+				bpf_map_delete_elem(g_maps.acl_lpm_dst_fd, &nk);
+				found = 1;
+				break;
+			}
+			cur_id++;
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (!found) {
+		json_printf(c, 404, "{\"error\":\"acl rule not found\"}");
+		return;
+	}
+
+	memset(&res, 0, sizeof(res));
+
+	action_str = mg_json_get_str(hm->body, "$.action");
+	src_ip_str = mg_json_get_str(hm->body, "$.src_ip");
+	dst_ip_str = mg_json_get_str(hm->body, "$.dst_ip");
+	proto_str = mg_json_get_str(hm->body, "$.protocol");
+	src_port = mg_json_get_long(hm->body, "$.src_port", 0);
+	dst_port = mg_json_get_long(hm->body, "$.dst_port", 0);
+	priority = mg_json_get_long(hm->body, "$.priority", 0);
+
+	if (proto_str) {
+		if (strcmp(proto_str, "tcp") == 0 || strcmp(proto_str, "TCP") == 0)
+			proto = 6;
+		else if (strcmp(proto_str, "udp") == 0 || strcmp(proto_str, "UDP") == 0)
+			proto = 17;
+		else if (strcmp(proto_str, "icmp") == 0 || strcmp(proto_str, "ICMP") == 0)
+			proto = 1;
+		else if (strcmp(proto_str, "any") != 0)
+			proto = (__u8) atoi(proto_str);
+		free(proto_str);
+	} else {
+		proto = (__u8) mg_json_get_long(hm->body, "$.protocol", 0);
+	}
+
+	if (src_ip_str) {
+		if (strcmp(src_ip_str, "any") != 0 && strcmp(src_ip_str, "") != 0) {
+			if (parse_cidr(src_ip_str, &src_ip, &src_prefixlen) == 0) {
+				has_src_ip = 1;
+				src_is_cidr = (src_prefixlen < 32) ? 1 : 0;
+			}
+		}
+		free(src_ip_str);
+	}
+
+	if (dst_ip_str) {
+		if (strcmp(dst_ip_str, "any") != 0 && strcmp(dst_ip_str, "") != 0) {
+			if (parse_cidr(dst_ip_str, &dst_ip, &dst_prefixlen) == 0) {
+				has_dst_ip = 1;
+				dst_is_cidr = (dst_prefixlen < 32) ? 1 : 0;
+			}
+		}
+		free(dst_ip_str);
+	}
+
+	if (action_str) {
+		if (strcmp(action_str, "deny") == 0 || strcmp(action_str, "drop") == 0)
+			res.action = 1;
+		else if (strcmp(action_str, "redirect") == 0)
+			res.action = 2;
+		else
+			res.action = 0;
+		free(action_str);
+	}
+	res.priority = (__u8) (priority > 7 ? 7 : priority);
+	res.stats_id = 0;
+
+	if (src_is_cidr && has_src_ip) {
+		struct lpm_key key;
+		struct acl_lpm_value lpm_val;
+		memset(&key, 0, sizeof(key));
+		memset(&lpm_val, 0, sizeof(lpm_val));
+		key.prefixlen = src_prefixlen;
+		key.addr = src_ip;
+		lpm_val.action = res.action;
+		lpm_val.stats_id = res.stats_id;
+		lpm_val.priority = res.priority;
+		lpm_val.other_ip = has_dst_ip ? dst_ip : 0;
+		lpm_val.proto = proto;
+		lpm_val.sport = htons((__u16) src_port);
+		lpm_val.dport = htons((__u16) dst_port);
+
+		if (g_maps.acl_lpm_src_fd < 0 ||
+		    bpf_map_update_elem(g_maps.acl_lpm_src_fd, &key, &lpm_val, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to update ACL rule\"}");
+			return;
+		}
+		map_used = "lpm_src";
+
+	} else if (dst_is_cidr && has_dst_ip) {
+		struct lpm_key key;
+		struct acl_lpm_value lpm_val;
+		memset(&key, 0, sizeof(key));
+		memset(&lpm_val, 0, sizeof(lpm_val));
+		key.prefixlen = dst_prefixlen;
+		key.addr = dst_ip;
+		lpm_val.action = res.action;
+		lpm_val.stats_id = res.stats_id;
+		lpm_val.priority = res.priority;
+		lpm_val.other_ip = has_src_ip ? src_ip : 0;
+		lpm_val.proto = proto;
+		lpm_val.sport = htons((__u16) src_port);
+		lpm_val.dport = htons((__u16) dst_port);
+
+		if (g_maps.acl_lpm_dst_fd < 0 ||
+		    bpf_map_update_elem(g_maps.acl_lpm_dst_fd, &key, &lpm_val, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to update ACL rule\"}");
+			return;
+		}
+		map_used = "lpm_dst";
+
+	} else if (has_src_ip && has_dst_ip) {
+		struct acl_5tuple_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.src_ip = src_ip;
+		key.dst_ip = dst_ip;
+		key.sport = htons((__u16) src_port);
+		key.dport = htons((__u16) dst_port);
+
+		if (g_maps.acl_5tuple_fd < 0 ||
+		    bpf_map_update_elem(g_maps.acl_5tuple_fd, &key, &res, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to update ACL rule\"}");
+			return;
+		}
+		map_used = "5tuple";
+
+	} else if (has_dst_ip && !has_src_ip) {
+		struct acl_proto_dstip_port_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.dst_ip = dst_ip;
+		key.dst_port = htons((__u16) dst_port);
+
+		if (g_maps.acl_pdp_fd < 0 ||
+		    bpf_map_update_elem(g_maps.acl_pdp_fd, &key, &res, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to update ACL rule\"}");
+			return;
+		}
+		map_used = "proto_dst";
+
+	} else if (has_src_ip && !has_dst_ip) {
+		struct acl_proto_srcip_port_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.src_ip = src_ip;
+		key.dst_port = htons((__u16) dst_port);
+
+		if (g_maps.acl_psp_fd < 0 ||
+		    bpf_map_update_elem(g_maps.acl_psp_fd, &key, &res, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to update ACL rule\"}");
+			return;
+		}
+		map_used = "proto_src";
+
+	} else {
+		struct acl_proto_port_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.dst_port = htons((__u16) dst_port);
+
+		if (g_maps.acl_pp_fd < 0 ||
+		    bpf_map_update_elem(g_maps.acl_pp_fd, &key, &res, BPF_ANY) != 0) {
+			json_printf(c, 500, "{\"error\":\"failed to update ACL rule\"}");
+			return;
+		}
+		map_used = "proto_port";
+	}
+
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_ACL, "acl_update", 1,
+			    "acl_id=%d proto=%u action=%u map=%s", target_id, proto, res.action, map_used);
+	json_printf(c, 200, "{\"status\":\"updated\",\"map\":\"%s\"}", map_used);
 }
 
 static void handle_routes_list(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -3632,6 +4383,729 @@ static void handle_config_snapshots(struct mg_connection *c, struct mg_http_mess
 	json_printf(c, 200, "%s", out);
 }
 
+/* Build state file path from profile path: /path/to/profile.yaml -> /path/to/profile.yaml.state.json */
+static void get_state_file_path(char *out, size_t out_len)
+{
+	if (g_ctx.profile_path[0] != '\0') {
+		snprintf(out, out_len, "%s.state.json", g_ctx.profile_path);
+	} else {
+		snprintf(out, out_len, "/var/lib/rswitch/running_state.json");
+	}
+}
+
+static int save_running_state_to_file(void)
+{
+	FILE *f;
+	int first;
+	char state_path[PATH_MAX];
+	char dir_path[PATH_MAX];
+	char *last_slash;
+	struct stat st;
+
+	get_state_file_path(state_path, sizeof(state_path));
+
+	/* Extract directory from state_path */
+	strncpy(dir_path, state_path, sizeof(dir_path) - 1);
+	dir_path[sizeof(dir_path) - 1] = '\0';
+	last_slash = strrchr(dir_path, '/');
+	if (last_slash) {
+		*last_slash = '\0';
+		if (stat(dir_path, &st) != 0) {
+			if (mkdir(dir_path, 0755) != 0 && errno != EEXIST) {
+				RS_LOG_ERROR("Failed to create %s: %s", dir_path, strerror(errno));
+				return -1;
+			}
+		}
+	}
+
+	f = fopen(state_path, "w");
+	if (!f) {
+		RS_LOG_ERROR("Failed to open %s for writing: %s", state_path, strerror(errno));
+		return -1;
+	}
+
+	fprintf(f, "{\n");
+	fprintf(f, "  \"timestamp\": %llu,\n", (unsigned long long)time(NULL));
+
+	if (mgmtd_maps_ensure() != 0) {
+		fprintf(f, "  \"acls\": [],\n");
+		fprintf(f, "  \"vlans\": [],\n");
+		fprintf(f, "  \"routes\": []\n");
+		fprintf(f, "}\n");
+		fclose(f);
+		return 0;
+	}
+
+	fprintf(f, "  \"acl_config\": {\n");
+	if (g_maps.acl_config_fd >= 0) {
+		struct acl_config cfg;
+		__u32 key = 0;
+		if (bpf_map_lookup_elem(g_maps.acl_config_fd, &key, &cfg) == 0) {
+			fprintf(f, "    \"enabled\": %s,\n", cfg.enabled ? "true" : "false");
+			fprintf(f, "    \"default_action\": %d,\n", cfg.default_action);
+			fprintf(f, "    \"log_drops\": %s\n", cfg.log_drops ? "true" : "false");
+		} else {
+			fprintf(f, "    \"enabled\": false\n");
+		}
+	} else {
+		fprintf(f, "    \"enabled\": false\n");
+	}
+	fprintf(f, "  },\n");
+
+	fprintf(f, "  \"acls\": [\n");
+	first = 1;
+
+	if (g_maps.acl_5tuple_fd >= 0) {
+		struct acl_5tuple_key k, nk;
+		struct acl_result res;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_5tuple_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (bpf_map_lookup_elem(g_maps.acl_5tuple_fd, &nk, &res) == 0) {
+				char src[INET_ADDRSTRLEN], dst[INET_ADDRSTRLEN];
+				struct in_addr sa, da;
+				sa.s_addr = nk.src_ip;
+				da.s_addr = nk.dst_ip;
+				inet_ntop(AF_INET, &sa, src, sizeof(src));
+				inet_ntop(AF_INET, &da, dst, sizeof(dst));
+			fprintf(f, "%s    {\"type\": \"5tuple\", \"proto\": %u, \"src_ip\": \"%s\", "
+				"\"src_port\": %u, \"dst_ip\": \"%s\", \"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
+				first ? "" : ",", nk.proto, src, ntohs(nk.sport), dst, ntohs(nk.dport), res.action, res.priority);
+				first = 0;
+			}
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (g_maps.acl_pdp_fd >= 0) {
+		struct acl_proto_dstip_port_key k, nk;
+		struct acl_result res;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_pdp_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (bpf_map_lookup_elem(g_maps.acl_pdp_fd, &nk, &res) == 0) {
+				char dst[INET_ADDRSTRLEN];
+				struct in_addr da;
+				da.s_addr = nk.dst_ip;
+				inet_ntop(AF_INET, &da, dst, sizeof(dst));
+			fprintf(f, "%s    {\"type\": \"proto_dst\", \"proto\": %u, \"dst_ip\": \"%s\", "
+				"\"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
+				first ? "" : ",", nk.proto, dst, ntohs(nk.dst_port), res.action, res.priority);
+				first = 0;
+			}
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (g_maps.acl_psp_fd >= 0) {
+		struct acl_proto_srcip_port_key k, nk;
+		struct acl_result res;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_psp_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (bpf_map_lookup_elem(g_maps.acl_psp_fd, &nk, &res) == 0) {
+				char src[INET_ADDRSTRLEN];
+				struct in_addr sa;
+				sa.s_addr = nk.src_ip;
+				inet_ntop(AF_INET, &sa, src, sizeof(src));
+			fprintf(f, "%s    {\"type\": \"proto_src\", \"proto\": %u, \"src_ip\": \"%s\", "
+				"\"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
+				first ? "" : ",", nk.proto, src, ntohs(nk.dst_port), res.action, res.priority);
+				first = 0;
+			}
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (g_maps.acl_pp_fd >= 0) {
+		struct acl_proto_port_key k, nk;
+		struct acl_result res;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_pp_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (bpf_map_lookup_elem(g_maps.acl_pp_fd, &nk, &res) == 0) {
+			fprintf(f, "%s    {\"type\": \"proto_port\", \"proto\": %u, \"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
+				first ? "" : ",", nk.proto, ntohs(nk.dst_port), res.action, res.priority);
+				first = 0;
+			}
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (g_maps.acl_lpm_src_fd >= 0) {
+		struct lpm_key k, nk;
+		struct acl_lpm_value val;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_lpm_src_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (bpf_map_lookup_elem(g_maps.acl_lpm_src_fd, &nk, &val) == 0) {
+				char src[INET_ADDRSTRLEN];
+				char dst[INET_ADDRSTRLEN];
+				struct in_addr sa, da;
+				sa.s_addr = nk.addr;
+				inet_ntop(AF_INET, &sa, src, sizeof(src));
+				if (val.other_ip != 0) {
+					da.s_addr = val.other_ip;
+					inet_ntop(AF_INET, &da, dst, sizeof(dst));
+				} else {
+					strcpy(dst, "any");
+				}
+			fprintf(f, "%s    {\"type\": \"lpm_src\", \"src_ip\": \"%s\", \"prefix_len\": %u, "
+				"\"dst_ip\": \"%s\", \"proto\": %u, \"src_port\": %u, \"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
+				first ? "" : ",", src, nk.prefixlen,
+				dst, val.proto, ntohs(val.sport), ntohs(val.dport), val.action, val.priority);
+				first = 0;
+			}
+			k = nk;
+			has_prev = 1;
+		}
+	}
+
+	if (g_maps.acl_lpm_dst_fd >= 0) {
+		struct lpm_key k, nk;
+		struct acl_lpm_value val;
+		int has_prev = 0;
+		memset(&k, 0, sizeof(k));
+		while (bpf_map_get_next_key(g_maps.acl_lpm_dst_fd, has_prev ? &k : NULL, &nk) == 0) {
+			if (bpf_map_lookup_elem(g_maps.acl_lpm_dst_fd, &nk, &val) == 0) {
+				char src[INET_ADDRSTRLEN];
+				char dst[INET_ADDRSTRLEN];
+				struct in_addr sa, da;
+				da.s_addr = nk.addr;
+				inet_ntop(AF_INET, &da, dst, sizeof(dst));
+				if (val.other_ip != 0) {
+					sa.s_addr = val.other_ip;
+					inet_ntop(AF_INET, &sa, src, sizeof(src));
+				} else {
+					strcpy(src, "any");
+				}
+			fprintf(f, "%s    {\"type\": \"lpm_dst\", \"dst_ip\": \"%s\", \"prefix_len\": %u, "
+				"\"src_ip\": \"%s\", \"proto\": %u, \"src_port\": %u, \"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
+				first ? "" : ",", dst, nk.prefixlen,
+				src, val.proto, ntohs(val.sport), ntohs(val.dport), val.action, val.priority);
+				first = 0;
+			}
+			k = nk;
+			has_prev = 1;
+		}
+	}
+	fprintf(f, "  ],\n");
+
+	fprintf(f, "  \"vlans\": [\n");
+	first = 1;
+	if (g_maps.vlan_fd >= 0) {
+		__u16 vlan_id = 0, next_vlan;
+		struct rs_vlan_members v;
+		while (bpf_map_get_next_key(g_maps.vlan_fd, &vlan_id, &next_vlan) == 0) {
+			if (bpf_map_lookup_elem(g_maps.vlan_fd, &next_vlan, &v) == 0) {
+				fprintf(f, "%s    {\"vlan_id\": %u, \"member_count\": %u}\n",
+					first ? "" : ",", v.vlan_id, v.member_count);
+				first = 0;
+			}
+			vlan_id = next_vlan;
+		}
+	}
+	fprintf(f, "  ],\n");
+
+	fprintf(f, "  \"routes\": [\n");
+	first = 1;
+	if (g_maps.route_tbl_fd >= 0) {
+		struct lpm_key rk, nk;
+		struct route_entry re;
+		int has_prev = 0;
+		memset(&rk, 0, sizeof(rk));
+		while (bpf_map_get_next_key(g_maps.route_tbl_fd, has_prev ? &rk : NULL, &nk) == 0) {
+			if (bpf_map_lookup_elem(g_maps.route_tbl_fd, &nk, &re) == 0) {
+				char dst[INET_ADDRSTRLEN], gw[INET_ADDRSTRLEN];
+				struct in_addr da, ga;
+				da.s_addr = nk.addr;
+				ga.s_addr = re.nexthop;
+				inet_ntop(AF_INET, &da, dst, sizeof(dst));
+				inet_ntop(AF_INET, &ga, gw, sizeof(gw));
+				fprintf(f, "%s    {\"prefix\": \"%s\", \"prefix_len\": %u, \"nexthop\": \"%s\", \"ifindex\": %u}\n",
+					first ? "" : ",", dst, nk.prefixlen, gw, re.ifindex);
+				first = 0;
+			}
+			rk = nk;
+			has_prev = 1;
+		}
+	}
+	fprintf(f, "  ]\n");
+
+	fprintf(f, "}\n");
+
+	if (fclose(f) != 0) {
+		RS_LOG_ERROR("Failed to close %s: %s", state_path, strerror(errno));
+		return -1;
+	}
+
+	RS_LOG_INFO("Saved running state to %s", state_path);
+	return 0;
+}
+
+static void handle_config_save(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
+{
+	char state_path[PATH_MAX];
+
+	(void) hm;
+	(void) userdata;
+
+	get_state_file_path(state_path, sizeof(state_path));
+
+	if (save_running_state_to_file() != 0) {
+		json_printf(c, 500, "{\"error\":\"failed to save running config\"}");
+		return;
+	}
+
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_CONFIG, "config_save", 1, "path=%s", state_path);
+	json_printf(c, 200, "{\"status\":\"saved\",\"path\":\"%s\"}", state_path);
+}
+
+static int apply_acl_from_json(const char *type, __u8 proto, const char *src_ip_str,
+			       __u16 src_port, const char *dst_ip_str, __u16 dst_port,
+			       __u8 action, __u32 prefix_len, __u8 priority)
+{
+	struct acl_result res;
+	struct in_addr addr;
+	__u32 src_ip = 0, dst_ip = 0;
+
+	memset(&res, 0, sizeof(res));
+	res.action = action;
+	res.priority = priority;
+
+	if (src_ip_str && src_ip_str[0] && strcmp(src_ip_str, "any") != 0)
+		if (inet_pton(AF_INET, src_ip_str, &addr) == 1)
+			src_ip = addr.s_addr;
+
+	if (dst_ip_str && dst_ip_str[0] && strcmp(dst_ip_str, "any") != 0)
+		if (inet_pton(AF_INET, dst_ip_str, &addr) == 1)
+			dst_ip = addr.s_addr;
+
+	if (strcmp(type, "5tuple") == 0) {
+		struct acl_5tuple_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.src_ip = src_ip;
+		key.dst_ip = dst_ip;
+		key.sport = htons(src_port);
+		key.dport = htons(dst_port);
+		if (g_maps.acl_5tuple_fd >= 0)
+			return bpf_map_update_elem(g_maps.acl_5tuple_fd, &key, &res, BPF_ANY);
+	} else if (strcmp(type, "proto_dst") == 0) {
+		struct acl_proto_dstip_port_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.dst_ip = dst_ip;
+		key.dst_port = htons(dst_port);
+		if (g_maps.acl_pdp_fd >= 0)
+			return bpf_map_update_elem(g_maps.acl_pdp_fd, &key, &res, BPF_ANY);
+	} else if (strcmp(type, "proto_src") == 0) {
+		struct acl_proto_srcip_port_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.src_ip = src_ip;
+		key.dst_port = htons(dst_port);
+		if (g_maps.acl_psp_fd >= 0)
+			return bpf_map_update_elem(g_maps.acl_psp_fd, &key, &res, BPF_ANY);
+	} else if (strcmp(type, "proto_port") == 0) {
+		struct acl_proto_port_key key;
+		memset(&key, 0, sizeof(key));
+		key.proto = proto;
+		key.dst_port = htons(dst_port);
+		if (g_maps.acl_pp_fd >= 0)
+			return bpf_map_update_elem(g_maps.acl_pp_fd, &key, &res, BPF_ANY);
+	} else if (strcmp(type, "lpm_src") == 0) {
+		struct lpm_key key;
+		struct acl_lpm_value lpm_val;
+		memset(&key, 0, sizeof(key));
+		memset(&lpm_val, 0, sizeof(lpm_val));
+		key.prefixlen = prefix_len;
+		key.addr = src_ip;
+		lpm_val.action = res.action;
+		lpm_val.log_event = res.log_event;
+		lpm_val.redirect_ifindex = res.redirect_ifindex;
+		lpm_val.priority = res.priority;
+		lpm_val.other_ip = dst_ip;
+		lpm_val.proto = proto;
+		lpm_val.sport = htons(src_port);
+		lpm_val.dport = htons(dst_port);
+		if (g_maps.acl_lpm_src_fd >= 0)
+			return bpf_map_update_elem(g_maps.acl_lpm_src_fd, &key, &lpm_val, BPF_ANY);
+	} else if (strcmp(type, "lpm_dst") == 0) {
+		struct lpm_key key;
+		struct acl_lpm_value lpm_val;
+		memset(&key, 0, sizeof(key));
+		memset(&lpm_val, 0, sizeof(lpm_val));
+		key.prefixlen = prefix_len;
+		key.addr = dst_ip;
+		lpm_val.action = res.action;
+		lpm_val.log_event = res.log_event;
+		lpm_val.redirect_ifindex = res.redirect_ifindex;
+		lpm_val.priority = res.priority;
+		lpm_val.other_ip = src_ip;
+		lpm_val.proto = proto;
+		lpm_val.sport = htons(src_port);
+		lpm_val.dport = htons(dst_port);
+		if (g_maps.acl_lpm_dst_fd >= 0)
+			return bpf_map_update_elem(g_maps.acl_lpm_dst_fd, &key, &lpm_val, BPF_ANY);
+	}
+	return -1;
+}
+
+static int load_state_from_file(void)
+{
+	char state_path[PATH_MAX];
+	FILE *f;
+	char *buf;
+	long fsize;
+	struct mg_str json;
+	int acl_count = 0;
+	int i, n;
+
+	get_state_file_path(state_path, sizeof(state_path));
+
+	f = fopen(state_path, "r");
+	if (!f) {
+		RS_LOG_INFO("No state file found at %s, starting fresh", state_path);
+		return 0;
+	}
+
+	fseek(f, 0, SEEK_END);
+	fsize = ftell(f);
+	fseek(f, 0, SEEK_SET);
+
+	if (fsize <= 0 || fsize > 1024 * 1024) {
+		fclose(f);
+		RS_LOG_WARN("State file %s has invalid size %ld", state_path, fsize);
+		return -1;
+	}
+
+	buf = malloc((size_t)fsize + 1);
+	if (!buf) {
+		fclose(f);
+		return -1;
+	}
+
+	if (fread(buf, 1, (size_t)fsize, f) != (size_t)fsize) {
+		free(buf);
+		fclose(f);
+		return -1;
+	}
+	buf[fsize] = '\0';
+	fclose(f);
+
+	json.buf = buf;
+	json.len = (size_t)fsize;
+
+	if (mgmtd_maps_ensure() != 0) {
+		RS_LOG_WARN("BPF maps not available, cannot restore state");
+		free(buf);
+		return -1;
+	}
+
+	n = 0;
+	for (i = 0; ; i++) {
+		char path[64];
+		char *type_str, *src_ip_str, *dst_ip_str;
+		long proto_l, src_port_l, dst_port_l, action_l, prefix_len_l, priority_l;
+
+		snprintf(path, sizeof(path), "$.acls[%d].type", i);
+		type_str = mg_json_get_str(json, path);
+		if (!type_str)
+			break;
+
+		snprintf(path, sizeof(path), "$.acls[%d].proto", i);
+		proto_l = mg_json_get_long(json, path, 0);
+
+		snprintf(path, sizeof(path), "$.acls[%d].src_ip", i);
+		src_ip_str = mg_json_get_str(json, path);
+
+		snprintf(path, sizeof(path), "$.acls[%d].src_port", i);
+		src_port_l = mg_json_get_long(json, path, 0);
+
+		snprintf(path, sizeof(path), "$.acls[%d].dst_ip", i);
+		dst_ip_str = mg_json_get_str(json, path);
+
+		snprintf(path, sizeof(path), "$.acls[%d].dst_port", i);
+		dst_port_l = mg_json_get_long(json, path, 0);
+
+		snprintf(path, sizeof(path), "$.acls[%d].action", i);
+		action_l = mg_json_get_long(json, path, 0);
+
+		snprintf(path, sizeof(path), "$.acls[%d].prefix_len", i);
+		prefix_len_l = mg_json_get_long(json, path, 32);
+
+		snprintf(path, sizeof(path), "$.acls[%d].priority", i);
+		priority_l = mg_json_get_long(json, path, 0);
+
+		if (apply_acl_from_json(type_str, (__u8)proto_l,
+					src_ip_str, (__u16)src_port_l,
+					dst_ip_str, (__u16)dst_port_l,
+					(__u8)action_l, (__u32)prefix_len_l,
+					(__u8)priority_l) == 0) {
+			n++;
+		}
+
+		free(type_str);
+		free(src_ip_str);
+		free(dst_ip_str);
+	}
+	acl_count = n;
+
+	/*
+	 * If ACL rules were restored, auto-enable ACL enforcement.
+	 * This fixes the case where state file has rules but enabled=false
+	 * (e.g., user deleted all rules, state saved, then added rules via API
+	 * but mgmtd restarted before state was saved again).
+	 * Having rules without enforcement enabled is never the desired state.
+	 */
+	if (acl_count > 0 && g_maps.acl_config_fd >= 0) {
+		struct acl_config cfg;
+		__u32 key = 0;
+
+		if (bpf_map_lookup_elem(g_maps.acl_config_fd, &key, &cfg) == 0) {
+			if (!cfg.enabled) {
+				RS_LOG_INFO("Auto-enabling ACL (restored %d rules)", acl_count);
+			}
+			cfg.enabled = 1;
+			bpf_map_update_elem(g_maps.acl_config_fd, &key, &cfg, BPF_ANY);
+		}
+	}
+
+	RS_LOG_INFO("Restored %d ACL rules from %s", acl_count, state_path);
+	free(buf);
+	return 0;
+}
+
+static void handle_config_reset(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
+{
+	char state_path[PATH_MAX];
+
+	(void) hm;
+	(void) userdata;
+
+	get_state_file_path(state_path, sizeof(state_path));
+
+	if (unlink(state_path) != 0 && errno != ENOENT) {
+		json_printf(c, 500, "{\"error\":\"failed to delete state file: %s\"}", strerror(errno));
+		return;
+	}
+
+	mgmtd_audit_log(AUDIT_SEV_WARNING, AUDIT_CAT_CONFIG, "config_reset", 1, "path=%s", state_path);
+	json_printf(c, 200, "{\"status\":\"reset\",\"message\":\"State file deleted. Restart mgmtd to reload base profile.\"}");
+}
+
+static const char *proto_to_str(__u8 proto)
+{
+	switch (proto) {
+	case 1: return "icmp";
+	case 6: return "tcp";
+	case 17: return "udp";
+	default: return "any";
+	}
+}
+
+static void handle_config_export(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
+{
+	char *profile_name;
+	char new_profile_path[PATH_MAX];
+	FILE *f;
+	time_t now;
+	struct tm *tm_info;
+	char time_str[64];
+	int first;
+
+	(void) userdata;
+
+	profile_name = mg_json_get_str(hm->body, "$.name");
+	if (!profile_name || profile_name[0] == '\0') {
+		free(profile_name);
+		json_printf(c, 400, "{\"error\":\"profile name required\"}");
+		return;
+	}
+
+	if (!profile_name_valid(profile_name)) {
+		free(profile_name);
+		json_printf(c, 400, "{\"error\":\"invalid profile name\"}");
+		return;
+	}
+
+	snprintf(new_profile_path, sizeof(new_profile_path), "%s%s", profile_dir(), profile_name);
+
+	if (access(new_profile_path, F_OK) == 0) {
+		free(profile_name);
+		json_printf(c, 409, "{\"error\":\"profile already exists\"}");
+		return;
+	}
+
+	f = fopen(new_profile_path, "w");
+	if (!f) {
+		free(profile_name);
+		json_printf(c, 500, "{\"error\":\"failed to create profile: %s\"}", strerror(errno));
+		return;
+	}
+
+	now = time(NULL);
+	tm_info = localtime(&now);
+	strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+
+	fprintf(f, "# rSwitch Profile - exported from running config\n");
+	fprintf(f, "# Exported: %s\n", time_str);
+	if (g_ctx.profile_path[0])
+		fprintf(f, "# Base profile: %s\n", g_ctx.profile_path);
+	fprintf(f, "\n");
+
+	fprintf(f, "name: %s\n", profile_name);
+	fprintf(f, "version: \"1.0\"\n");
+	fprintf(f, "description: Exported running configuration\n\n");
+
+	if (g_ctx.profile_path[0]) {
+		const char *base = strrchr(g_ctx.profile_path, '/');
+		if (base)
+			base++;
+		else
+			base = g_ctx.profile_path;
+		fprintf(f, "extends: \"%s\"\n\n", base);
+	}
+
+	if (mgmtd_maps_ensure() == 0) {
+		int has_acls = 0;
+
+		if (g_maps.acl_5tuple_fd >= 0) {
+			struct acl_5tuple_key k;
+			memset(&k, 0, sizeof(k));
+			if (bpf_map_get_next_key(g_maps.acl_5tuple_fd, NULL, &k) == 0)
+				has_acls = 1;
+		}
+		if (!has_acls && g_maps.acl_pdp_fd >= 0) {
+			struct acl_proto_dstip_port_key k;
+			memset(&k, 0, sizeof(k));
+			if (bpf_map_get_next_key(g_maps.acl_pdp_fd, NULL, &k) == 0)
+				has_acls = 1;
+		}
+		if (!has_acls && g_maps.acl_psp_fd >= 0) {
+			struct acl_proto_srcip_port_key k;
+			memset(&k, 0, sizeof(k));
+			if (bpf_map_get_next_key(g_maps.acl_psp_fd, NULL, &k) == 0)
+				has_acls = 1;
+		}
+		if (!has_acls && g_maps.acl_pp_fd >= 0) {
+			struct acl_proto_port_key k;
+			memset(&k, 0, sizeof(k));
+			if (bpf_map_get_next_key(g_maps.acl_pp_fd, NULL, &k) == 0)
+				has_acls = 1;
+		}
+
+		if (has_acls) {
+			fprintf(f, "acls:\n");
+			first = 1;
+
+			if (g_maps.acl_5tuple_fd >= 0) {
+				struct acl_5tuple_key k, nk;
+				struct acl_result res;
+				int has_prev = 0;
+				memset(&k, 0, sizeof(k));
+				while (bpf_map_get_next_key(g_maps.acl_5tuple_fd,
+							    has_prev ? &k : NULL, &nk) == 0) {
+					if (bpf_map_lookup_elem(g_maps.acl_5tuple_fd, &nk, &res) == 0) {
+						char src[INET_ADDRSTRLEN], dst[INET_ADDRSTRLEN];
+						struct in_addr sa, da;
+						sa.s_addr = nk.src_ip;
+						da.s_addr = nk.dst_ip;
+						inet_ntop(AF_INET, &sa, src, sizeof(src));
+						inet_ntop(AF_INET, &da, dst, sizeof(dst));
+						fprintf(f, "  - protocol: %s\n", proto_to_str(nk.proto));
+						fprintf(f, "    src_ip: %s\n", src);
+						fprintf(f, "    src_port: %u\n", ntohs(nk.sport));
+						fprintf(f, "    dst_ip: %s\n", dst);
+						fprintf(f, "    dst_port: %u\n", ntohs(nk.dport));
+						fprintf(f, "    action: %s\n", res.action == 1 ? "deny" : "permit");
+						first = 0;
+					}
+					k = nk;
+					has_prev = 1;
+				}
+			}
+
+			if (g_maps.acl_pdp_fd >= 0) {
+				struct acl_proto_dstip_port_key k, nk;
+				struct acl_result res;
+				int has_prev = 0;
+				memset(&k, 0, sizeof(k));
+				while (bpf_map_get_next_key(g_maps.acl_pdp_fd,
+							    has_prev ? &k : NULL, &nk) == 0) {
+					if (bpf_map_lookup_elem(g_maps.acl_pdp_fd, &nk, &res) == 0) {
+						char dst[INET_ADDRSTRLEN];
+						struct in_addr da;
+						da.s_addr = nk.dst_ip;
+						inet_ntop(AF_INET, &da, dst, sizeof(dst));
+						fprintf(f, "  - protocol: %s\n", proto_to_str(nk.proto));
+						fprintf(f, "    dst_ip: %s\n", dst);
+						fprintf(f, "    dst_port: %u\n", ntohs(nk.dst_port));
+						fprintf(f, "    action: %s\n", res.action == 1 ? "deny" : "permit");
+						first = 0;
+					}
+					k = nk;
+					has_prev = 1;
+				}
+			}
+
+			if (g_maps.acl_psp_fd >= 0) {
+				struct acl_proto_srcip_port_key k, nk;
+				struct acl_result res;
+				int has_prev = 0;
+				memset(&k, 0, sizeof(k));
+				while (bpf_map_get_next_key(g_maps.acl_psp_fd,
+							    has_prev ? &k : NULL, &nk) == 0) {
+					if (bpf_map_lookup_elem(g_maps.acl_psp_fd, &nk, &res) == 0) {
+						char src[INET_ADDRSTRLEN];
+						struct in_addr sa;
+						sa.s_addr = nk.src_ip;
+						inet_ntop(AF_INET, &sa, src, sizeof(src));
+						fprintf(f, "  - protocol: %s\n", proto_to_str(nk.proto));
+						fprintf(f, "    src_ip: %s\n", src);
+						fprintf(f, "    dst_port: %u\n", ntohs(nk.dst_port));
+						fprintf(f, "    action: %s\n", res.action == 1 ? "deny" : "permit");
+						first = 0;
+					}
+					k = nk;
+					has_prev = 1;
+				}
+			}
+
+			if (g_maps.acl_pp_fd >= 0) {
+				struct acl_proto_port_key k, nk;
+				struct acl_result res;
+				int has_prev = 0;
+				memset(&k, 0, sizeof(k));
+				while (bpf_map_get_next_key(g_maps.acl_pp_fd,
+							    has_prev ? &k : NULL, &nk) == 0) {
+					if (bpf_map_lookup_elem(g_maps.acl_pp_fd, &nk, &res) == 0) {
+						fprintf(f, "  - protocol: %s\n", proto_to_str(nk.proto));
+						fprintf(f, "    dst_port: %u\n", ntohs(nk.dst_port));
+						fprintf(f, "    action: %s\n", res.action == 1 ? "deny" : "permit");
+						first = 0;
+					}
+					k = nk;
+					has_prev = 1;
+				}
+			}
+			fprintf(f, "\n");
+		}
+	}
+
+	fclose(f);
+
+	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_PROFILE, "profile_export", 1,
+			    "name=%s path=%s", profile_name, new_profile_path);
+	json_printf(c, 201, "{\"status\":\"exported\",\"path\":\"%s\"}", new_profile_path);
+	free(profile_name);
+}
+
 static void handle_config_snapshot_create(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
 	char *desc;
@@ -4213,6 +5687,8 @@ static void dispatch_api(struct mg_connection *c, struct mg_http_message *hm, vo
 		return handle_acls_list(c, hm, userdata);
 	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/acls"), NULL))
 		return handle_acl_create(c, hm, userdata);
+	if (method_is(hm->method, "PUT") && mg_match(hm->uri, mg_str("/api/acls/#"), NULL))
+		return handle_acl_update(c, hm, userdata);
 	if (method_is(hm->method, "DELETE") && mg_match(hm->uri, mg_str("/api/acls/#"), NULL))
 		return handle_acl_delete(c, hm, userdata);
 
@@ -4248,6 +5724,12 @@ static void dispatch_api(struct mg_connection *c, struct mg_http_message *hm, vo
 
 	if (method_is(hm->method, "GET") && mg_match(hm->uri, mg_str("/api/config/snapshots"), NULL))
 		return handle_config_snapshots(c, hm, userdata);
+	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/config/save"), NULL))
+		return handle_config_save(c, hm, userdata);
+	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/config/reset"), NULL))
+		return handle_config_reset(c, hm, userdata);
+	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/config/export"), NULL))
+		return handle_config_export(c, hm, userdata);
 	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/config/snapshot"), NULL))
 		return handle_config_snapshot_create(c, hm, userdata);
 	if (method_is(hm->method, "POST") && mg_match(hm->uri, mg_str("/api/config/rollback/#"), NULL))
@@ -4554,8 +6036,19 @@ int main(int argc, char **argv)
 	if (g_ctx.cfg.use_namespace) {
 		__u32 existing = if_nametoindex(g_ctx.mgmt_cfg.veth_host);
 		if (existing) {
-			RS_LOG_INFO("mgmt-br exists (ifindex=%u), loader-managed mode", existing);
-			g_ctx.loader_managed_veth = 1;
+			if (rs_mgmt_iface_ns_probe(g_ctx.mgmt_cfg.mgmt_ns)) {
+				RS_LOG_INFO("mgmt-br exists (ifindex=%u), namespace healthy, loader-managed mode", existing);
+				g_ctx.loader_managed_veth = 1;
+			} else {
+				RS_LOG_WARN("Inconsistent state: mgmt-br exists but namespace %s not enterable - recreating",
+					    g_ctx.mgmt_cfg.mgmt_ns);
+				char cmd[256];
+				snprintf(cmd, sizeof(cmd), "ip link del %s 2>/dev/null || true",
+					 g_ctx.mgmt_cfg.veth_host);
+				system(cmd);
+				if (rs_mgmt_iface_create(&g_ctx.mgmt_cfg) != 0)
+					RS_LOG_WARN("Management namespace create failed");
+			}
 		} else {
 			if (rs_mgmt_iface_create(&g_ctx.mgmt_cfg) != 0)
 				RS_LOG_WARN("Management namespace create failed");
@@ -4565,18 +6058,18 @@ int main(int argc, char **argv)
 	}
 
 	mgmtd_maps_init();
+	load_state_from_file();
 	event_bus_init();
 	if (event_db_open(NULL) != 0)
 		RS_LOG_WARN("Event database init failed — events will not be persisted");
 
 	/*
-	 * In self-managed mode the process is still in the root namespace.
-	 * Switch into the mgmt namespace so the HTTP listener binds on
-	 * mgmt0's address, reachable via XDP-forwarded traffic.
-	 * BPF map FDs and the event-bus ringbuf opened above remain valid
-	 * across the setns() call — only the network namespace changes.
+	 * Always enter the mgmt namespace when use_namespace is set.
+	 * This ensures the HTTP listener binds on mgmt0's address,
+	 * reachable via XDP-forwarded traffic. BPF map FDs and the
+	 * event-bus ringbuf opened above remain valid across setns().
 	 */
-	if (g_ctx.cfg.use_namespace && !g_ctx.loader_managed_veth) {
+	if (g_ctx.cfg.use_namespace) {
 		if (rs_mgmt_iface_enter_netns(g_ctx.mgmt_cfg.mgmt_ns) == 0)
 			RS_LOG_INFO("Entered namespace %s for HTTP listener",
 				    g_ctx.mgmt_cfg.mgmt_ns);
