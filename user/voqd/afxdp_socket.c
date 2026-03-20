@@ -73,21 +73,14 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 		return -ENODEV;
 	}
 	
-	/* Try to open xsks_map from BPF filesystem */
+	/* Open xsks_map from standard rSwitch BPF pin path */
 	xsks_map_fd = bpf_obj_get("/sys/fs/bpf/rswitch/xsks_map");
 	if (xsks_map_fd < 0) {
-		/* Try without rswitch subdirectory */
-		xsks_map_fd = bpf_obj_get("/sys/fs/bpf/xsks_map");
-		if (xsks_map_fd >= 0) {
-			printf("Opened xsks_map from /sys/fs/bpf/xsks_map (fd=%d)\n", xsks_map_fd);
-		}
-	} else {
-		printf("Opened xsks_map from /sys/fs/bpf/rswitch/xsks_map (fd=%d)\n", xsks_map_fd);
-	}
-	
-	if (xsks_map_fd < 0) {
-		RS_LOG_WARN("Could not open xsks_map: %s (errno=%d)",
+		RS_LOG_WARN("Could not open xsks_map at /sys/fs/bpf/rswitch/xsks_map: %s (errno=%d). "
+		            "Ensure afxdp_redirect module is loaded and xsks_map is pinned.",
 		            strerror(errno), errno);
+	} else {
+		RS_LOG_INFO("Opened xsks_map fd=%d", xsks_map_fd);
 	}
 	
 	/* Calculate UMEM size */
