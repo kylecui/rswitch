@@ -440,6 +440,14 @@ TEST_DISPATCHER = $(BUILD_DIR)/test_dispatcher
 TEST_ACL = $(BUILD_DIR)/test_acl
 TEST_VLAN = $(BUILD_DIR)/test_vlan
 TEST_ACL_BPF = $(BUILD_DIR)/test_acl_bpf
+TEST_STP = $(BUILD_DIR)/test_stp
+TEST_RATE_LIMITER = $(BUILD_DIR)/test_rate_limiter
+TEST_SOURCE_GUARD = $(BUILD_DIR)/test_source_guard
+TEST_CONNTRACK = $(BUILD_DIR)/test_conntrack
+TEST_ARP_LEARN = $(BUILD_DIR)/test_arp_learn
+TEST_L2LEARN = $(BUILD_DIR)/test_l2learn
+TEST_ROUTE = $(BUILD_DIR)/test_route
+TEST_MIRROR = $(BUILD_DIR)/test_mirror
 FUZZ_MODULES = $(BUILD_DIR)/fuzz_modules
 
 $(TEST_DISPATCHER): $(TEST_DIR)/test_dispatcher.c $(RS_LOG_OBJ)
@@ -472,7 +480,55 @@ $(FUZZ_MODULES): test/fuzz/fuzz_modules.c $(RS_LOG_OBJ)
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ test/fuzz/fuzz_modules.c $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
-test: $(TEST_DISPATCHER) $(TEST_ACL) $(TEST_VLAN)
+$(TEST_STP): $(TEST_DIR)/test_stp.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_RATE_LIMITER): $(TEST_DIR)/test_rate_limiter.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_SOURCE_GUARD): $(TEST_DIR)/test_source_guard.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_CONNTRACK): $(TEST_DIR)/test_conntrack.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_ARP_LEARN): $(TEST_DIR)/test_arp_learn.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_L2LEARN): $(TEST_DIR)/test_l2learn.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_ROUTE): $(TEST_DIR)/test_route.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_MIRROR): $(TEST_DIR)/test_mirror.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+test: $(TEST_DISPATCHER) $(TEST_ACL) $(TEST_VLAN) $(TEST_STP) $(TEST_RATE_LIMITER) $(TEST_SOURCE_GUARD) $(TEST_CONNTRACK) $(TEST_ARP_LEARN) $(TEST_L2LEARN) $(TEST_ROUTE) $(TEST_MIRROR)
 	@echo "✓ Test binaries built"
 	@echo "  Run: sudo ./test/unit/run_tests.sh"
 
