@@ -317,8 +317,11 @@ int xsk_socket_tx_batch(struct xsk_socket *xsk, uint64_t *frames,
 	
 	/* Wake up kernel if needed */
 	if (xsk_ring_prod__needs_wakeup(&xsk->tx_ring)) {
-		/* Note: libxdp handles this internally, but we might need to sendto() */
-		/* For now, assume libxdp handles wakeups */
+		if (sendto(xsk->xsk_fd, NULL, 0, MSG_DONTWAIT, NULL, 0) < 0 &&
+		    errno != ENOBUFS && errno != EAGAIN && errno != EBUSY &&
+		    errno != ENETDOWN) {
+			RS_LOG_WARN("AF_XDP TX wakeup failed: %s", strerror(errno));
+		}
 	}
 	
 	return reserved;
