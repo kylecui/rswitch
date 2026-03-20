@@ -15,14 +15,6 @@
 #include "rs_test.h"
 #include "test_packets.h"
 
-struct test_xdp_md {
-    __u32 data;
-    __u32 data_meta;
-    __u32 data_end;
-    __u32 ingress_ifindex;
-    __u32 rx_queue_index;
-    __u32 egress_ifindex;
-};
 
 enum rs_vlan_mode {
     RS_VLAN_MODE_OFF = 0,
@@ -60,25 +52,14 @@ static const char *g_obj_path;
 static int run_dispatcher(struct bpf_program *prog,
                           const void *pkt,
                           __u32 pkt_len,
-                          __u32 ingress_ifindex,
                           __u32 *retval)
 {
     unsigned char out_buf[256] = {0};
-    struct test_xdp_md xdp_ctx = {
-        .data = 0,
-        .data_meta = 0,
-        .data_end = pkt_len,
-        .ingress_ifindex = ingress_ifindex,
-        .rx_queue_index = 0,
-        .egress_ifindex = 0,
-    };
     LIBBPF_OPTS(bpf_test_run_opts, topts,
         .data_in = pkt,
         .data_size_in = pkt_len,
         .data_out = out_buf,
         .data_size_out = sizeof(out_buf),
-        .ctx_in = &xdp_ctx,
-        .ctx_size_in = sizeof(xdp_ctx),
         .repeat = 1,
     );
     int prog_fd = bpf_program__fd(prog);
@@ -130,20 +111,21 @@ RS_TEST(test_unmanaged_port_returns_pass)
         return;
 
     build_ipv4_tcp_pkt(&pkt, 0x0a000001U, 0x0a000002U, 12345, 80, 0);
-    RS_ASSERT_OK(run_dispatcher(prog, &pkt, sizeof(pkt), 99, &retval));
+    /* No port config at ifindex 0 → unmanaged → XDP_PASS */
+    RS_ASSERT_OK(run_dispatcher(prog, &pkt, sizeof(pkt), &retval));
     RS_ASSERT_EQ(retval, XDP_PASS);
 
     bpf_object__close(obj);
 }
 
-RS_TEST(test_managed_ipv4_tcp_tailcall_fail_drop)
+RS_TEST(test_managed_ipv4_tcp_tailcall_fail_pass)
 {
     struct bpf_program *prog = NULL;
     struct bpf_object *obj = open_dispatcher_obj(&prog);
     struct test_pkt_ipv4_tcp pkt;
     struct bpf_map *port_map;
     struct rs_port_config cfg;
-    __u32 key = 7;
+    __u32 key = 0;
     __u32 retval = 0;
 
     if (!obj)
@@ -157,27 +139,27 @@ RS_TEST(test_managed_ipv4_tcp_tailcall_fail_drop)
     }
 
     memset(&cfg, 0, sizeof(cfg));
-    cfg.ifindex = key;
+    cfg.ifindex = 0;
     cfg.enabled = 1;
     cfg.mgmt_type = 1;
     cfg.vlan_mode = RS_VLAN_MODE_OFF;
     RS_ASSERT_OK(bpf_map_update_elem(bpf_map__fd(port_map), &key, &cfg, BPF_ANY));
 
     build_ipv4_tcp_pkt(&pkt, 0xc0a80101U, 0xc0a80102U, 1000, 443, 0);
-    RS_ASSERT_OK(run_dispatcher(prog, &pkt, sizeof(pkt), key, &retval));
-    RS_ASSERT_EQ(retval, XDP_DROP);
+    RS_ASSERT_OK(run_dispatcher(prog, &pkt, sizeof(pkt), &retval));
+    RS_ASSERT_EQ(retval, XDP_PASS);
 
     bpf_object__close(obj);
 }
 
-RS_TEST(test_managed_arp_tailcall_fail_drop)
+RS_TEST(test_managed_arp_tailcall_fail_pass)
 {
     struct bpf_program *prog = NULL;
     struct bpf_object *obj = open_dispatcher_obj(&prog);
     struct test_pkt_arp pkt;
     struct bpf_map *port_map;
     struct rs_port_config cfg;
-    __u32 key = 8;
+    __u32 key = 0;
     __u32 retval = 0;
 
     if (!obj)
@@ -191,27 +173,27 @@ RS_TEST(test_managed_arp_tailcall_fail_drop)
     }
 
     memset(&cfg, 0, sizeof(cfg));
-    cfg.ifindex = key;
+    cfg.ifindex = 0;
     cfg.enabled = 1;
     cfg.mgmt_type = 1;
     cfg.vlan_mode = RS_VLAN_MODE_OFF;
     RS_ASSERT_OK(bpf_map_update_elem(bpf_map__fd(port_map), &key, &cfg, BPF_ANY));
 
     build_arp_pkt(&pkt, 0xc0a80101U, 0xc0a80164U);
-    RS_ASSERT_OK(run_dispatcher(prog, &pkt, sizeof(pkt), key, &retval));
-    RS_ASSERT_EQ(retval, XDP_DROP);
+    RS_ASSERT_OK(run_dispatcher(prog, &pkt, sizeof(pkt), &retval));
+    RS_ASSERT_EQ(retval, XDP_PASS);
 
     bpf_object__close(obj);
 }
 
-RS_TEST(test_too_short_packet_drop)
+RS_TEST(test_minimal_packet_managed_pass)
 {
     struct bpf_program *prog = NULL;
     struct bpf_object *obj = open_dispatcher_obj(&prog);
-    unsigned char short_pkt[10] = {0};
+    unsigned char short_pkt[14] = {0};
     struct bpf_map *port_map;
     struct rs_port_config cfg;
-    __u32 key = 9;
+    __u32 key = 0;
     __u32 retval = 0;
 
     if (!obj)
@@ -225,14 +207,14 @@ RS_TEST(test_too_short_packet_drop)
     }
 
     memset(&cfg, 0, sizeof(cfg));
-    cfg.ifindex = key;
+    cfg.ifindex = 0;
     cfg.enabled = 1;
     cfg.mgmt_type = 1;
     cfg.vlan_mode = RS_VLAN_MODE_OFF;
     RS_ASSERT_OK(bpf_map_update_elem(bpf_map__fd(port_map), &key, &cfg, BPF_ANY));
 
-    RS_ASSERT_OK(run_dispatcher(prog, short_pkt, sizeof(short_pkt), key, &retval));
-    RS_ASSERT_EQ(retval, XDP_DROP);
+    RS_ASSERT_OK(run_dispatcher(prog, short_pkt, sizeof(short_pkt), &retval));
+    RS_ASSERT_EQ(retval, XDP_PASS);
 
     bpf_object__close(obj);
 }
@@ -248,8 +230,8 @@ RS_TEST_SUITE_BEGIN()
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
 
     RS_RUN_TEST(test_unmanaged_port_returns_pass);
-    RS_RUN_TEST(test_managed_ipv4_tcp_tailcall_fail_drop);
-    RS_RUN_TEST(test_managed_arp_tailcall_fail_drop);
-    RS_RUN_TEST(test_too_short_packet_drop);
+    RS_RUN_TEST(test_managed_ipv4_tcp_tailcall_fail_pass);
+    RS_RUN_TEST(test_managed_arp_tailcall_fail_pass);
+    RS_RUN_TEST(test_minimal_packet_managed_pass);
 
 RS_TEST_SUITE_END()

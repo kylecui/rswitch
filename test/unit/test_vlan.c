@@ -22,15 +22,6 @@ enum rs_vlan_mode {
     RS_VLAN_MODE_HYBRID = 3,
 };
 
-struct test_xdp_md {
-    __u32 data;
-    __u32 data_meta;
-    __u32 data_end;
-    __u32 ingress_ifindex;
-    __u32 rx_queue_index;
-    __u32 egress_ifindex;
-};
-
 struct rs_layers {
     __u16 eth_proto;
     __u16 vlan_ids[2];
@@ -117,21 +108,11 @@ static int get_ncpus(void)
 static int run_vlan(struct bpf_program *prog, const void *pkt, __u32 pkt_len, __u32 *retval)
 {
     unsigned char out_buf[256] = {0};
-    struct test_xdp_md xdp_ctx = {
-        .data = 0,
-        .data_meta = 0,
-        .data_end = pkt_len,
-        .ingress_ifindex = 5,
-        .rx_queue_index = 0,
-        .egress_ifindex = 0,
-    };
     LIBBPF_OPTS(bpf_test_run_opts, topts,
         .data_in = pkt,
         .data_size_in = pkt_len,
         .data_out = out_buf,
         .data_size_out = sizeof(out_buf),
-        .ctx_in = &xdp_ctx,
-        .ctx_size_in = sizeof(xdp_ctx),
         .repeat = 1,
     );
     int err = bpf_prog_test_run_opts(bpf_program__fd(prog), &topts);
@@ -172,8 +153,21 @@ static int lookup_percpu_ctx_any(int map_fd, struct rs_ctx *out)
 
     ret = bpf_map_lookup_elem(map_fd, &key, vals);
     if (ret == 0) {
+        /* Prefer CPU that BPF actually modified (ingress_vlan set).
+         * Since update_percpu_ctx sets parsed=1 on ALL CPUs, using
+         * parsed alone would always match CPU 0 even if BPF ran on
+         * another CPU.  Prioritize the one with real BPF output. */
         for (i = 0; i < ncpus; i++) {
-            if (vals[i].ingress_vlan != 0 || vals[i].parsed) {
+            if (vals[i].ingress_vlan != 0) {
+                *out = vals[i];
+                free(vals);
+                return 0;
+            }
+        }
+        /* Fallback: return any CPU with parsed flag (BPF ran but
+         * might not have set ingress_vlan, e.g. drop before assign). */
+        for (i = 0; i < ncpus; i++) {
+            if (vals[i].parsed) {
                 *out = vals[i];
                 free(vals);
                 return 0;

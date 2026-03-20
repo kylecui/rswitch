@@ -216,7 +216,6 @@ int rs_test_run(struct rs_test_ctx *ctx,
 {
     unsigned char out_buf[512];
     struct bpf_program *prog;
-    struct test_xdp_md xdp_ctx;
     int err;
 
     if (!ctx || !ctx->obj || !prog_name || !pkt || pkt_size == 0)
@@ -229,17 +228,12 @@ int rs_test_run(struct rs_test_ctx *ctx,
         return -EINVAL;
 
     memset(out_buf, 0, sizeof(out_buf));
-    memset(&xdp_ctx, 0, sizeof(xdp_ctx));
-    xdp_ctx.data_end = pkt_size;
-    xdp_ctx.ingress_ifindex = 5;
 
     LIBBPF_OPTS(bpf_test_run_opts, topts,
         .data_in = pkt,
         .data_size_in = pkt_size,
         .data_out = out_buf,
         .data_size_out = sizeof(out_buf),
-        .ctx_in = &xdp_ctx,
-        .ctx_size_in = sizeof(xdp_ctx),
         .repeat = 1,
     );
 

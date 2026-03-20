@@ -115,21 +115,11 @@ static int get_ncpus(void)
 static int run_acl(struct bpf_program *prog, const void *pkt, __u32 pkt_len, __u32 *retval)
 {
     unsigned char out_buf[256] = {0};
-    struct test_xdp_md xdp_ctx = {
-        .data = 0,
-        .data_meta = 0,
-        .data_end = pkt_len,
-        .ingress_ifindex = 5,
-        .rx_queue_index = 0,
-        .egress_ifindex = 0,
-    };
     LIBBPF_OPTS(bpf_test_run_opts, topts,
         .data_in = pkt,
         .data_size_in = pkt_len,
         .data_out = out_buf,
         .data_size_out = sizeof(out_buf),
-        .ctx_in = &xdp_ctx,
-        .ctx_size_in = sizeof(xdp_ctx),
         .repeat = 1,
     );
     int err = bpf_prog_test_run_opts(bpf_program__fd(prog), &topts);
