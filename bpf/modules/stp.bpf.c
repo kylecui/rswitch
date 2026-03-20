@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
 #include "../include/rswitch_common.h"
-#include "../core/module_abi.h"
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -45,6 +45,7 @@ struct {
     __uint(max_entries, STP_STAT_MAX);
     __type(key, __u32);
     __type(value, __u64);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } stp_stats_map SEC(".maps");
 
 struct stp_bpdu_event {
@@ -89,6 +90,9 @@ static __always_inline void stp_emit_bpdu_event(struct xdp_md *xdp_ctx, struct r
     evt.timestamp_ns = bpf_ktime_get_ns();
     evt.frame_len = frame_len;
     evt.bpdu_len = copy_len;
+    copy_len &= 0x7f;
+    if (copy_len < 1)
+        return;
     if (bpf_xdp_load_bytes(xdp_ctx, 0, evt.data, copy_len) < 0)
         return;
 

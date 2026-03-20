@@ -13,16 +13,10 @@
  *   - ACTIVE: High-priority traffic redirected to user-space VOQd via cpumap
  */
 
-#include <linux/bpf.h>
-#include <linux/if_ether.h>
-#include <linux/ip.h>
-#include <linux/in.h>
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_endian.h>
-#include "module_abi.h"
-#include "uapi.h"
-#include "afxdp_common.h"
-#include "../core/map_defs.h"
+#include "../include/rswitch_common.h"
+#include "../core/afxdp_common.h"
+
+char _license[] SEC("license") = "GPL";
 
 /* Module declaration */
 RS_DECLARE_MODULE(
@@ -202,7 +196,7 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	__u64 now_ns;
 	
 	/* Retrieve shared context */
-	rs_ctx = bpf_map_lookup_elem(&rs_ctx_map, &key);
+	rs_ctx = RS_GET_CTX();
 	if (!rs_ctx)
 		return XDP_PASS;
 	
@@ -219,14 +213,14 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	/* Lookup VOQd state */
 	state = bpf_map_lookup_elem(&voqd_state_map, &key);
 	if (!state) {
-		bpf_printk("[AF_XDP] No VOQd state found");
+		rs_debug("[AF_XDP] No VOQd state found");
 		goto next_module;
 	}
 	
 	/* Get current time for timeout checking */
 	now_ns = bpf_ktime_get_ns();
 	
-	bpf_printk("[AF_XDP] mode=%d, running=%d, prio_mask=0x%x", 
+	rs_debug("[AF_XDP] mode=%d, running=%d, prio_mask=0x%x", 
 	           state->mode, state->running, state->prio_mask);
 	
 	/*
@@ -257,13 +251,13 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	
 	/* BYPASS mode: Skip all processing */
 	if (state->mode == VOQD_MODE_BYPASS) {
-		bpf_printk("[AF_XDP] BYPASS mode, skipping");
+		rs_debug("[AF_XDP] BYPASS mode, skipping");
 		goto next_module;
 	}
 	
 	/* Check if VOQd is actually running */
 	if (!state->running) {
-		bpf_printk("[AF_XDP] VOQd not running");
+		rs_debug("[AF_XDP] VOQd not running");
 		goto next_module;
 	}
 	
@@ -281,20 +275,20 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	if (rs_ctx->prio != QOS_PRIO_UNSET && rs_ctx->prio < QOS_MAX_PRIORITIES) {
 		/* Priority already classified by upstream module */
 		prio = rs_ctx->prio;
-		bpf_printk("[AF_XDP] Using pre-classified prio=%u", prio);
+		rs_debug("[AF_XDP] Using pre-classified prio=%u", prio);
 	} else {
 		/* Extract priority from DSCP field */
 		prio = extract_priority(ctx, qos);
-		bpf_printk("[AF_XDP] Extracted prio=%u from DSCP", prio);
+		rs_debug("[AF_XDP] Extracted prio=%u from DSCP", prio);
 	}
 	
 	/* Check if this priority should be intercepted */
 	if (!(state->prio_mask & (1 << prio))) {
-		bpf_printk("[AF_XDP] Priority %u not in mask 0x%x, skipping", prio, state->prio_mask);
+		rs_debug("[AF_XDP] Priority %u not in mask 0x%x, skipping", prio, state->prio_mask);
 		goto next_module;
 	}
-	
-	bpf_printk("[AF_XDP] Processing priority %u in mode %d", prio, state->mode);
+
+	rs_debug("[AF_XDP] Processing priority %u in mode %d", prio, state->mode);
 	
 	/*
 	 * SHADOW Mode: Submit metadata to ringbuf (observation only)
@@ -352,25 +346,25 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 			meta->drop_hint = 0;
 			
 			bpf_ringbuf_submit(meta, 0);
-			bpf_printk("[AF_XDP] Submitted metadata for prio %u", prio);
+			rs_debug("[AF_XDP] Submitted metadata for prio %u", prio);
 			
 			/* Check if AF_XDP socket is available for this queue */
 			__u32 *socket_fd = bpf_map_lookup_elem(&xsks_map, &queue_id);
 			if (socket_fd && *socket_fd > 0) {
 				/* AF_XDP socket available - redirect packet */
-				bpf_printk("[AF_XDP] Redirecting to AF_XDP socket fd=%u", *socket_fd);
+				rs_debug("[AF_XDP] Redirecting to AF_XDP socket fd=%u", *socket_fd);
 				return bpf_redirect_map(&xsks_map, queue_id, 0);
 			} else {
 				/* No AF_XDP socket available - continue with fast-path
 				 * User-space VOQd will process metadata from ringbuf
 				 */
-				bpf_printk("[AF_XDP] No AF_XDP socket, continuing with fast-path");
+				rs_debug("[AF_XDP] No AF_XDP socket, continuing with fast-path");
 				goto next_module;
 			}
 		} else {
 			/* Ringbuf full - track overload */
 			state->overload_drops++;
-			bpf_printk("[AF_XDP] Ringbuf full, dropping packet");
+			rs_debug("[AF_XDP] Ringbuf full, dropping packet");
 			
 			/* Graceful degradation: fall back to fast-path for this packet */
 			if (state->flags & VOQD_FLAG_DEGRADE_ON_OVERLOAD) {
@@ -395,5 +389,3 @@ next_module:
 	/* Tail-call failed - should not happen if pipeline is properly configured */
 	return XDP_PASS;
 }
-
-char _license[] SEC("license") = "GPL";

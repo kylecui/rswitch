@@ -448,6 +448,9 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         struct ecmp_group *group = bpf_map_lookup_elem(&ecmp_groups, &group_id);
         if (group && group->count > 0 && group->count <= MAX_ECMP_PATHS) {
             __u32 idx = route_hash_5tuple(ctx) % group->count;
+            /* Force bounds check into generated code - compiler optimizes & away without barrier */
+            asm volatile("" : "+r"(idx));
+            idx &= (MAX_ECMP_PATHS - 1);
             egress_ifindex = group->paths[idx].ifindex;
             route_nexthop = group->paths[idx].nexthop;
             rs_debug("Route: ECMP group=%u selected=%u ifindex=%u nexthop=%pI4",

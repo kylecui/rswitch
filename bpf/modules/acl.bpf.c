@@ -29,7 +29,7 @@
  */
 
 #include "../include/rswitch_common.h"
-#include "../core/module_abi.h"
+
 
 char _license[] SEC("license") = "GPL";
 

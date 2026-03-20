@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 
-#ifndef __BPF__
-#define __BPF__
-#endif
-
 #include "../include/rswitch_common.h"
-#include "../core/module_abi.h"
+
+char _license[] SEC("license") = "GPL";
+
+RS_DECLARE_MODULE("lacp", RS_HOOK_XDP_INGRESS, 11,
+                  RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_MAY_DROP | RS_FLAG_CREATES_EVENTS,
+                  "Link Aggregation Control Protocol");
 
 #define ETH_P_SLOW 0x8809
 #define LACP_EVENT_TYPE (RS_EVENT_L2_BASE + 0x20)
@@ -139,9 +140,3 @@ int lacp_ingress(struct xdp_md *xdp_ctx)
 
     return XDP_PASS;
 }
-
-char _license[] SEC("license") = "GPL";
-
-RS_DECLARE_MODULE("lacp", RS_HOOK_XDP_INGRESS, 11,
-                  RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_MAY_DROP | RS_FLAG_CREATES_EVENTS,
-                  "Link Aggregation Control Protocol");

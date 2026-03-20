@@ -15,10 +15,7 @@
  * - Smaller binary size
  */
 
-#include "../include/rswitch_bpf.h"
-#include "../core/module_abi.h"
-#include "../core/uapi.h"
-#include "../core/map_defs.h"  /* For rs_stats definition */
+#include "../include/rswitch_common.h"
 
 char _license[] SEC("license") = "GPL";
 
@@ -45,13 +42,13 @@ struct {
  * The bpf_core_read() ensures portable access across kernel versions
  * where struct xdp_md layout might change.
  */
-static __always_inline __u32 get_packet_length_core(struct xdp_md *ctx)
+static __always_inline __u32 get_packet_length_core(struct xdp_md *xdp_ctx)
 {
     __u32 data, data_end;
     
     /* CO-RE field access - automatically relocated by libbpf */
-    bpf_core_read(&data, sizeof(data), &ctx->data);
-    bpf_core_read(&data_end, sizeof(data_end), &ctx->data_end);
+    bpf_core_read(&data, sizeof(data), &xdp_ctx->data);
+    bpf_core_read(&data_end, sizeof(data_end), &xdp_ctx->data_end);
     
     return data_end - data;
 }
@@ -69,13 +66,13 @@ static __always_inline int detect_kernel_features(void)
     /* Check if kernel supports XDP hardware hints (5.18+) */
     if (bpf_core_field_exists(struct xdp_md, rx_queue_index)) {
         features |= (1 << 0);  /* HAS_XDP_QUEUE_INDEX */
-        bpf_debug("Kernel supports XDP queue index");
+        rs_debug("Kernel supports XDP queue index");
     }
     
     /* Check if kernel supports XDP metadata (5.18+) */
     if (bpf_core_field_exists(struct xdp_md, data_meta)) {
         features |= (1 << 1);  /* HAS_XDP_METADATA */
-        bpf_debug("Kernel supports XDP metadata");
+        rs_debug("Kernel supports XDP metadata");
     }
     
     return features;
@@ -86,10 +83,10 @@ static __always_inline int detect_kernel_features(void)
  * 
  * Uses CO-RE-aware bounds checking and type-safe header access.
  */
-static __always_inline int parse_headers_core(struct xdp_md *ctx)
+static __always_inline int parse_headers_core(struct xdp_md *xdp_ctx)
 {
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(long)xdp_ctx->data;
+    void *data_end = (void *)(long)xdp_ctx->data_end;
     
     /* Ethernet header - CO-RE ensures correct struct layout */
     struct ethhdr *eth = data;
@@ -109,7 +106,7 @@ static __always_inline int parse_headers_core(struct xdp_md *ctx)
             return -1;
         
         eth_proto = bpf_ntohs(vlan->h_vlan_encapsulated_proto);
-        bpf_debug("VLAN detected: TCI=0x%x", bpf_ntohs(vlan->h_vlan_TCI));
+        rs_debug("VLAN detected: TCI=0x%x", bpf_ntohs(vlan->h_vlan_TCI));
     }
     
     /* IPv4/IPv6 - CO-RE ensures portable struct access */
@@ -122,7 +119,7 @@ static __always_inline int parse_headers_core(struct xdp_md *ctx)
         __u8 protocol;
         bpf_core_read(&protocol, sizeof(protocol), &iph->protocol);
         
-        bpf_debug("IPv4 packet: proto=%u", protocol);
+        rs_debug("IPv4 packet: proto=%u", protocol);
     } else if (eth_proto == ETH_P_IPV6) {
         struct ipv6hdr *ip6h = (void *)(eth + 1);
         if ((void *)(ip6h + 1) > data_end)
@@ -132,7 +129,7 @@ static __always_inline int parse_headers_core(struct xdp_md *ctx)
         __u8 nexthdr;
         bpf_core_read(&nexthdr, sizeof(nexthdr), &ip6h->nexthdr);
         
-        bpf_debug("IPv6 packet: nexthdr=%u", nexthdr);
+        rs_debug("IPv6 packet: nexthdr=%u", nexthdr);
     }
     
     return 0;
@@ -144,14 +141,14 @@ static __always_inline int parse_headers_core(struct xdp_md *ctx)
  * This demonstrates a simple stats module using CO-RE for portability.
  */
 SEC("xdp")
-int core_stats_ingress(struct xdp_md *ctx)
+int core_stats_ingress(struct xdp_md *xdp_ctx)
 {
     /* Get packet length using CO-RE helper */
-    __u32 pkt_len = get_packet_length_core(ctx);
+    __u32 pkt_len = get_packet_length_core(xdp_ctx);
     
     /* Parse headers with CO-RE safety */
-    if (parse_headers_core(ctx) < 0) {
-        bpf_debug("Failed to parse headers");
+    if (parse_headers_core(xdp_ctx) < 0) {
+        rs_debug("Failed to parse headers");
         return XDP_PASS;
     }
     
@@ -164,6 +161,10 @@ int core_stats_ingress(struct xdp_md *ctx)
     }
     
     /* Continue to next module in pipeline */
+    struct rs_ctx *ctx = RS_GET_CTX();
+    if (ctx) {
+        RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
+    }
     return XDP_PASS;
 }
 
@@ -174,10 +175,10 @@ int core_stats_ingress(struct xdp_md *ctx)
  * to perform one-time feature detection.
  */
 SEC("xdp")
-int core_stats_init(struct xdp_md *ctx)
+int core_stats_init(struct xdp_md *xdp_ctx)
 {
     int features = detect_kernel_features();
-    bpf_debug("Detected kernel features: 0x%x", features);
+    rs_debug("Detected kernel features: 0x%x", features);
     return XDP_PASS;
 }
 

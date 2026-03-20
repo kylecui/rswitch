@@ -7,7 +7,7 @@
  */
 
 #include "../include/rswitch_common.h"
-#include "../core/module_abi.h"
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -466,7 +466,7 @@ int mirror_ingress(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
 
-    __u32 ifindex = xdp_ctx->ingress_ifindex;
+    __u32 ifindex = rs_ctx->ifindex;
     struct port_mirror_config *port_config;
 
     port_config = bpf_map_lookup_elem(&port_mirror_map, &ifindex);
