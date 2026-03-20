@@ -1266,6 +1266,79 @@ static int mgmtd_maps_ensure(void)
 	return mgmtd_maps_init();
 }
 
+static int ifindex_exists(unsigned int ifidx)
+{
+	char name[IF_NAMESIZE] = "";
+	if_indextoname(ifidx, name);
+	if (name[0] == '\0')
+		ifindex_to_name_sysfs(ifidx, name, sizeof(name));
+	return name[0] != '\0';
+}
+
+static void cleanup_stale_port_configs(void)
+{
+	__u32 keys_to_delete[256];
+	int delete_count = 0;
+	__u32 key, next;
+
+	if (g_maps.port_config_fd < 0)
+		return;
+
+	if (bpf_map_get_next_key(g_maps.port_config_fd, NULL, &next) != 0)
+		return;
+
+	do {
+		key = next;
+		struct rs_port_config p;
+		if (bpf_map_lookup_elem(g_maps.port_config_fd, &key, &p) == 0) {
+			if (!ifindex_exists(p.ifindex) && delete_count < 256)
+				keys_to_delete[delete_count++] = key;
+		}
+	} while (bpf_map_get_next_key(g_maps.port_config_fd, &key, &next) == 0);
+
+	for (int i = 0; i < delete_count; i++) {
+		if (bpf_map_delete_elem(g_maps.port_config_fd, &keys_to_delete[i]) == 0)
+			RS_LOG_INFO("Cleaned up stale port_config entry: ifindex=%u", keys_to_delete[i]);
+	}
+
+	if (g_maps.vlan_fd < 0)
+		return;
+
+	__u16 vlan_key, vlan_next;
+	if (bpf_map_get_next_key(g_maps.vlan_fd, NULL, &vlan_next) != 0)
+		return;
+
+	do {
+		vlan_key = vlan_next;
+		struct rs_vlan_members vm;
+		if (bpf_map_lookup_elem(g_maps.vlan_fd, &vlan_key, &vm) != 0)
+			continue;
+		int modified = 0;
+		for (int arr_idx = 0; arr_idx < 4; arr_idx++) {
+			for (int bit_pos = 0; bit_pos < 64; bit_pos++) {
+				__u64 mask = 1ULL << bit_pos;
+				if ((vm.tagged_members[arr_idx] & mask) || (vm.untagged_members[arr_idx] & mask)) {
+					unsigned int ifidx = (unsigned int)(arr_idx * 64 + bit_pos + 1);
+					if (!ifindex_exists(ifidx)) {
+						vm.tagged_members[arr_idx] &= ~mask;
+						vm.untagged_members[arr_idx] &= ~mask;
+						modified = 1;
+						RS_LOG_INFO("Removing stale ifindex %u from VLAN %u", ifidx, vlan_key);
+					}
+				}
+			}
+		}
+		if (modified) {
+			vm.member_count = 0;
+			for (int a = 0; a < 4; a++) {
+				vm.member_count += (unsigned int)__builtin_popcountll(vm.tagged_members[a]);
+				vm.member_count += (unsigned int)__builtin_popcountll(vm.untagged_members[a]);
+			}
+			bpf_map_update_elem(g_maps.vlan_fd, &vlan_key, &vm, BPF_ANY);
+		}
+	} while (bpf_map_get_next_key(g_maps.vlan_fd, &vlan_key, &vlan_next) == 0);
+}
+
 static int aggregate_port_stats(__u32 ifindex, struct rs_stats *sum)
 {
 	struct rs_stats *cpu_vals;
@@ -1928,7 +2001,7 @@ static void handle_ports_list(struct mg_connection *c, struct mg_http_message *h
 		while (1) {
 			struct rs_port_config p;
 			if (bpf_map_lookup_elem(g_maps.port_config_fd, &next, &p) == 0) {
-				char name[IF_NAMESIZE] = "unknown";
+				char name[IF_NAMESIZE] = "";
 				char oper[32] = "unknown";
 				int speed_val = 0;
 				int link_up = 0;
@@ -1936,8 +2009,10 @@ static void handle_ports_list(struct mg_connection *c, struct mg_http_message *h
 				__u64 rx_pkt = 0, tx_pkt = 0;
 
 				if_indextoname(p.ifindex, name);
-				if (name[0] == 'u' || name[0] == '\0')
+				if (name[0] == '\0')
 					ifindex_to_name_sysfs(p.ifindex, name, sizeof(name));
+				if (name[0] == '\0')
+					goto next_port;
 
 				{
 					char path[128];
@@ -1987,6 +2062,7 @@ static void handle_ports_list(struct mg_connection *c, struct mg_http_message *h
 				port_id++;
 			}
 
+next_port:
 			key = next;
 			if (bpf_map_get_next_key(g_maps.port_config_fd, &key, &next) != 0)
 				break;
@@ -2454,7 +2530,32 @@ static void handle_vlans_list(struct mg_connection *c, struct mg_http_message *h
 					}
 				}
 
-				off += (size_t) snprintf(out + off, sizeof(out) - off, "]}");
+				/* Add port_names object: maps ifindex -> interface name */
+				off += (size_t) snprintf(out + off, sizeof(out) - off,
+						 "],\"port_names\":{");
+				{
+					int pn_first = 1;
+					for (i = 0; i < 4; i++) {
+						for (j = 0; j < 64; j++) {
+							__u64 mask = 1ULL << j;
+							if ((v.tagged_members[i] & mask) || (v.untagged_members[i] & mask)) {
+								int ifidx = i * 64 + j + 1;
+								char name[IF_NAMESIZE] = "";
+								if_indextoname((unsigned int)ifidx, name);
+								if (name[0] == '\0')
+									ifindex_to_name_sysfs(ifidx, name, sizeof(name));
+								if (name[0] != '\0') {
+									off += (size_t) snprintf(out + off, sizeof(out) - off,
+											 "%s\"%d\":\"%s\"",
+											 pn_first ? "" : ",", ifidx, name);
+									pn_first = 0;
+								}
+							}
+						}
+					}
+				}
+
+				off += (size_t) snprintf(out + off, sizeof(out) - off, "}}");
 				first = 0;
 			}
 
@@ -6058,6 +6159,7 @@ int main(int argc, char **argv)
 	}
 
 	mgmtd_maps_init();
+	cleanup_stale_port_configs();
 	load_state_from_file();
 	event_bus_init();
 	if (event_db_open(NULL) != 0)

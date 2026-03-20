@@ -222,6 +222,7 @@ function vlansPage() {
     pendingChanges: [],
     showCreate: false,
     portMap: {},
+    vlanPortNames: {},
     newVlan: { id: '', tagged: [], untagged: [] },
     editingId: null,
     editForm: { tagged: [], untagged: [] },
@@ -255,7 +256,7 @@ function vlansPage() {
       } catch {}
     },
 
-    portName(ifidx) { return this.portMap[ifidx] || String(ifidx); },
+    portName(ifidx) { return this.portMap[ifidx] || this.vlanPortNames[ifidx] || ('if' + ifidx); },
 
     portNames(arr) { return (arr || []).map(i => this.portName(i)).join(', ') || '\u2014'; },
 
@@ -280,6 +281,12 @@ function vlansPage() {
       try {
         const d = await (await apiFetch('/api/vlans')).json();
         this.liveVlans = d.vlans || d || [];
+        this.vlanPortNames = {};
+        for (const v of this.liveVlans) {
+          if (v.port_names) {
+            Object.assign(this.vlanPortNames, v.port_names);
+          }
+        }
       } catch {}
     },
 
