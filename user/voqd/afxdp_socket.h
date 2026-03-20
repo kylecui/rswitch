@@ -80,8 +80,10 @@ struct xsk_socket {
 	uint32_t tx_cached_prod;
 	uint32_t tx_cached_cons;
 	
-	/* Frame management */
-	uint32_t next_free_frame;   /* Next frame to allocate */
+	/* Frame management (stack-based free pool) */
+	uint64_t *free_frame_stack; /* Stack of free frame addresses */
+	uint32_t free_stack_size;   /* Current number of free frames on stack */
+	uint32_t free_stack_cap;    /* Capacity of free_frame_stack array */
 	
 	/* Statistics */
 	uint64_t rx_packets;
