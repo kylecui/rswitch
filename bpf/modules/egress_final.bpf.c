@@ -241,10 +241,8 @@ static __always_inline void update_final_stat(__u32 stat_id)
 SEC("xdp/devmap")
 int egress_final(struct xdp_md *xdp_ctx)
 {
-    __u32 key = 0;
-    
     /* Get per-CPU context */
-    struct rs_ctx *ctx = bpf_map_lookup_elem(&rs_ctx_map, &key);
+    struct rs_ctx *ctx = RS_GET_CTX();
     if (!ctx) {
         /* Should not happen, but don't block packet */
         rs_debug("WARN: No context in egress_final");

@@ -4,6 +4,14 @@
 
 char _license[] SEC("license") = "GPL";
 
+RS_DECLARE_MODULE(
+	"veth_egress",
+	RS_HOOK_XDP_INGRESS,
+	0,  /* Standalone XDP on veth_voq_out — not in tail-call chain */
+	RS_FLAG_MODIFIES_PACKET,
+	"VOQ egress redirect: veth → physical NIC via devmap"
+);
+
 struct {
 	__uint(type, BPF_MAP_TYPE_DEVMAP_HASH);
 	__uint(max_entries, RS_MAX_INTERFACES);

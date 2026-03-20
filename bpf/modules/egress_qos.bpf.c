@@ -29,7 +29,6 @@
  */
 
 #include "../include/rswitch_common.h"
-#include "../core/module_abi.h"
 #include "../core/afxdp_common.h"
 
 char _license[] SEC("license") = "GPL";

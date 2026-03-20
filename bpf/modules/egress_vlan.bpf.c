@@ -13,7 +13,7 @@
  */
 
 #include "../include/rswitch_common.h"
-#include "../core/module_abi.h"
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -419,4 +419,3 @@ int egress_vlan_xdp(struct xdp_md *ctx)
     return XDP_PASS;
 }
 
-char _license_end[] SEC("license") = "GPL";
