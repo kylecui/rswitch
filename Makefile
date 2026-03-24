@@ -82,7 +82,7 @@ CORE_OBJS = $(patsubst $(CORE_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(CORE_
 MODULE_OBJS = $(patsubst $(MODULES_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(MODULES_DIR)/*.bpf.c))
 ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS)
 
-.PHONY: all clean dirs vmlinux help test test-bpf fuzz integration-test benchmark gen-docs
+.PHONY: all clean dirs vmlinux help test test-bpf test-ci fuzz integration-test benchmark gen-docs
 
 all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSFLOWCTL) $(RSNATCTL) $(RSVOQCTL) $(RSTUNNELCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(SFLOW_EXPORT) $(PROMETHEUS_EXPORTER) $(WATCHDOG) $(CONTROLLER) $(AGENT) $(SNMPAGENT) $(MGMTD) $(ALL_BPF_OBJS)
 	@echo "✓ Build complete"
@@ -436,10 +436,14 @@ $(AFXDP_TEST): $(USER_DIR)/afxdp/afxdp_socket.c $(USER_DIR)/afxdp/afxdp_test.c $
 
 # Test targets
 TEST_DIR = ./test/unit
+TEST_CI_DIR = ./test/ci
 TEST_DISPATCHER = $(BUILD_DIR)/test_dispatcher
 TEST_ACL = $(BUILD_DIR)/test_acl
 TEST_VLAN = $(BUILD_DIR)/test_vlan
 TEST_ACL_BPF = $(BUILD_DIR)/test_acl_bpf
+TEST_DISPATCHER_BPF = $(BUILD_DIR)/test_dispatcher_bpf
+TEST_VLAN_BPF = $(BUILD_DIR)/test_vlan_bpf
+TEST_ROUTE_BPF = $(BUILD_DIR)/test_route_bpf
 TEST_STP = $(BUILD_DIR)/test_stp
 TEST_RATE_LIMITER = $(BUILD_DIR)/test_rate_limiter
 TEST_SOURCE_GUARD = $(BUILD_DIR)/test_source_guard
@@ -473,6 +477,24 @@ $(TEST_ACL_BPF): $(TEST_DIR)/test_acl_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LO
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $(TEST_DIR)/test_acl_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_DISPATCHER_BPF): $(TEST_CI_DIR)/test_dispatcher_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $(TEST_CI_DIR)/test_dispatcher_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_VLAN_BPF): $(TEST_CI_DIR)/test_vlan_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $(TEST_CI_DIR)/test_vlan_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_ROUTE_BPF): $(TEST_CI_DIR)/test_route_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $(TEST_CI_DIR)/test_route_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 $(FUZZ_MODULES): test/fuzz/fuzz_modules.c $(RS_LOG_OBJ)
 	@echo "  CC [FUZZ] $@"
@@ -532,9 +554,18 @@ test: $(TEST_DISPATCHER) $(TEST_ACL) $(TEST_VLAN) $(TEST_STP) $(TEST_RATE_LIMITE
 	@echo "✓ Test binaries built"
 	@echo "  Run: sudo ./test/unit/run_tests.sh"
 
-test-bpf: $(TEST_ACL_BPF)
-	@echo "Running BPF_PROG_RUN ACL test harness (requires root)"
+test-bpf: $(TEST_ACL_BPF) $(TEST_DISPATCHER_BPF) $(TEST_VLAN_BPF) $(TEST_ROUTE_BPF)
+	@echo "Running BPF_PROG_RUN test harnesses (requires root)"
 	@sudo ./build/test_acl_bpf ./build/bpf/acl.bpf.o ./build/test_acl_bpf.junit.xml
+	@sudo ./build/test_dispatcher_bpf ./build/bpf/dispatcher.bpf.o ./build/test_dispatcher_bpf.junit.xml
+	@sudo ./build/test_vlan_bpf ./build/bpf/vlan.bpf.o ./build/test_vlan_bpf.junit.xml
+	@sudo ./build/test_route_bpf ./build/bpf/route.bpf.o ./build/test_route_bpf.junit.xml
+
+test-ci: $(TEST_DISPATCHER_BPF) $(TEST_VLAN_BPF) $(TEST_ROUTE_BPF)
+	@echo "✓ CI BPF test binaries built"
+	@echo "  Run: sudo ./build/test_dispatcher_bpf ./build/bpf/dispatcher.bpf.o out.xml"
+	@echo "  Run: sudo ./build/test_vlan_bpf ./build/bpf/vlan.bpf.o out.xml"
+	@echo "  Run: sudo ./build/test_route_bpf ./build/bpf/route.bpf.o out.xml"
 
 fuzz: $(FUZZ_MODULES)
 	@echo "Running module fuzz harness (requires root)"

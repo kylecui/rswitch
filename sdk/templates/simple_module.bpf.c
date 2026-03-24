@@ -36,10 +36,17 @@ RS_DECLARE_MODULE("my_module", RS_HOOK_XDP_INGRESS, 200,
 SEC("xdp")
 int my_module_func(struct xdp_md *xdp_ctx)
 {
-    /* Get the rSwitch context (passed between modules via per-CPU map) */
+    /*
+     * Graceful degradation: if pipeline is not active (module loaded
+     * standalone or pipeline not yet initialized), pass traffic through
+     * instead of dropping. See docs/development/DEGRADATION.md.
+     */
+    if (!RS_IS_PIPELINE_ACTIVE())
+        return XDP_PASS;
+
     struct rs_ctx *ctx = RS_GET_CTX();
     if (!ctx)
-        return XDP_DROP;
+        return XDP_PASS;
 
     /* Access parsed headers from ctx->layers:
      *   ctx->layers.l2_offset   - Ethernet header offset

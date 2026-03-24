@@ -285,6 +285,17 @@ extern struct {
 })
 
 /*
+ * Check if the rSwitch pipeline is active.
+ * Returns true if rs_ctx_map is populated (pipeline initialized),
+ * false if running standalone or pipeline not yet started.
+ * See docs/development/DEGRADATION.md for usage patterns.
+ */
+#define RS_IS_PIPELINE_ACTIVE() ({ \
+    __u32 __key = RS_ONLYKEY; \
+    !!bpf_map_lookup_elem(&rs_ctx_map, &__key); \
+})
+
+/*
  * Tail-call to next ingress stage.
  * Auto-increments next_prog_id. Ingress modules only.
  */
