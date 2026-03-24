@@ -21,8 +21,12 @@ char _license[] SEC("license") = "GPL";
  *   Description: Brief description of what this module does
  *
  * See module_abi.h for stage conventions and available flags.
+ *
+ * Stage ranges:
+ *   Core ingress: 10-99    Core egress: 100-199
+ *   User ingress: 200-299  User egress: 400-499
  */
-RS_DECLARE_MODULE("my_module", RS_HOOK_XDP_INGRESS, 35,
+RS_DECLARE_MODULE("my_module", RS_HOOK_XDP_INGRESS, 200,
                   RS_FLAG_NEED_L2L3_PARSE,
                   "Template module - replace with your description");
 

@@ -118,8 +118,8 @@ struct rs_ctx {
     __u32 next_prog_id;         /* Next program to tail-call */
     __u32 call_depth;           /* Current tail-call depth (for debugging) */
     
-    /* Reserved for future use */
-    __u32 reserved[4];
+    /* Reserved for future use (64 bytes — ABI v2) */
+    __u32 reserved[16];
 };
 
 /* Error codes */
@@ -220,6 +220,7 @@ struct {
  * - 0x0300-0x03FF: Route events
  * - 0x0400-0x04FF: Mirror events
  * - 0x0500-0x05FF: QoS events
+ * - 0x1000-0x7FFF: User module events (external modules)
  * - 0xFF00-0xFFFF: Reserved (error events)
  */
 #define RS_EVENT_RESERVED       0x0000
@@ -229,6 +230,8 @@ struct {
 #define RS_EVENT_ROUTE_BASE     0x0300
 #define RS_EVENT_MIRROR_BASE    0x0400
 #define RS_EVENT_QOS_BASE       0x0500
+#define RS_EVENT_USER_BASE      0x1000
+#define RS_EVENT_USER_MAX       0x7FFF
 #define RS_EVENT_ERROR_BASE     0xFF00
 
 /* L2Learn Events (0x0100-0x01FF) */

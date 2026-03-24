@@ -47,7 +47,7 @@
 #define BPF_PIN_PATH "/sys/fs/bpf"
 
 /* From rswitch_loader.c */
-#define RS_ABI_VERSION_MAJOR 1
+#define RS_ABI_VERSION_MAJOR 2
 #define RS_ABI_VERSION_MINOR 0
 #define RS_ABI_VERSION ((RS_ABI_VERSION_MAJOR << 16) | RS_ABI_VERSION_MINOR)
 #define RS_ABI_MAJOR(v) ((v) >> 16)

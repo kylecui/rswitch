@@ -40,7 +40,7 @@ RS_DECLARE_MODULE(
     "lastcall",                 // Module name
     RS_HOOK_XDP_INGRESS,        // Hook point (ingress processing)
     90,                         // Stage number (MUST be last in pipeline)
-    0,                          // No special flags (pure forwarding)
+    RS_FLAG_MAY_REDIRECT,
     "Final forwarding decision - unicast or flood"
 );
 

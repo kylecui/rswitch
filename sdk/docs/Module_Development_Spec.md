@@ -134,7 +134,7 @@ Modules execute in order of their stage number. The following ranges are reserve
 | 180–189 | Egress VLAN | egress_vlan (180) |
 | 190–199 | Egress final | egress_final (190) |
 
-**Third-party modules**: Use stages 100–149 (user ingress space) or 200–249 (user egress space).
+**Third-party modules**: Use stages 200–299 (user ingress) or 400–499 (user egress). See `RS_STAGE_USER_INGRESS_MIN`/`MAX` and `RS_STAGE_USER_EGRESS_MIN`/`MAX` in `module_abi.h`.
 
 ### 4.3 Capability Flags
 
@@ -145,6 +145,7 @@ Modules execute in order of their stage number. The following ranges are reserve
 | `RS_FLAG_MODIFIES_PACKET` | Module may modify packet data |
 | `RS_FLAG_MAY_DROP` | Module may drop packets |
 | `RS_FLAG_CREATES_EVENTS` | Module emits events via `rs_event_bus` |
+| `RS_FLAG_MAY_REDIRECT` | Module may redirect packets (`bpf_redirect_map`) |
 
 ### 4.4 Dependencies
 
@@ -218,7 +219,15 @@ RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
 return XDP_DROP;  // Fallthrough if tail-call fails
 ```
 
-### 6.2 Egress Modules
+### 6.2 Egress Dispatch Mechanism
+
+When an ingress module sets `ctx->action = XDP_REDIRECT` and `ctx->egress_ifindex`, the terminal ingress module (`lastcall`) calls `bpf_redirect_map()` to forward the packet to the target interface via a devmap. The devmap has an egress program attached via `BPF_F_DEVMAP_PROG`, which triggers the egress tail-call chain.
+
+The egress pipeline is independent from ingress: it has its own `rs_progs` prog_array entries and its own `rs_prog_chain` linkage. Egress modules are sorted by stage (170, 180, 190 for core; 400–499 for user modules) and chained via `RS_TAIL_CALL_EGRESS`.
+
+**Flow**: Ingress pipeline → `lastcall` → `bpf_redirect_map(devmap)` → devmap egress prog → egress tail-call chain → `egress_final` → transmit.
+
+### 6.3 Egress Modules
 
 Egress modules MUST use the egress-specific chain:
 
@@ -227,11 +236,11 @@ RS_TAIL_CALL_EGRESS(xdp_ctx, ctx);
 return XDP_DROP;  // Fallthrough
 ```
 
-### 6.3 Terminal Modules
+### 6.4 Terminal Modules
 
 Terminal modules (`lastcall`, `egress_final`) do NOT chain. They perform the final action (e.g., `bpf_redirect_map`) and return.
 
-### 6.4 SEC Names
+### 6.5 SEC Names
 
 | Module Type | SEC Annotation |
 |-------------|----------------|
@@ -324,6 +333,7 @@ RS_EMIT_EVENT(&evt, sizeof(evt));
 | `RS_EVENT_ROUTE_BASE + 0x00–0x0F` | Route events |
 | `RS_EVENT_QOS_BASE + 0x00–0x0F` | QoS events |
 | `RS_EVENT_QOS_BASE + 0x10–0x1F` | sFlow events |
+| `RS_EVENT_USER_BASE`–`RS_EVENT_USER_MAX` (`0x1000`–`0x7FFF`) | User module events (third-party) |
 
 ### 8.3 Event Struct Convention
 
@@ -580,7 +590,7 @@ Before submitting a module, verify:
 
 char _license[] SEC("license") = "GPL";
 
-RS_DECLARE_MODULE("my_module", RS_HOOK_XDP_INGRESS, 100,
+RS_DECLARE_MODULE("my_module", RS_HOOK_XDP_INGRESS, 200,
                   RS_FLAG_NEED_L2L3_PARSE,
                   "My custom module description");
 
@@ -659,7 +669,7 @@ int my_module_main(struct xdp_md *xdp_ctx)
 
 char _license[] SEC("license") = "GPL";
 
-RS_DECLARE_MODULE("my_egress", RS_HOOK_XDP_EGRESS, 200,
+RS_DECLARE_MODULE("my_egress", RS_HOOK_XDP_EGRESS, 400,
                   RS_FLAG_MODIFIES_PACKET,
                   "My custom egress module");
 

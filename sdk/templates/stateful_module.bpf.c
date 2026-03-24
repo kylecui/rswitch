@@ -11,9 +11,12 @@
 
 char _license[] SEC("license") = "GPL";
 
-RS_DECLARE_MODULE("stateful_mod", RS_HOOK_XDP_INGRESS, 36,
-                  RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_MAY_DROP,
+RS_DECLARE_MODULE("stateful_mod", RS_HOOK_XDP_INGRESS, 210,
+                  RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_MAY_DROP | RS_FLAG_CREATES_EVENTS,
                   "Stateful module template with private map");
+
+#define MY_EVENT_NEW_FLOW    (RS_EVENT_USER_BASE + 0x01)
+#define MY_EVENT_FLOW_EXPIRE (RS_EVENT_USER_BASE + 0x02)
 
 /* Private map for this module - use LIBBPF_PIN_BY_NAME so the map
  * is pinned to /sys/fs/bpf/ and accessible from user-space tools.

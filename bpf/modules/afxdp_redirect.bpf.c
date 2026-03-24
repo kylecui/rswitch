@@ -23,7 +23,7 @@ RS_DECLARE_MODULE(
 	"afxdp_redirect",
 	RS_HOOK_XDP_INGRESS,
 	85,  /* Stage: after l2learn (80), before lastcall (90) */
-	RS_FLAG_CREATES_EVENTS,
+	RS_FLAG_CREATES_EVENTS | RS_FLAG_MAY_REDIRECT,
 	"AF_XDP redirect for high-priority traffic (foundational)"
 );
 
