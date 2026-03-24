@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # Troubleshooting & Fixes 总结
 
 本文档汇总了我们在开发测试过程中遇到的常见问题、根因与解决办法（面向工程调试使用）。

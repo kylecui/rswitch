@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # rSwitch Documentation
 
 > **Reconfigurable Switch with eBPF/XDP** - Production-ready modular network switching framework

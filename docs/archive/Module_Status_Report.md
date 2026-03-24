@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # Module 状态报告（简要）
 
 本文档列出各模块的当前状态、已完成开发、已验证、已知问题与建议行动。

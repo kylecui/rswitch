@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # rSwitch 模块实现差距分析
 
 **评估日期**: 2024-11-04  

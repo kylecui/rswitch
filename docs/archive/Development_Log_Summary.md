@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # rSwitch - 开发日志与工作总结
 
 本文档汇总了最近一段时间在 rSwitch 项目中完成的开发、设计讨论、问题排查与修复记录，供工程团队回顾与交接使用。

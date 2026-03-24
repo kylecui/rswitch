@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # ACL规则示例详解：阻止HTTPS到恶意站点
 
 ## 示例规则

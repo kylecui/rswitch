@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # BPF Verifier 调优技巧：限制 offset 范围以帮助边界证明
 
 ## 背景问题
