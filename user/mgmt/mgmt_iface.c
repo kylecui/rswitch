@@ -568,7 +568,9 @@ static void *mdns_responder_thread(void *arg)
 	}
 
 	int joined = 0;
-	for (int retry = 0; retry < 30 && g_mdns_running && !joined; retry++) {
+	unsigned int backoff = 1;  /* exponential backoff: 1s -> 2s -> 4s -> ... -> 30s cap */
+
+	while (g_mdns_running && !joined) {
 		if (rs_mgmt_iface_get_ip(&g_mdns_cfg, mgmt_ip, sizeof(mgmt_ip)) == 0 &&
 		    inet_pton(AF_INET, mgmt_ip, &ip_addr) == 1) {
 			mreq.imr_multiaddr.s_addr = inet_addr(MDNS_ADDR);
@@ -578,12 +580,17 @@ static void *mdns_responder_thread(void *arg)
 				RS_LOG_INFO("mDNS: joined multicast on %s", mgmt_ip);
 			}
 		}
-		if (!joined)
-			sleep(1);
+		if (!joined) {
+			RS_LOG_DEBUG("mDNS: waiting for IP / multicast join (retry in %us)", backoff);
+			sleep(backoff);
+			if (backoff < 30)
+				backoff = (backoff * 2 > 30) ? 30 : backoff * 2;
+		}
 	}
 
 	if (!joined) {
-		RS_LOG_ERROR("mDNS: multicast join failed after retries");
+		/* g_mdns_running was cleared — clean shutdown */
+		RS_LOG_INFO("mDNS: shutdown before multicast join completed");
 		close(sock);
 		return NULL;
 	}
