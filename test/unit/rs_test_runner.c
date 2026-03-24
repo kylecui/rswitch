@@ -151,7 +151,8 @@ static int rs_test_read_ctx_map(struct rs_test_ctx *ctx, struct rs_ctx *out_ctx)
 
         *out_ctx = vals[0];
         for (i = 0; i < ncpus; i++) {
-            if (vals[i].parsed || vals[i].ingress_vlan || vals[i].egress_ifindex || vals[i].drop_reason) {
+            if (vals[i].parsed || vals[i].ingress_vlan || vals[i].egress_ifindex ||
+                vals[i].drop_reason || vals[i].action || vals[i].ifindex) {
                 *out_ctx = vals[i];
                 break;
             }
