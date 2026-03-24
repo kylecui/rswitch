@@ -5,6 +5,8 @@
 
 **A production-grade, modular XDP switch with CO-RE compatibility and advanced QoS capabilities**
 
+> 📖 **[中文文档 / Chinese Documentation](docs/zh-CN/README.md)**
+
 rSwitch is a high-performance, programmable network switch built on XDP (eXpress Data Path) and AF_XDP. It features a modular architecture with CO-RE (Compile Once - Run Everywhere) compatibility, enabling seamless deployment across different kernel versions. The system includes a user-space QoS scheduler (VOQd) for fine-grained traffic control and supports comprehensive network features through its extensible module system.
 
 ## ✨ Features
