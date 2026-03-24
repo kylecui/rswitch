@@ -2,6 +2,11 @@
 # Usage: make -f Makefile.module MODULE=my_module
 #
 # Requirements: clang, llvm, libbpf headers
+#
+# Include search order:
+#   1. Local ./include/  (for in-tree SDK development)
+#   2. System /usr/local/include/rswitch/ (if installed via make install-sdk)
+#   3. pkg-config rswitch (if available)
 
 MODULE ?= my_module
 SDK_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
@@ -9,21 +14,26 @@ CLANG ?= clang
 LLC ?= llc
 ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
 
-# Compiler flags for BPF
-BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
-		      -Wall -Werror \
-		      -I$(SDK_DIR)/include \
-		      -D__BPF__
-
-# Detect vmlinux.h
-VMLINUX_H := $(SDK_DIR)/include/vmlinux.h
-ifneq ($(wildcard $(VMLINUX_H)),)
-	BPF_CFLAGS += -I$(SDK_DIR)/include
-else
-	$(warning vmlinux.h not found in SDK. Generate with: bpftool btf dump file /sys/kernel/btf/vmlinux format c > $(VMLINUX_H))
+# Try pkg-config first, fall back to SDK_DIR layout
+RSWITCH_CFLAGS := $(shell pkg-config --cflags rswitch 2>/dev/null)
+ifeq ($(RSWITCH_CFLAGS),)
+	RSWITCH_CFLAGS := -I$(SDK_DIR)/include
 endif
 
-# Module source
+BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) \
+		      -Wall -Werror \
+		      $(RSWITCH_CFLAGS) \
+		      -D__BPF__
+
+# Detect vmlinux.h (check SDK dir, then system install)
+VMLINUX_H := $(SDK_DIR)/include/vmlinux.h
+VMLINUX_H_SYS := /usr/local/include/rswitch/vmlinux.h
+ifeq ($(wildcard $(VMLINUX_H)),)
+  ifeq ($(wildcard $(VMLINUX_H_SYS)),)
+	$(warning vmlinux.h not found. Generate with: bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h)
+  endif
+endif
+
 MODULE_SRC := $(MODULE).bpf.c
 MODULE_OBJ := $(MODULE).bpf.o
 
@@ -42,7 +52,6 @@ install: $(MODULE_OBJ)
 	@echo "Installing module to /usr/local/lib/rswitch/modules/"
 	install -D -m 644 $(MODULE_OBJ) /usr/local/lib/rswitch/modules/$(MODULE_OBJ)
 
-# Verify module metadata
 verify: $(MODULE_OBJ)
 	@echo "Module metadata:"
 	@llvm-readelf -x .rodata.mod $(MODULE_OBJ) 2>/dev/null || echo "(no metadata section found)"

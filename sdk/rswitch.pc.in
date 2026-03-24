@@ -1,0 +1,9 @@
+prefix=@PREFIX@
+includedir=${prefix}/include/rswitch
+datarootdir=${prefix}/share
+datadir=${datarootdir}/rswitch
+
+Name: rswitch
+Description: rSwitch XDP/eBPF reconfigurable switch SDK
+Version: @VERSION@
+Cflags: -I${includedir}

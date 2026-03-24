@@ -8,8 +8,7 @@
  * Build: make -f Makefile.module MODULE=my_module
  */
 
-#include "../include/rswitch_common.h"
-#include "../include/module_abi.h"
+#include "rswitch_module.h"
 
 char _license[] SEC("license") = "GPL";
 

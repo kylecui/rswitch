@@ -6,8 +6,7 @@
  * They process packets just before transmission on the output interface.
  */
 
-#include "../include/rswitch_common.h"
-#include "../include/module_abi.h"
+#include "rswitch_module.h"
 
 char _license[] SEC("license") = "GPL";
 

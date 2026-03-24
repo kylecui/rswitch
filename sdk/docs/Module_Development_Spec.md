@@ -690,4 +690,13 @@ int my_egress_main(struct xdp_md *xdp_ctx)
 
 ---
 
+## 16. References
+
+- [ABI Stability Policy](../../docs/development/ABI_POLICY.md) — Version semantics, stability tier guarantees, struct layout rules, deprecation process
+- [Map Pinning Convention](../../docs/development/MAP_PINNING.md) — BPF map pin path standards
+- [SDK Quick Start](SDK_Quick_Start.md) — Getting started tutorial
+- [API Reference](../../docs/development/API_Reference.md) — Complete API documentation
+
+---
+
 *This specification supersedes the conventions described in `SDK_Quick_Start.md`. When in conflict, this document takes precedence.*

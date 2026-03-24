@@ -623,28 +623,56 @@ uninstall:
 	@rm -rf $(INSTALL_PREFIX)
 	@echo "✓ Uninstalled"
 
+SDK_PREFIX ?= /usr/local
+SDK_INCLUDEDIR = $(SDK_PREFIX)/include/rswitch
+SDK_PKGCONFIGDIR = $(SDK_PREFIX)/lib/pkgconfig
+SDK_DATADIR = $(SDK_PREFIX)/share/rswitch
+RSWITCH_VERSION ?= 2.0.0
+
 install-sdk:
-	@echo "Generating rSwitch SDK..."
-	@mkdir -p sdk/include
-	@cp bpf/include/rswitch_bpf.h sdk/include/
-	@cp bpf/include/rswitch_common.h sdk/include/
-	@cp bpf/core/module_abi.h sdk/include/
-	@cp bpf/core/uapi.h sdk/include/
-	@cp bpf/core/map_defs.h sdk/include/
-	@if [ -f bpf/include/vmlinux.h ]; then cp bpf/include/vmlinux.h sdk/include/; fi
-	@echo "SDK generated in sdk/"
-	@echo "  Headers: sdk/include/"
-	@echo "  Templates: sdk/templates/"
-	@echo "  Build: make -f sdk/Makefile.module MODULE=your_module"
+	@echo "Installing rSwitch SDK to $(SDK_PREFIX) ..."
+	@install -d $(SDK_INCLUDEDIR)
+	@install -m 644 sdk/include/rswitch_module.h   $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_abi.h      $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_helpers.h   $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_maps.h     $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_common.h   $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_bpf.h      $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_parsing.h  $(SDK_INCLUDEDIR)/ 2>/dev/null || true
+	@install -m 644 sdk/include/module_abi.h       $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/uapi.h             $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/map_defs.h         $(SDK_INCLUDEDIR)/
+	@if [ -f bpf/include/vmlinux.h ]; then install -m 644 bpf/include/vmlinux.h $(SDK_INCLUDEDIR)/; fi
+	@install -d $(SDK_PKGCONFIGDIR)
+	@sed -e 's|@PREFIX@|$(SDK_PREFIX)|g' -e 's|@VERSION@|$(RSWITCH_VERSION)|g' \
+		sdk/rswitch.pc.in > $(SDK_PKGCONFIGDIR)/rswitch.pc
+	@install -d $(SDK_DATADIR)/templates
+	@install -m 644 sdk/templates/*.bpf.c $(SDK_DATADIR)/templates/
+	@install -m 644 sdk/Makefile.module   $(SDK_DATADIR)/
+	@echo "SDK installed to $(SDK_PREFIX)"
+	@echo "  Headers:    $(SDK_INCLUDEDIR)/"
+	@echo "  pkg-config: $(SDK_PKGCONFIGDIR)/rswitch.pc"
+	@echo "  Templates:  $(SDK_DATADIR)/templates/"
+	@echo "  Build:      cp $(SDK_DATADIR)/templates/simple_module.bpf.c my_module.bpf.c"
+	@echo "              make -f $(SDK_DATADIR)/Makefile.module MODULE=my_module"
+
+uninstall-sdk:
+	@echo "Uninstalling rSwitch SDK from $(SDK_PREFIX) ..."
+	@rm -rf $(SDK_INCLUDEDIR)
+	@rm -f  $(SDK_PKGCONFIGDIR)/rswitch.pc
+	@rm -rf $(SDK_DATADIR)
+	@echo "SDK uninstalled"
 
 help:
 	@echo "rSwitch Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all      - Build loader and all BPF modules (default)"
-	@echo "  vmlinux  - Generate vmlinux.h for CO-RE"
-	@echo "  clean    - Remove build artifacts"
-	@echo "  help     - Show this help"
+	@echo "  all            - Build loader and all BPF modules (default)"
+	@echo "  vmlinux        - Generate vmlinux.h for CO-RE"
+	@echo "  install-sdk    - Install SDK headers and templates to $(SDK_PREFIX)"
+	@echo "  uninstall-sdk  - Remove installed SDK files"
+	@echo "  clean          - Remove build artifacts"
+	@echo "  help           - Show this help"
 	@echo ""
 	@echo "Directory structure:"
 	@echo "  $(CORE_DIR)/       - Core BPF programs (dispatcher, egress)"

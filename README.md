@@ -448,6 +448,8 @@ RS_EMIT_EVENT(&evt, sizeof(evt));
 - **[Architecture](docs/development/Architecture.md)** — Dual-pipeline architecture deep-dive
 - **[Module Developer Guide](docs/development/Module_Developer_Guide.md)** — Complete module authoring guide
 - **[API Reference](docs/development/API_Reference.md)** — Macros, structs, maps, helpers, flags
+- **[ABI Stability Policy](docs/development/ABI_POLICY.md)** — Version semantics, stability tiers, deprecation rules
+- **[Map Pinning Convention](docs/development/MAP_PINNING.md)** — BPF map pin path standards
 - **[CO-RE Guide](docs/development/CO-RE_Guide.md)** — Cross-kernel portability guide
 - **[Contributing](docs/development/Contributing.md)** — Contribution workflow and standards
 
