@@ -32,7 +32,7 @@ char _license[] SEC("license") = "GPL";
 
 /* Module metadata */
 RS_DECLARE_MODULE("route", RS_HOOK_XDP_INGRESS, 50,
-                  RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_MODIFIES_PACKET,
+                  RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_MODIFIES_PACKET | RS_FLAG_MAY_REDIRECT,
                   "IPv4 LPM routing");
 
 //

@@ -44,7 +44,7 @@
 extern int profile_load_with_inheritance(const char *path, struct rs_profile *profile) __attribute__((weak));
 
 /* Copy necessary structure definitions (user-space safe versions) */
-#define RS_ABI_VERSION_MAJOR 1
+#define RS_ABI_VERSION_MAJOR 2
 #define RS_ABI_VERSION_MINOR 0
 #define RS_ABI_VERSION ((RS_ABI_VERSION_MAJOR << 16) | RS_ABI_VERSION_MINOR)
 #define RS_ABI_VERSION_1 1
@@ -52,6 +52,10 @@ extern int profile_load_with_inheritance(const char *path, struct rs_profile *pr
 #define RS_ABI_MINOR(v) ((v) & 0xFFFF)
 #define RS_HOOK_XDP_INGRESS 0
 #define RS_HOOK_XDP_EGRESS 1
+#define RS_STAGE_USER_INGRESS_MIN 200
+#define RS_STAGE_USER_INGRESS_MAX 299
+#define RS_STAGE_USER_EGRESS_MIN  400
+#define RS_STAGE_USER_EGRESS_MAX  499
 #define RS_MAX_DEPS 4
 #define RS_DEP_NAME_LEN 32
 
@@ -468,15 +472,19 @@ static int evaluate_module_condition(const char *condition,
 static int validate_stage_for_hook(const char *module_name, __u32 hook, int stage)
 {
     if (hook == RS_HOOK_XDP_INGRESS) {
-        if (stage < 10 || stage > 99) {
-            RS_LOG_ERROR("Invalid ingress stage %d for module %s (valid range: 10-99)",
-                         stage, module_name);
+        if (!((stage >= 10 && stage <= 99) ||
+              (stage >= RS_STAGE_USER_INGRESS_MIN && stage <= RS_STAGE_USER_INGRESS_MAX))) {
+            RS_LOG_ERROR("Invalid ingress stage %d for module %s (valid: 10-99, %d-%d)",
+                         stage, module_name,
+                         RS_STAGE_USER_INGRESS_MIN, RS_STAGE_USER_INGRESS_MAX);
             return -1;
         }
     } else if (hook == RS_HOOK_XDP_EGRESS) {
-        if (stage < 100 || stage > 199) {
-            RS_LOG_ERROR("Invalid egress stage %d for module %s (valid range: 100-199)",
-                         stage, module_name);
+        if (!((stage >= 100 && stage <= 199) ||
+              (stage >= RS_STAGE_USER_EGRESS_MIN && stage <= RS_STAGE_USER_EGRESS_MAX))) {
+            RS_LOG_ERROR("Invalid egress stage %d for module %s (valid: 100-199, %d-%d)",
+                         stage, module_name,
+                         RS_STAGE_USER_EGRESS_MIN, RS_STAGE_USER_EGRESS_MAX);
             return -1;
         }
     }

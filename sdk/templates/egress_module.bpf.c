@@ -6,16 +6,15 @@
  * They process packets just before transmission on the output interface.
  */
 
-#include "../include/rswitch_common.h"
-#include "../include/module_abi.h"
+#include "rswitch_module.h"
 
 char _license[] SEC("license") = "GPL";
 
-RS_DECLARE_MODULE("egress_mod", RS_HOOK_XDP_EGRESS, 160,
+RS_DECLARE_MODULE("egress_mod", RS_HOOK_XDP_EGRESS, 400,
                   RS_FLAG_MODIFIES_PACKET,
                   "Egress module template");
 
-SEC("xdp")
+SEC("xdp/devmap")
 int egress_module_func(struct xdp_md *xdp_ctx)
 {
     struct rs_ctx *ctx = RS_GET_CTX();

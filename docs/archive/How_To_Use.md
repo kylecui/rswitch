@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # How To Use rSwitch (Production)
 
 This document demonstrates typical usage patterns and commands derived from the

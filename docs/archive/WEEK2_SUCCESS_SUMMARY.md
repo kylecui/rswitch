@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # Week 2: Deployment & Testing - SUCCESS! ✅
 
 **Date**: November 4, 2025  

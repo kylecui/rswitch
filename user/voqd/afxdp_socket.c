@@ -73,21 +73,14 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 		return -ENODEV;
 	}
 	
-	/* Try to open xsks_map from BPF filesystem */
-	xsks_map_fd = bpf_obj_get("/sys/fs/bpf/rswitch/xsks_map");
+	/* Open xsks_map from standard rSwitch BPF pin path */
+	xsks_map_fd = bpf_obj_get("/sys/fs/bpf/xsks_map");
 	if (xsks_map_fd < 0) {
-		/* Try without rswitch subdirectory */
-		xsks_map_fd = bpf_obj_get("/sys/fs/bpf/xsks_map");
-		if (xsks_map_fd >= 0) {
-			printf("Opened xsks_map from /sys/fs/bpf/xsks_map (fd=%d)\n", xsks_map_fd);
-		}
-	} else {
-		printf("Opened xsks_map from /sys/fs/bpf/rswitch/xsks_map (fd=%d)\n", xsks_map_fd);
-	}
-	
-	if (xsks_map_fd < 0) {
-		RS_LOG_WARN("Could not open xsks_map: %s (errno=%d)",
+		RS_LOG_WARN("Could not open xsks_map at /sys/fs/bpf/xsks_map: %s (errno=%d). "
+		            "Ensure afxdp_redirect module is loaded and xsks_map is pinned.",
 		            strerror(errno), errno);
+	} else {
+		RS_LOG_INFO("Opened xsks_map fd=%d", xsks_map_fd);
 	}
 	
 	/* Calculate UMEM size */
@@ -192,22 +185,40 @@ int xsk_socket_create(struct xsk_socket **xsk_out, const char *ifname,
 		close(xsks_map_fd);
 	}
 	
-	/* Fill the fill ring with all available frames */
+	/* Initialize stack-based free frame pool */
+	xsk->free_stack_cap = num_frames;
+	xsk->free_frame_stack = calloc(num_frames, sizeof(uint64_t));
+	if (!xsk->free_frame_stack) {
+		RS_LOG_ERROR("Failed to allocate free frame stack");
+		xsk_socket__delete(xsk_sock);
+		xsk_umem__delete(umem);
+		munmap(umem_area, umem_size);
+		free(xsk);
+		return -ENOMEM;
+	}
+	
+	/* Split frames: RX half to fill ring, TX half to free stack */
+	uint32_t rx_frames = num_frames / 2;
+	uint32_t tx_frames = num_frames - rx_frames;
+	
+	/* Fill the fill ring with RX frames */
 	uint32_t fill_idx = 0;
-	uint32_t fill_reserved = xsk_ring_prod__reserve(&xsk->fill_ring, num_frames, &fill_idx);
+	uint32_t fill_reserved = xsk_ring_prod__reserve(&xsk->fill_ring, rx_frames, &fill_idx);
 	if (fill_reserved > 0) {
 		for (uint32_t i = 0; i < fill_reserved; i++) {
-			uint64_t frame_addr = (i * frame_size);
-			*xsk_ring_prod__fill_addr(&xsk->fill_ring, fill_idx + i) = frame_addr;
+			*xsk_ring_prod__fill_addr(&xsk->fill_ring, fill_idx + i) = i * frame_size;
 		}
 		xsk_ring_prod__submit(&xsk->fill_ring, fill_reserved);
 	}
 	
-	/* Initialize free frame tracking */
-	xsk->next_free_frame = 0;
+	/* Pre-populate free stack with TX frames */
+	xsk->free_stack_size = 0;
+	for (uint32_t i = 0; i < tx_frames; i++) {
+		xsk->free_frame_stack[xsk->free_stack_size++] = (rx_frames + i) * frame_size;
+	}
 	
-	printf("Created AF_XDP socket: %s queue %u (frames=%u, fill_reserved=%u)\n",
-	       ifname, queue_id, num_frames, fill_reserved);
+	printf("Created AF_XDP socket: %s queue %u (frames=%u, fill=%u, free_stack=%u)\n",
+	       ifname, queue_id, num_frames, fill_reserved, xsk->free_stack_size);
 	
 	*xsk_out = xsk;
 	
@@ -232,6 +243,9 @@ void xsk_socket_destroy(struct xsk_socket *xsk)
 	/* Unmap UMEM area */
 	if (xsk->umem_area)
 		munmap(xsk->umem_area, xsk->umem_size);
+	
+	/* Free frame pool stack */
+	free(xsk->free_frame_stack);
 	
 	/* Free our custom structure */
 	free(xsk);
@@ -296,8 +310,11 @@ int xsk_socket_tx_batch(struct xsk_socket *xsk, uint64_t *frames,
 	
 	/* Wake up kernel if needed */
 	if (xsk_ring_prod__needs_wakeup(&xsk->tx_ring)) {
-		/* Note: libxdp handles this internally, but we might need to sendto() */
-		/* For now, assume libxdp handles wakeups */
+		if (sendto(xsk->xsk_fd, NULL, 0, MSG_DONTWAIT, NULL, 0) < 0 &&
+		    errno != ENOBUFS && errno != EAGAIN && errno != EBUSY &&
+		    errno != ENETDOWN) {
+			RS_LOG_WARN("AF_XDP TX wakeup failed: %s", strerror(errno));
+		}
 	}
 	
 	return reserved;
@@ -305,8 +322,23 @@ int xsk_socket_tx_batch(struct xsk_socket *xsk, uint64_t *frames,
 
 int xsk_socket_fill_ring(struct xsk_socket *xsk, uint32_t num_frames)
 {
-	/* Stub - requires proper Fill ring implementation with libxdp */
-	return 0;
+	if (!xsk || num_frames == 0)
+		return 0;
+	
+	if (num_frames > xsk->free_stack_size)
+		num_frames = xsk->free_stack_size;
+	
+	uint32_t fill_idx = 0;
+	uint32_t reserved = xsk_ring_prod__reserve(&xsk->fill_ring, num_frames, &fill_idx);
+	
+	for (uint32_t i = 0; i < reserved; i++) {
+		uint64_t addr = xsk->free_frame_stack[--xsk->free_stack_size];
+		*xsk_ring_prod__fill_addr(&xsk->fill_ring, fill_idx + i) = addr;
+	}
+	
+	xsk_ring_prod__submit(&xsk->fill_ring, reserved);
+	
+	return reserved;
 }
 
 int xsk_socket_complete_tx(struct xsk_socket *xsk)
@@ -314,16 +346,16 @@ int xsk_socket_complete_tx(struct xsk_socket *xsk)
 	if (!xsk)
 		return -EINVAL;
 	
-	/* Peek completed transmissions */
 	uint32_t comp_idx = 0;
 	uint32_t completed = xsk_ring_cons__peek(&xsk->comp_ring, xsk->comp_size, &comp_idx);
 	
 	if (completed == 0)
 		return 0;
 	
-	/* Process completed frames - they can be reused */
-	/* Note: In a full implementation, we'd return frames to a free pool */
-	/* For now, we just acknowledge completion */
+	for (uint32_t i = 0; i < completed; i++) {
+		uint64_t addr = *xsk_ring_cons__comp_addr(&xsk->comp_ring, comp_idx + i);
+		xsk_free_frame(xsk, addr);
+	}
 	
 	xsk_ring_cons__release(&xsk->comp_ring, completed);
 	
@@ -351,28 +383,22 @@ uint64_t xsk_alloc_frame(struct xsk_socket *xsk)
 	if (!xsk)
 		return 0;
 	
-	/* Simple frame allocation - just return next available frame */
-	if (xsk->next_free_frame >= xsk->num_frames)
-		return 0;  /* No free frames */
+	if (xsk->free_stack_size > 0) {
+		xsk->free_stack_size--;
+		return xsk->free_frame_stack[xsk->free_stack_size];
+	}
 	
-	uint64_t frame_addr = xsk->next_free_frame * xsk->frame_size;
-	xsk->next_free_frame++;
-	
-	return frame_addr;
+	return 0;
 }
 
 void xsk_free_frame(struct xsk_socket *xsk, uint64_t frame_addr)
 {
-	/* In a full implementation, we'd maintain a free list */
-	/* For now, frames are freed by returning them to the fill ring */
-	if (xsk && frame_addr != 0) {
-		/* Add frame back to fill ring for reuse */
-		uint32_t fill_idx = 0;
-		uint32_t reserved = xsk_ring_prod__reserve(&xsk->fill_ring, 1, &fill_idx);
-		if (reserved > 0) {
-			*xsk_ring_prod__fill_addr(&xsk->fill_ring, fill_idx) = frame_addr;
-			xsk_ring_prod__submit(&xsk->fill_ring, 1);
-		}
+	if (!xsk || frame_addr == 0)
+		return;
+	
+	if (xsk->free_stack_size < xsk->free_stack_cap) {
+		xsk->free_frame_stack[xsk->free_stack_size] = frame_addr;
+		xsk->free_stack_size++;
 	}
 }
 

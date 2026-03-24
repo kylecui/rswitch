@@ -1,0 +1,44 @@
+# rSwitch code style — matches existing 4-space K&R conventions
+# Run: clang-format -i <file>
+
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+# Brace style: K&R (Linux kernel style)
+BreakBeforeBraces: Linux
+
+# Function formatting
+AllowShortFunctionsOnASingleLine: None
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+
+# Alignment
+AlignConsecutiveMacros: Consecutive
+AlignConsecutiveDeclarations: false
+AlignEscapedNewlines: Left
+AlignTrailingComments: true
+
+# Pointer alignment: int *ptr (not int* ptr)
+PointerAlignment: Right
+DerivePointerAlignment: false
+
+# Spaces
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+SpacesInParentheses: false
+
+# Include sorting
+SortIncludes: CaseInsensitive
+IncludeBlocks: Preserve
+
+# Preprocessor
+IndentPPDirectives: None
+
+# Penalty tuning (prefer breaking args over breaking function name)
+PenaltyBreakBeforeFirstCallParameter: 200
+PenaltyReturnTypeOnItsOwnLine: 60

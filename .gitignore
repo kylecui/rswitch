@@ -21,6 +21,7 @@ __pycache__/
 # Temporary files
 *.tmp
 *.log
+*.bak
 
 # User-specific configs
 *.local

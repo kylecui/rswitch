@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # Scenario-based Profiles
 
 Profiles live under `rswitch/etc/profiles/`. Profiles are YAML files that describe

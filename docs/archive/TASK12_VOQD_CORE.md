@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # Phase 3, Task 12: VOQd Core Implementation
 
 **Status**: ✅ Complete  

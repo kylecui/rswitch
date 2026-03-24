@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # 未完成任务与建议（Outstanding Tasks & Recommendations）
 
 这是当前存量工作、问题以及可行的下一步建议，便于团队规划后续工作。

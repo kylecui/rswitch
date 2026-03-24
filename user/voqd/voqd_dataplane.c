@@ -470,6 +470,10 @@ int voqd_dataplane_rx_process(struct voqd_dataplane *dp, uint32_t port_idx)
 	dp->rx_batch_sum += rcvd;
 	dp->rx_batch_count++;
 	
+	/* Refill the fill ring so kernel can deliver more RX packets */
+	if (rcvd > 0)
+		xsk_socket_fill_ring(xsk, rcvd);
+	
 	return rcvd;
 }
 

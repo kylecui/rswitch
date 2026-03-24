@@ -82,7 +82,7 @@ CORE_OBJS = $(patsubst $(CORE_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(CORE_
 MODULE_OBJS = $(patsubst $(MODULES_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(MODULES_DIR)/*.bpf.c))
 ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS)
 
-.PHONY: all clean dirs vmlinux help test test-bpf fuzz integration-test benchmark gen-docs
+.PHONY: all clean dirs vmlinux help test test-bpf test-ci fuzz integration-test benchmark gen-docs
 
 all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSFLOWCTL) $(RSNATCTL) $(RSVOQCTL) $(RSTUNNELCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(SFLOW_EXPORT) $(PROMETHEUS_EXPORTER) $(WATCHDOG) $(CONTROLLER) $(AGENT) $(SNMPAGENT) $(MGMTD) $(ALL_BPF_OBJS)
 	@echo "✓ Build complete"
@@ -436,10 +436,14 @@ $(AFXDP_TEST): $(USER_DIR)/afxdp/afxdp_socket.c $(USER_DIR)/afxdp/afxdp_test.c $
 
 # Test targets
 TEST_DIR = ./test/unit
+TEST_CI_DIR = ./test/ci
 TEST_DISPATCHER = $(BUILD_DIR)/test_dispatcher
 TEST_ACL = $(BUILD_DIR)/test_acl
 TEST_VLAN = $(BUILD_DIR)/test_vlan
 TEST_ACL_BPF = $(BUILD_DIR)/test_acl_bpf
+TEST_DISPATCHER_BPF = $(BUILD_DIR)/test_dispatcher_bpf
+TEST_VLAN_BPF = $(BUILD_DIR)/test_vlan_bpf
+TEST_ROUTE_BPF = $(BUILD_DIR)/test_route_bpf
 TEST_STP = $(BUILD_DIR)/test_stp
 TEST_RATE_LIMITER = $(BUILD_DIR)/test_rate_limiter
 TEST_SOURCE_GUARD = $(BUILD_DIR)/test_source_guard
@@ -473,6 +477,24 @@ $(TEST_ACL_BPF): $(TEST_DIR)/test_acl_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LO
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $(TEST_DIR)/test_acl_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_DISPATCHER_BPF): $(TEST_CI_DIR)/test_dispatcher_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $(TEST_CI_DIR)/test_dispatcher_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_VLAN_BPF): $(TEST_CI_DIR)/test_vlan_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $(TEST_CI_DIR)/test_vlan_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+$(TEST_ROUTE_BPF): $(TEST_CI_DIR)/test_route_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
+		-o $@ $(TEST_CI_DIR)/test_route_bpf.c $(TEST_DIR)/rs_test_runner.c $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
 $(FUZZ_MODULES): test/fuzz/fuzz_modules.c $(RS_LOG_OBJ)
 	@echo "  CC [FUZZ] $@"
@@ -532,9 +554,18 @@ test: $(TEST_DISPATCHER) $(TEST_ACL) $(TEST_VLAN) $(TEST_STP) $(TEST_RATE_LIMITE
 	@echo "✓ Test binaries built"
 	@echo "  Run: sudo ./test/unit/run_tests.sh"
 
-test-bpf: $(TEST_ACL_BPF)
-	@echo "Running BPF_PROG_RUN ACL test harness (requires root)"
+test-bpf: $(TEST_ACL_BPF) $(TEST_DISPATCHER_BPF) $(TEST_VLAN_BPF) $(TEST_ROUTE_BPF)
+	@echo "Running BPF_PROG_RUN test harnesses (requires root)"
 	@sudo ./build/test_acl_bpf ./build/bpf/acl.bpf.o ./build/test_acl_bpf.junit.xml
+	@sudo ./build/test_dispatcher_bpf ./build/bpf/dispatcher.bpf.o ./build/test_dispatcher_bpf.junit.xml
+	@sudo ./build/test_vlan_bpf ./build/bpf/vlan.bpf.o ./build/test_vlan_bpf.junit.xml
+	@sudo ./build/test_route_bpf ./build/bpf/route.bpf.o ./build/test_route_bpf.junit.xml
+
+test-ci: $(TEST_DISPATCHER_BPF) $(TEST_VLAN_BPF) $(TEST_ROUTE_BPF)
+	@echo "✓ CI BPF test binaries built"
+	@echo "  Run: sudo ./build/test_dispatcher_bpf ./build/bpf/dispatcher.bpf.o out.xml"
+	@echo "  Run: sudo ./build/test_vlan_bpf ./build/bpf/vlan.bpf.o out.xml"
+	@echo "  Run: sudo ./build/test_route_bpf ./build/bpf/route.bpf.o out.xml"
 
 fuzz: $(FUZZ_MODULES)
 	@echo "Running module fuzz harness (requires root)"
@@ -623,28 +654,56 @@ uninstall:
 	@rm -rf $(INSTALL_PREFIX)
 	@echo "✓ Uninstalled"
 
+SDK_PREFIX ?= /usr/local
+SDK_INCLUDEDIR = $(SDK_PREFIX)/include/rswitch
+SDK_PKGCONFIGDIR = $(SDK_PREFIX)/lib/pkgconfig
+SDK_DATADIR = $(SDK_PREFIX)/share/rswitch
+RSWITCH_VERSION ?= 2.0.0
+
 install-sdk:
-	@echo "Generating rSwitch SDK..."
-	@mkdir -p sdk/include
-	@cp bpf/include/rswitch_bpf.h sdk/include/
-	@cp bpf/include/rswitch_common.h sdk/include/
-	@cp bpf/core/module_abi.h sdk/include/
-	@cp bpf/core/uapi.h sdk/include/
-	@cp bpf/core/map_defs.h sdk/include/
-	@if [ -f bpf/include/vmlinux.h ]; then cp bpf/include/vmlinux.h sdk/include/; fi
-	@echo "SDK generated in sdk/"
-	@echo "  Headers: sdk/include/"
-	@echo "  Templates: sdk/templates/"
-	@echo "  Build: make -f sdk/Makefile.module MODULE=your_module"
+	@echo "Installing rSwitch SDK to $(SDK_PREFIX) ..."
+	@install -d $(SDK_INCLUDEDIR)
+	@install -m 644 sdk/include/rswitch_module.h   $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_abi.h      $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_helpers.h   $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_maps.h     $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_common.h   $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_bpf.h      $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_parsing.h  $(SDK_INCLUDEDIR)/ 2>/dev/null || true
+	@install -m 644 sdk/include/module_abi.h       $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/uapi.h             $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/map_defs.h         $(SDK_INCLUDEDIR)/
+	@if [ -f bpf/include/vmlinux.h ]; then install -m 644 bpf/include/vmlinux.h $(SDK_INCLUDEDIR)/; fi
+	@install -d $(SDK_PKGCONFIGDIR)
+	@sed -e 's|@PREFIX@|$(SDK_PREFIX)|g' -e 's|@VERSION@|$(RSWITCH_VERSION)|g' \
+		sdk/rswitch.pc.in > $(SDK_PKGCONFIGDIR)/rswitch.pc
+	@install -d $(SDK_DATADIR)/templates
+	@install -m 644 sdk/templates/*.bpf.c $(SDK_DATADIR)/templates/
+	@install -m 644 sdk/Makefile.module   $(SDK_DATADIR)/
+	@echo "SDK installed to $(SDK_PREFIX)"
+	@echo "  Headers:    $(SDK_INCLUDEDIR)/"
+	@echo "  pkg-config: $(SDK_PKGCONFIGDIR)/rswitch.pc"
+	@echo "  Templates:  $(SDK_DATADIR)/templates/"
+	@echo "  Build:      cp $(SDK_DATADIR)/templates/simple_module.bpf.c my_module.bpf.c"
+	@echo "              make -f $(SDK_DATADIR)/Makefile.module MODULE=my_module"
+
+uninstall-sdk:
+	@echo "Uninstalling rSwitch SDK from $(SDK_PREFIX) ..."
+	@rm -rf $(SDK_INCLUDEDIR)
+	@rm -f  $(SDK_PKGCONFIGDIR)/rswitch.pc
+	@rm -rf $(SDK_DATADIR)
+	@echo "SDK uninstalled"
 
 help:
 	@echo "rSwitch Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all      - Build loader and all BPF modules (default)"
-	@echo "  vmlinux  - Generate vmlinux.h for CO-RE"
-	@echo "  clean    - Remove build artifacts"
-	@echo "  help     - Show this help"
+	@echo "  all            - Build loader and all BPF modules (default)"
+	@echo "  vmlinux        - Generate vmlinux.h for CO-RE"
+	@echo "  install-sdk    - Install SDK headers and templates to $(SDK_PREFIX)"
+	@echo "  uninstall-sdk  - Remove installed SDK files"
+	@echo "  clean          - Remove build artifacts"
+	@echo "  help           - Show this help"
 	@echo ""
 	@echo "Directory structure:"
 	@echo "  $(CORE_DIR)/       - Core BPF programs (dispatcher, egress)"

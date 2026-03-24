@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # rSwitch Migration Guide - 从 PoC 到生产环境
 
 **版本**: v1.0-alpha  

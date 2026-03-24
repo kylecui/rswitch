@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # Week 2 已知问题和解决方案
 
 ## 问题 1: BPF_MAP_TYPE_PROG_ARRAY 验证器错误（已解决）

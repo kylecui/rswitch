@@ -15,7 +15,7 @@ RS_DECLARE_MODULE(
     "mirror",
     RS_HOOK_XDP_INGRESS,
     45,
-    RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_CREATES_EVENTS,
+    RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_CREATES_EVENTS | RS_FLAG_MAY_REDIRECT,
     "Port mirroring (SPAN) with advanced filtering"
 );
 

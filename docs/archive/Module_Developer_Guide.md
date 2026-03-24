@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # Module Developer Guide
 
 This guide shows how to author a BPF module, compile, test and include it into

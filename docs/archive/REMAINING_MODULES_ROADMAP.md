@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # rSwitch 剩余模块开发路线图
 
 > **当前版本**: v1.1-dev  

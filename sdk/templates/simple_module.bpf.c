@@ -8,8 +8,7 @@
  * Build: make -f Makefile.module MODULE=my_module
  */
 
-#include "../include/rswitch_common.h"
-#include "../include/module_abi.h"
+#include "rswitch_module.h"
 
 char _license[] SEC("license") = "GPL";
 
@@ -21,8 +20,12 @@ char _license[] SEC("license") = "GPL";
  *   Description: Brief description of what this module does
  *
  * See module_abi.h for stage conventions and available flags.
+ *
+ * Stage ranges:
+ *   Core ingress: 10-99    Core egress: 100-199
+ *   User ingress: 200-299  User egress: 400-499
  */
-RS_DECLARE_MODULE("my_module", RS_HOOK_XDP_INGRESS, 35,
+RS_DECLARE_MODULE("my_module", RS_HOOK_XDP_INGRESS, 200,
                   RS_FLAG_NEED_L2L3_PARSE,
                   "Template module - replace with your description");
 
@@ -33,10 +36,17 @@ RS_DECLARE_MODULE("my_module", RS_HOOK_XDP_INGRESS, 35,
 SEC("xdp")
 int my_module_func(struct xdp_md *xdp_ctx)
 {
-    /* Get the rSwitch context (passed between modules via per-CPU map) */
+    /*
+     * Graceful degradation: if pipeline is not active (module loaded
+     * standalone or pipeline not yet initialized), pass traffic through
+     * instead of dropping. See docs/development/DEGRADATION.md.
+     */
+    if (!RS_IS_PIPELINE_ACTIVE())
+        return XDP_PASS;
+
     struct rs_ctx *ctx = RS_GET_CTX();
     if (!ctx)
-        return XDP_DROP;
+        return XDP_PASS;
 
     /* Access parsed headers from ctx->layers:
      *   ctx->layers.l2_offset   - Ethernet header offset

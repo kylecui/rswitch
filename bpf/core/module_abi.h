@@ -22,11 +22,12 @@
 
 #define RS_DEPRECATED(msg) __attribute__((deprecated(msg)))
 
-#define RS_ABI_VERSION_MAJOR 1
+#define RS_ABI_VERSION_MAJOR 2
 #define RS_ABI_VERSION_MINOR 0
 #define RS_ABI_VERSION ((RS_ABI_VERSION_MAJOR << 16) | RS_ABI_VERSION_MINOR)
 
-#define RS_ABI_VERSION_1 RS_ABI_VERSION
+#define RS_ABI_VERSION_1 ((1u << 16) | 0)  /* Historical: ABI v1.0 */
+#define RS_ABI_VERSION_2 RS_ABI_VERSION     /* Current: ABI v2.0 */
 
 #define RS_ABI_MAJOR(v) ((v) >> 16)
 #define RS_ABI_MINOR(v) ((v) & 0xFFFF)
@@ -45,6 +46,7 @@ enum rs_hook_point {
 #define RS_FLAG_MODIFIES_PACKET    (1u << 3)  /* RS_API_STABLE: May modify packet data */
 #define RS_FLAG_MAY_DROP           (1u << 4)  /* RS_API_STABLE: May drop packets */
 #define RS_FLAG_CREATES_EVENTS     (1u << 5)  /* RS_API_STABLE: Generates ringbuf events */
+#define RS_FLAG_MAY_REDIRECT       (1u << 6)  /* RS_API_STABLE: May redirect packets */
 
 /* Module descriptor - embedded in .rodata.mod section
  * 
@@ -190,5 +192,11 @@ RS_API_EXPERIMENTAL struct rs_module_deps {
 #define RS_STAGE_MIRROR         70
 #define RS_STAGE_LEARN          80
 #define RS_STAGE_LASTCALL       90
+
+/* User module stage ranges (external modules MUST use these) */
+#define RS_STAGE_USER_INGRESS_MIN  200
+#define RS_STAGE_USER_INGRESS_MAX  299
+#define RS_STAGE_USER_EGRESS_MIN   400
+#define RS_STAGE_USER_EGRESS_MAX   499
 
 #endif /* __RSWITCH_MODULE_ABI_H */

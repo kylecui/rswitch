@@ -8,7 +8,7 @@ char _license[] SEC("license") = "GPL";
 RS_DECLARE_MODULE("flow_table", RS_HOOK_XDP_INGRESS, 60,
                   RS_FLAG_NEED_L2L3_PARSE | RS_FLAG_NEED_FLOW_INFO |
                       RS_FLAG_MODIFIES_PACKET | RS_FLAG_MAY_DROP |
-                      RS_FLAG_CREATES_EVENTS,
+                      RS_FLAG_CREATES_EVENTS | RS_FLAG_MAY_REDIRECT,
                   "OpenFlow-style per-flow forwarding");
 
 #define FLOW_MAX_ENTRIES 8192

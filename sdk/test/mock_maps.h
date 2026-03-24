@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /* rSwitch Map Mocking for Offline Tests
  *
  * Provides mock implementations of BPF map operations

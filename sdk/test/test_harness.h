@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /* rSwitch Module Test Harness
  *
  * Provides macros for writing unit tests for rSwitch BPF modules.

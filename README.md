@@ -1,6 +1,6 @@
 # rSwitch 🔄
 
-[![License: LGPL-2.1 OR BSD-2-Clause](https://img.shields.io/badge/License-LGPL--2.1%20OR%20BSD--2--Clause-blue)](https://opensource.org/licenses/LGPL-2.1)
+[![License: LGPL-2.1-or-later](https://img.shields.io/badge/License-LGPL--2.1--or--later-blue)](https://opensource.org/licenses/LGPL-2.1)
 [![Kernel](https://img.shields.io/badge/Kernel-5.8+-brightgreen)](https://www.kernel.org/)
 
 **A production-grade, modular XDP switch with CO-RE compatibility and advanced QoS capabilities**
@@ -19,14 +19,14 @@ rSwitch is a high-performance, programmable network switch built on XDP (eXpress
 ### 🛠️ Network Features
 - **Layer 2**: MAC learning, VLAN processing (ACCESS/TRUNK/HYBRID modes)
 - **Layer 3**: IPv4 routing with LPM tables and ARP management
-- **Security**: Multi-level ACL with connection tracking and stateful filtering
-- **QoS**: Traffic classification, DSCP/PCP marking, and priority queuing
+- **Security**: Multi-level ACL with stateful filtering `[Planned: connection tracking]`
+- **QoS**: Traffic marking and priority queuing `[Planned: ingress traffic classification]`
 - **Monitoring**: Comprehensive telemetry and packet tracing capabilities
 
 ### 🔧 Technical Highlights
 - **Zero-Copy Data Paths**: AF_XDP integration for high-throughput scenarios
 - **Event-Driven Architecture**: Structured event bus for observability
-- **Hot-Reload**: Runtime module updates without service interruption
+- **Hot-Reload**: Runtime module updates `[Planned: atomic replacement]`
 - **BPF Verifier Friendly**: Bounds checking and offset masking for reliability
 - **Production Ready**: Comprehensive testing and validation framework
 
@@ -112,7 +112,7 @@ rSwitch's pipeline architecture enables flexible, modular packet processing:
 #### Key Modules
 - **dispatcher**: Ingress packet classification and routing
 - **vlan**: 802.1Q VLAN processing with trunk/access/hybrid modes
-- **acl**: Multi-level access control with stateful filtering
+- **acl**: Multi-level access control `[Planned: stateful filtering with connection tracking]`
 - **route**: IPv4 LPM routing with ARP table management
 - **l2learn**: MAC address learning and aging
 - **qos**: Traffic classification and marking
@@ -205,7 +205,7 @@ sudo ./build/rswitch_loader \
 #### Enable QoS with VOQd
 ```bash
 sudo ./build/rswitch_loader \
-     --profile etc/profiles/l3-qos-voqd-test.yaml \
+     --profile etc/profiles/qos-voqd.yaml \
      --ifaces eth0,eth1,eth2,eth3 \
      --verbose
 ```
@@ -330,14 +330,14 @@ voqd_config:
 | `l2.yaml` | Basic L2 switching | Simple bridging |
 | `l3.yaml` | L3 routing + ACL | Basic routing |
 | `firewall.yaml` | Security-focused | Access control |
-| `qos-voqd-test.yaml` | QoS with VOQd | Performance testing |
-| `vlan-isolation.yaml` | VLAN isolation | Multi-tenant |
+| `qos-voqd.yaml` | QoS with VOQd | Performance testing |
+| `qos-voqd-minimal.yaml` | Minimal QoS | Lightweight QoS |
 
 ### Advanced Configuration
 
 #### Custom Module Parameters
 ```yaml
-# Planned feature - module-specific configuration
+# [Planned] — module-specific configuration (not yet implemented)
 modules:
   - name: "acl"
     config:
@@ -347,6 +347,7 @@ modules:
 
 #### Optional Modules
 ```yaml
+# [Planned] — conditional module loading (not yet implemented)
 optional_modules:
   - name: "mirror"
     enabled: true
@@ -447,6 +448,8 @@ RS_EMIT_EVENT(&evt, sizeof(evt));
 - **[Architecture](docs/development/Architecture.md)** — Dual-pipeline architecture deep-dive
 - **[Module Developer Guide](docs/development/Module_Developer_Guide.md)** — Complete module authoring guide
 - **[API Reference](docs/development/API_Reference.md)** — Macros, structs, maps, helpers, flags
+- **[ABI Stability Policy](docs/development/ABI_POLICY.md)** — Version semantics, stability tiers, deprecation rules
+- **[Map Pinning Convention](docs/development/MAP_PINNING.md)** — BPF map pin path standards
 - **[CO-RE Guide](docs/development/CO-RE_Guide.md)** — Cross-kernel portability guide
 - **[Contributing](docs/development/Contributing.md)** — Contribution workflow and standards
 
@@ -466,6 +469,21 @@ rswitch/
 ├── scripts/             # Helper scripts and utilities
 └── test/                # Testing framework and examples
 ```
+
+## ⚠️ Known Limitations
+
+The following features are documented or referenced but **not yet fully implemented**:
+
+| Feature | Status | Tracking |
+|---------|--------|----------|
+| Stateful ACL with connection tracking | Planned | [Product Backlog 2.2](docs/backlog/product-backlog.md) |
+| Ingress QoS traffic classification module | Planned | [Product Backlog 3.1](docs/backlog/product-backlog.md) |
+| QinQ double VLAN tagging | Planned | [Product Backlog 1.1](docs/backlog/product-backlog.md) |
+| Robust hot-reload with atomic replacement | Planned | [Platform Backlog 2.1](docs/backlog/platform-backlog.md) |
+| Per-module `config:` in YAML profiles | Planned | [Platform Backlog 1.3](docs/backlog/platform-backlog.md) |
+| Conditional `optional_modules:` loading | Planned | [Platform Backlog 1.2](docs/backlog/platform-backlog.md) |
+
+> See the [Backlog](#-backlog) section for the full roadmap.
 
 ## 🤝 Contributing
 
@@ -491,11 +509,11 @@ We welcome contributions! Please see our development documentation for details o
 
 ## 📄 License
 
-This project is licensed under the **LGPL-2.1 OR BSD-2-Clause** License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **LGPL-2.1-or-later** License - see the [LICENSE](LICENSE) file for details.
 
 Individual components may have different licenses:
-- BPF programs: GPL-2.0
-- User-space utilities: GPL-2.0
+- BPF programs: GPL-2.0 (required by BPF verifier)
+- User-space utilities: LGPL-2.1-or-later
 - Documentation: CC-BY-4.0
 
 ## 🙏 Acknowledgments

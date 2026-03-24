@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # rSwitch Software Queues Test Guide
 
 This guide explains how to test the new software queue simulation feature in rSwitch, which allows QoS functionality on NICs without multiple hardware queues.

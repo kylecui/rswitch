@@ -1,3 +1,5 @@
+> **⚠️ ARCHIVED** — This document is historical reference only. It may not reflect current implementation. See [current documentation](../README.md) for up-to-date information.
+
 # Quick Start (Release-ready)
 
 This quick-start guide uses the production `rswitch/` code in this repository.

@@ -23,7 +23,7 @@ RS_DECLARE_MODULE(
 	"afxdp_redirect",
 	RS_HOOK_XDP_INGRESS,
 	85,  /* Stage: after l2learn (80), before lastcall (90) */
-	RS_FLAG_CREATES_EVENTS,
+	RS_FLAG_CREATES_EVENTS | RS_FLAG_MAY_REDIRECT,
 	"AF_XDP redirect for high-priority traffic (foundational)"
 );
 
@@ -330,15 +330,16 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	 */
 	if (state->mode == VOQD_MODE_ACTIVE) {
 		struct voq_meta *meta;
-		__u32 queue_id = 0;  /* Use queue 0 (single queue NICs like ens34) */
+		__u32 queue_id = ctx->rx_queue_index;
+		if (queue_id >= 128)
+			queue_id = 0;
 		
-		/* Submit metadata first */
+		/* Submit metadata to ringbuf (best-effort, not required for redirect) */
 		meta = bpf_ringbuf_reserve(&voq_ringbuf, sizeof(*meta), 0);
 		if (meta) {
-			/* Convert ifindex to port_idx for VOQd compatibility */
 			__u32 *port_idx = bpf_map_lookup_elem(&rs_ifindex_to_port_map, &rs_ctx->egress_ifindex);
 			meta->ts_ns = now_ns;
-			meta->eg_port = port_idx ? *port_idx : rs_ctx->egress_ifindex;  /* Fallback to ifindex if mapping fails */
+			meta->eg_port = port_idx ? *port_idx : rs_ctx->egress_ifindex;
 			meta->prio = prio;
 			meta->len = ctx->data_end - ctx->data;
 			meta->flow_hash = compute_flow_hash(ctx);
@@ -346,40 +347,26 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 			meta->drop_hint = 0;
 			
 			bpf_ringbuf_submit(meta, 0);
-			rs_debug("[AF_XDP] Submitted metadata for prio %u", prio);
-			
-			/* Check if AF_XDP socket is available for this queue */
-			__u32 *socket_fd = bpf_map_lookup_elem(&xsks_map, &queue_id);
-			if (socket_fd && *socket_fd > 0) {
-				/* AF_XDP socket available - redirect packet */
-				rs_debug("[AF_XDP] Redirecting to AF_XDP socket fd=%u", *socket_fd);
-				return bpf_redirect_map(&xsks_map, queue_id, 0);
-			} else {
-				/* No AF_XDP socket available - continue with fast-path
-				 * User-space VOQd will process metadata from ringbuf
-				 */
-				rs_debug("[AF_XDP] No AF_XDP socket, continuing with fast-path");
-				goto next_module;
-			}
 		} else {
-			/* Ringbuf full - track overload */
 			state->overload_drops++;
-			rs_debug("[AF_XDP] Ringbuf full, dropping packet");
 			
-			/* Graceful degradation: fall back to fast-path for this packet */
-			if (state->flags & VOQD_FLAG_DEGRADE_ON_OVERLOAD) {
-				if (state->overload_drops > VOQD_OVERLOAD_THRESHOLD) {
-					/* Sustained overload - switch to BYPASS */
-					state->mode = VOQD_MODE_BYPASS;
-					state->failover_count++;
-				}
-				/* Let this packet through fast-path */
+			if ((state->flags & VOQD_FLAG_DEGRADE_ON_OVERLOAD) &&
+			    state->overload_drops > VOQD_OVERLOAD_THRESHOLD) {
+				state->mode = VOQD_MODE_BYPASS;
+				state->failover_count++;
 				goto next_module;
-			} else {
-				/* Strict mode - drop packet if can't enqueue */
-				return XDP_DROP;
 			}
 		}
+		
+		/* Redirect packet to AF_XDP socket (independent of ringbuf) */
+		__u32 *socket_fd = bpf_map_lookup_elem(&xsks_map, &queue_id);
+		if (socket_fd && *socket_fd > 0) {
+			rs_debug("[AF_XDP] Redirecting to AF_XDP socket fd=%u", *socket_fd);
+			return bpf_redirect_map(&xsks_map, queue_id, 0);
+		}
+		
+		rs_debug("[AF_XDP] No AF_XDP socket, continuing with fast-path");
+		goto next_module;
 	}
 	
 next_module:

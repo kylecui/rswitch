@@ -25,46 +25,6 @@ struct test_xdp_md {
     __u32 egress_ifindex;
 };
 
-struct rs_layers {
-    __u16 eth_proto;
-    __u16 vlan_ids[2];
-    __u8 vlan_depth;
-    __u8 ip_proto;
-    __u8 pad[2];
-    __be32 saddr;
-    __be32 daddr;
-    __be16 sport;
-    __be16 dport;
-    __u16 l2_offset;
-    __u16 l3_offset;
-    __u16 l4_offset;
-    __u16 payload_offset;
-    __u32 payload_len;
-};
-
-struct rs_ctx {
-    __u32 ifindex;
-    __u32 timestamp;
-    __u8 parsed;
-    __u8 modified;
-    __u8 pad[2];
-    struct rs_layers layers;
-    __u16 ingress_vlan;
-    __u16 egress_vlan;
-    __u8 prio;
-    __u8 dscp;
-    __u8 ecn;
-    __u8 traffic_class;
-    __u32 egress_ifindex;
-    __u8 action;
-    __u8 mirror;
-    __u16 mirror_port;
-    __u32 error;
-    __u32 drop_reason;
-    __u32 next_prog_id;
-    __u32 call_depth;
-    __u32 reserved[4];
-};
 
 #define MIRROR_MAX_RULES     64
 #define MIRROR_MAX_SESSIONS  4

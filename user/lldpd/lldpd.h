@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 #ifndef RSWITCH_LLDPD_H
 #define RSWITCH_LLDPD_H
 
