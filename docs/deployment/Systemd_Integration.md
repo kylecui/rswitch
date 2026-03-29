@@ -337,3 +337,21 @@ This allows changing interfaces without editing service files or running `system
 | "No such file" errors on BPF map access | Service started before pin files were created | Add pin file readiness check |
 | Downstream keeps running after rSwitch stops | Missing `Requires=` dependency | Add `Requires=rswitch.service` |
 | Interface names change across reboots | Hardcoded names in service files | Use `EnvironmentFile` for interface config |
+
+## FHS Install Layout
+
+The installer supports an FHS-compatible layout via `--fhs`:
+
+```bash
+sudo bash install.sh --fhs
+```
+
+| Component | Default (`/opt/rswitch`) | FHS (`--fhs`) |
+|-----------|--------------------------|---------------|
+| Binaries | `/opt/rswitch/build/` | `/usr/lib/rswitch/build/` |
+| Config | `/opt/rswitch/etc/` | `/etc/rswitch/` |
+| Docs | `/opt/rswitch/docs/` | `/usr/share/doc/rswitch/` |
+| Logs | `/var/log/rswitch/` | `/var/log/rswitch/` |
+| Systemd units | `/etc/systemd/system/` | `/etc/systemd/system/` |
+
+The FHS layout is recommended for distribution packaging.

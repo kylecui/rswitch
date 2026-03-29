@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `test/ci/test_perf_baseline.c` — BPF performance test using repeat-mode packet injection
 - Performance testing documentation (`docs/development/Performance_Testing.md`)
 - Chinese (zh-CN) translations: VOQd Setup, NIC Configuration, API Reference, MAP Pinning, Graceful Degradation, Performance Testing
+- `sd_notify` readiness protocol in `rswitch_loader` — systemd receives `READY=1` after pipeline load, `STOPPING=1` on shutdown
+- FHS install profile (`install.sh --fhs`) — installs to `/usr/lib/rswitch` with `/etc/rswitch` config and `/var/log/rswitch` logs
+- FHS Install Layout section in Systemd Integration documentation
 
 ### Changed
 - MAP_PINNING.md: clarified convention — core maps use flat `/sys/fs/bpf/` with `rs_` prefix, user modules use `/sys/fs/bpf/<project>/` subdirectories
@@ -30,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SDK Quick Start: added `generate_vmlinux.sh` usage and link to Migration Guide
 - README.md: hot-reload status updated from "Planned" to "✅ Implemented"
 - README.md: per-module config marked as "Planned (v2.1)" with version target
+- `rswitch.service`: `Type=forking` → `Type=notify` with `NotifyAccess=all`; PIDFile removed
+- `rswitch-init.sh`: loader starts in foreground via `exec` (required for sd_notify)
+- Makefile: loader links `-lsystemd` and defines `-DHAVE_SYSTEMD`
+- `install.sh` service heredocs: updated to `Type=notify` with `NotifyAccess=all`
 
 ### Fixed
 - MAP_PINNING.md contradiction with `rswitch_helpers.h` regarding subdirectory pin paths

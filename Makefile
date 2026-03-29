@@ -186,10 +186,10 @@ $(EVENT_DB_OBJ): $(USER_DIR)/mgmt/event_db.c $(USER_DIR)/mgmt/event_db.h $(COMMO
 # Build user-space loader
 $(LOADER): $(USER_DIR)/loader/rswitch_loader.c $(USER_DIR)/loader/profile_parser.c $(wildcard $(USER_DIR)/loader/*.h) $(USER_DIR)/lifecycle/lifecycle.h $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(RESOURCE_LIMITS_OBJ)
 	@echo "  CC [USER] $@"
-	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) -DHAVE_SYSTEMD \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/loader/rswitch_loader.c $(USER_DIR)/loader/profile_parser.c \
-		$(LIFECYCLE_OBJ) $(RESOURCE_LIMITS_OBJ) $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+		$(LIFECYCLE_OBJ) $(RESOURCE_LIMITS_OBJ) $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lsystemd
 
 # Build hot-reload tool
 $(HOT_RELOAD): $(USER_DIR)/reload/hot_reload.c $(USER_DIR)/loader/profile_parser.h $(RS_LOG_OBJ)

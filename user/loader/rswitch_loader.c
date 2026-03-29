@@ -34,6 +34,10 @@
 #include <sys/types.h>
 #include <dirent.h>
 
+#ifdef HAVE_SYSTEMD
+#include <systemd/sd-daemon.h>
+#endif
+
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
@@ -139,6 +143,15 @@ struct rs_module_config_value {
 static char g_rswitch_home[256] = ".";
 static char g_build_dir[512]    = "./build/bpf";
 static char g_build_root[512]   = "./build";
+
+static void rs_sd_notify(const char *state)
+{
+#ifdef HAVE_SYSTEMD
+    sd_notify(0, state);
+#else
+    (void)state;
+#endif
+}
 
 static void init_paths(void)
 {
@@ -2901,6 +2914,8 @@ int main(int argc, char **argv)
     if (create_pin_dir(BPF_PIN_PATH)) {
         return 1;
     }
+
+    rs_sd_notify("STATUS=Loading BPF pipeline...");
     
     /* Discovery phase */
     if (discover_modules(&ctx) < 0) {
@@ -3000,6 +3015,8 @@ int main(int argc, char **argv)
             RS_LOG_WARN("Failed to start VOQd, continuing with fast-path only");
         }
     }
+
+    rs_sd_notify("READY=1\nSTATUS=Pipeline loaded, attached to interfaces");
     
     printf("\nrSwitch running. Press Ctrl+C to exit.\n");
     printf("Attached to %d interface%s\n", ctx.num_interfaces, ctx.num_interfaces > 1 ? "s" : "");
@@ -3017,6 +3034,7 @@ int main(int argc, char **argv)
             shutdown_in_progress = 1;
             keep_running = 0;
             RS_LOG_INFO("Initiating graceful shutdown...");
+            rs_sd_notify("STOPPING=1");
             rs_lifecycle_shutdown(&lifecycle_cfg);
             continue;
         }

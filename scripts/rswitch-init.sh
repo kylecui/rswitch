@@ -149,40 +149,14 @@ do_start() {
         exit 1
     fi
     
-    log "Starting rswitch_loader..."
+    log "Starting rswitch_loader (foreground, sd_notify)..."
     log "  Profile: $RSWITCH_PROFILE"
     log "  Interfaces: $RSWITCH_INTERFACES"
-    
-    "${RSWITCH_HOME}/build/rswitch_loader" \
+
+    exec "${RSWITCH_HOME}/build/rswitch_loader" \
         --profile "$profile_path" \
         --ifaces "$RSWITCH_INTERFACES" \
-        >> "$LOG_FILE" 2>&1 &
-    
-    local loader_pid=$!
-    echo "$loader_pid" > "$PID_FILE"
-    
-    sleep 3
-    
-    if ! kill -0 "$loader_pid" 2>/dev/null; then
-        error "rswitch_loader failed to start"
-        rm -f "$PID_FILE"
-        exit 1
-    fi
-    
-    log "rswitch_loader started (PID: $loader_pid)"
-    
-    local voqd_timeout=10
-    for i in $(seq 1 $voqd_timeout); do
-        if pgrep -x "rswitch-voqd" > /dev/null; then
-            log "VOQd started (PID: $(pgrep -x rswitch-voqd))"
-            break
-        fi
-        sleep 1
-    done
-    
-    log "=========================================="
-    log "rSwitch Started Successfully"
-    log "=========================================="
+        >> "$LOG_FILE" 2>&1
 }
 
 do_stop() {

@@ -23,6 +23,9 @@
 - `test/ci/test_perf_baseline.c` — 使用重复模式数据包注入的 BPF 性能测试
 - 性能测试文档（`docs/development/Performance_Testing.md`）
 - 中文翻译新增：VOQd 设置、网卡配置、API 参考、Map 固定、平滑降级、性能测试
+- `rswitch_loader` 新增 `sd_notify` 就绪协议 — 管道加载后向 systemd 发送 `READY=1`，关闭时发送 `STOPPING=1`
+- FHS 安装配置（`install.sh --fhs`）— 安装到 `/usr/lib/rswitch`，配置目录 `/etc/rswitch`，日志目录 `/var/log/rswitch`
+- Systemd 集成文档新增 FHS 安装布局章节
 
 ### 变更
 - MAP_PINNING.md: 明确约定 — 核心 map 使用 `/sys/fs/bpf/` 扁平路径（带 `rs_` 前缀），用户模块使用 `/sys/fs/bpf/<project>/` 子目录
@@ -30,6 +33,10 @@
 - SDK 快速开始: 新增 `generate_vmlinux.sh` 用法和迁移指南链接
 - README.md: 热重载状态从"计划中"更新为"✅ 已实现"
 - README.md: 逐模块配置标记为"计划中 (v2.1)"，带版本目标
+- `rswitch.service`: `Type=forking` → `Type=notify`，添加 `NotifyAccess=all`；移除 PIDFile
+- `rswitch-init.sh`: 加载器通过 `exec` 前台启动（sd_notify 所需）
+- Makefile: 加载器链接 `-lsystemd` 并定义 `-DHAVE_SYSTEMD`
+- `install.sh` 服务 heredoc: 更新为 `Type=notify` 及 `NotifyAccess=all`
 
 ### 修复
 - MAP_PINNING.md 与 `rswitch_helpers.h` 关于子目录固定路径的矛盾

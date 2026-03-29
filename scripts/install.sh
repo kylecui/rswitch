@@ -26,6 +26,7 @@ set -euo pipefail
 
 # ── Defaults ─────────────────────────────────────────────────────
 INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/rswitch}"
+FHS_MODE="${FHS_MODE:-0}"
 RSWITCH_REPO="${RSWITCH_REPO:-https://github.com/kylecui/rswitch.git}"
 RSWITCH_BRANCH="${RSWITCH_BRANCH:-dev}"
 BUILD_DIR="${RSWITCH_SRC:-}"     # empty = clone from repo
@@ -371,6 +372,25 @@ build_rswitch() {
     cp -f "${src_dir}/scripts/rswitch-gen-profile.sh"  "${INSTALL_PREFIX}/scripts/" 2>/dev/null || true
     chmod +x "${INSTALL_PREFIX}/scripts/"*.sh 2>/dev/null || true
 
+    if [ "$FHS_MODE" = "1" ]; then
+        info "Setting up FHS layout..."
+        mkdir -p /etc/rswitch
+        mkdir -p /usr/share/doc/rswitch
+        mkdir -p /var/log/rswitch
+
+        ln -sfn "${INSTALL_PREFIX}/etc" /etc/rswitch/etc 2>/dev/null || \
+            cp -r "${INSTALL_PREFIX}/etc/"* /etc/rswitch/ 2>/dev/null || true
+
+        ln -sfn "${INSTALL_PREFIX}/docs" /usr/share/doc/rswitch/docs 2>/dev/null || \
+            cp -r "${INSTALL_PREFIX}/docs/"* /usr/share/doc/rswitch/ 2>/dev/null || true
+
+        info "FHS layout configured ✓"
+        info "  Binaries: ${INSTALL_PREFIX}/"
+        info "  Config:   /etc/rswitch/"
+        info "  Docs:     /usr/share/doc/rswitch/"
+        info "  Logs:     /var/log/rswitch/"
+    fi
+
     # Clean up temp build dir
     if [ -z "${RSWITCH_SRC:-}" ] && [ -d "$src_dir" ]; then
         rm -rf "$src_dir"
@@ -463,13 +483,13 @@ StartLimitBurst=3
 StartLimitIntervalSec=60
 
 [Service]
-Type=forking
+Type=notify
+NotifyAccess=all
 ExecStartPre=-${INSTALL_PREFIX}/scripts/rswitch-failsafe.sh teardown
 ExecStartPre=${INSTALL_PREFIX}/scripts/rswitch-init.sh prepare
 ExecStart=${INSTALL_PREFIX}/scripts/rswitch-init.sh start
 ExecStop=${INSTALL_PREFIX}/scripts/rswitch-init.sh stop
 ExecReload=${INSTALL_PREFIX}/scripts/rswitch-init.sh reload
-PIDFile=/run/rswitch/rswitch_loader.pid
 Restart=on-failure
 RestartSec=5
 LimitMEMLOCK=infinity
@@ -818,6 +838,7 @@ Options:
                              (default: auto-detect all physical NICs)
   -m, --mgmt-nic NIC        Management NIC (default: auto-detect)
   -p, --prefix PATH         Installation prefix (default: /opt/rswitch)
+  -f, --fhs                 Use FHS layout (/usr/lib/rswitch, /etc/rswitch, /var/log/rswitch)
   -y, --yes                 Skip confirmation prompts
   -h, --help                Show this help
 
@@ -825,6 +846,7 @@ Examples:
   sudo bash install.sh                         # auto-detect everything
   sudo bash install.sh -i ens34,ens35          # use only ens34 and ens35
   sudo bash install.sh -i ens34,ens35 -m eth0  # specify mgmt NIC
+  sudo bash install.sh --fhs                   # FHS layout for distro packaging
   curl -sfL https://get.rswitch.dev | sudo bash -s -- -i ens34,ens35
 EOF
     exit 0
@@ -853,6 +875,10 @@ parse_args() {
             -y|--yes)
                 RSWITCH_FORCE=1
                 export RSWITCH_FORCE
+                ;;
+            -f|--fhs)
+                FHS_MODE=1
+                INSTALL_PREFIX="/usr/lib/rswitch"
                 ;;
             -h|--help)
                 usage

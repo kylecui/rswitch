@@ -8,13 +8,13 @@ StartLimitBurst=3
 StartLimitIntervalSec=60
 
 [Service]
-Type=forking
+Type=notify
+NotifyAccess=all
 ExecStartPre=-/opt/rswitch/scripts/rswitch-failsafe.sh teardown
 ExecStartPre=/opt/rswitch/scripts/rswitch-init.sh prepare
 ExecStart=/opt/rswitch/scripts/rswitch-init.sh start
 ExecStop=/opt/rswitch/scripts/rswitch-init.sh stop
 ExecReload=/opt/rswitch/scripts/rswitch-init.sh reload
-PIDFile=/run/rswitch/rswitch_loader.pid
 Restart=on-failure
 RestartSec=5
 LimitMEMLOCK=infinity
