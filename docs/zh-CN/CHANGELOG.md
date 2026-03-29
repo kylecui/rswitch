@@ -22,6 +22,7 @@
 - CI 性能基线任务（`perf-baseline`）— 通过 `BPF_PROG_TEST_RUN` 测量每包延迟，支持回归检测
 - `test/ci/test_perf_baseline.c` — 使用重复模式数据包注入的 BPF 性能测试
 - 性能测试文档（`docs/development/Performance_Testing.md`）
+- 中文翻译新增：VOQd 设置、网卡配置、API 参考、Map 固定、平滑降级、性能测试
 
 ### 变更
 - MAP_PINNING.md: 明确约定 — 核心 map 使用 `/sys/fs/bpf/` 扁平路径（带 `rs_` 前缀），用户模块使用 `/sys/fs/bpf/<project>/` 子目录

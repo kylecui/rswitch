@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Performance baseline CI job (`perf-baseline`) — measures per-packet latency via `BPF_PROG_TEST_RUN` with regression detection
 - `test/ci/test_perf_baseline.c` — BPF performance test using repeat-mode packet injection
 - Performance testing documentation (`docs/development/Performance_Testing.md`)
+- Chinese (zh-CN) translations: VOQd Setup, NIC Configuration, API Reference, MAP Pinning, Graceful Degradation, Performance Testing
 
 ### Changed
 - MAP_PINNING.md: clarified convention — core maps use flat `/sys/fs/bpf/` with `rs_` prefix, user modules use `/sys/fs/bpf/<project>/` subdirectories
