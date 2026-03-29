@@ -147,8 +147,10 @@
 /* ── Map pin path ──────────────────────────────────────────────── */
 
 /*
- * Canonical BPF map pin path. All core maps pin directly to /sys/fs/bpf/.
- * User modules should use /sys/fs/bpf/{module_name}/ for private maps.
+ * Canonical BPF map pin path.
+ * - Core rSwitch maps: pin to /sys/fs/bpf/ with rs_ prefix (flat).
+ * - Downstream project maps: pin to /sys/fs/bpf/<project>/ subdirectory
+ *   for namespace isolation (e.g., /sys/fs/bpf/my_project/my_map).
  * See docs/development/MAP_PINNING.md for the full convention.
  */
 #define BPF_PIN_PATH "/sys/fs/bpf"

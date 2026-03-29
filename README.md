@@ -430,7 +430,7 @@ RS_EMIT_EVENT(&evt, sizeof(evt));
 
 ## 📚 Documentation
 
-> 📖 [Full Documentation Index](docs/Documentation_Index.md) · [中文文档](docs/zh-CN/)
+> 📖 [Full Documentation Index](docs/Documentation_Index.md) · [中文文档](docs/zh-CN/) · [Changelog](CHANGELOG.md)
 
 ### 📘 Usage
 - **[Quick Start](docs/usage/Quick_Start.md)** — Build, run, and verify in 5 minutes

@@ -158,6 +158,7 @@ sdk/docs/
 
 ## 🔗 Quick Links
 
+- **Changelog?** → [CHANGELOG](../CHANGELOG.md) / [变更日志](zh-CN/CHANGELOG.md)
 - **Just want to run it?** → [Quick Start](usage/Quick_Start.md) / [快速开始](zh-CN/usage/Quick_Start.md)
 - **Platform overview?** → [Platform Architecture](development/Platform_Architecture.md)
 - **What is "reconfigurable"?** → [Reconfigurable Architecture](concepts/Reconfigurable_Architecture.md)
@@ -174,4 +175,4 @@ sdk/docs/
 
 ---
 
-*Last updated: 2026-03-24*
+*Last updated: 2026-03-29*

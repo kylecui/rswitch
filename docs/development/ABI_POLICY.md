@@ -104,7 +104,53 @@ When a new field is needed:
 
 ---
 
-## 4. Flag and Constant Stability
+## 4. Reserved Byte Allocation Registry
+
+The `rs_ctx.reserved[16]` field provides 64 bytes (indexes 0-15, each `__u32` = 4 bytes) for future minor-version additions without changing the struct size.
+
+### Allocation Rules
+
+1. New fields are allocated from **index 0 upward** (byte offset 0 upward)
+2. Each allocation requires a **minor version bump**
+3. Allocations are **permanent** within a major version — once assigned, a byte range is never repurposed
+4. Downstream modules **MUST NOT** write to reserved bytes — only the rSwitch core may define their semantics
+
+### Current Allocations (ABI v2.0)
+
+| Index | Byte Range | Field Name | Added In | Purpose | Status |
+|-------|------------|------------|----------|---------|--------|
+| 0 | 0-3 | — | — | Unallocated | Available |
+| 1 | 4-7 | — | — | Unallocated | Available |
+| 2 | 8-11 | — | — | Unallocated | Available |
+| 3 | 12-15 | — | — | Unallocated | Available |
+| 4 | 16-19 | — | — | Unallocated | Available |
+| 5 | 20-23 | — | — | Unallocated | Available |
+| 6 | 24-27 | — | — | Unallocated | Available |
+| 7 | 28-31 | — | — | Unallocated | Available |
+| 8 | 32-35 | — | — | Unallocated | Available |
+| 9 | 36-39 | — | — | Unallocated | Available |
+| 10 | 40-43 | — | — | Unallocated | Available |
+| 11 | 44-47 | — | — | Unallocated | Available |
+| 12 | 48-51 | — | — | Unallocated | Available |
+| 13 | 52-55 | — | — | Unallocated | Available |
+| 14 | 56-59 | — | — | Unallocated | Available |
+| 15 | 60-63 | — | — | Unallocated | Available |
+
+> **ABI v2.0 baseline**: All 64 bytes are unallocated. The first allocation will occur in ABI v2.1.
+
+### Allocation Process
+
+To allocate a reserved byte for a new field:
+
+1. Choose the next unallocated index (starting from 0)
+2. Define an accessor macro in `rswitch_abi.h` (e.g., `#define RS_CTX_GET_FOO(ctx) ((ctx)->reserved[0])`)
+3. Bump `RS_ABI_VERSION_MINOR`
+4. Update this table with the field name, version, and purpose
+5. Document in the [ABI Version History](#7-abi-version-history) and CHANGELOG
+
+---
+
+## 5. Flag and Constant Stability
 
 ### RS_FLAG_* Capability Flags
 
@@ -136,7 +182,7 @@ When a new field is needed:
 
 ---
 
-## 5. Deprecation Process
+## 6. Deprecation Process
 
 When a STABLE API needs to change:
 
@@ -154,7 +200,7 @@ ABI 3.0  — RS_FLAG_FOO removed, RS_FLAG_BAR is now the only option
 
 ---
 
-## 6. ABI Version History
+## 7. ABI Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
@@ -163,7 +209,7 @@ ABI 3.0  — RS_FLAG_FOO removed, RS_FLAG_BAR is now the only option
 
 ---
 
-## 7. For Module Developers
+## 8. For Module Developers
 
 ### Checking ABI Compatibility
 
@@ -190,12 +236,12 @@ pkg-config --modversion rswitch
 
 If the loader rejects your module with "ABI major mismatch":
 1. Recompile against the current SDK headers (`sudo make install-sdk` to update)
-2. Review the [ABI Version History](#6-abi-version-history) for breaking changes
+2. Review the [ABI Version History](#7-abi-version-history) for breaking changes
 3. Update your code if any APIs were removed or changed
 
 ---
 
-## 8. References
+## 9. References
 
 - [SDK Quick Start](../../sdk/docs/SDK_Quick_Start.md) — Getting started with module development
 - [Module Developer Guide](Module_Developer_Guide.md) — Complete module authoring patterns
