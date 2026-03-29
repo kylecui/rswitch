@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hot-Reload architecture documentation (`docs/development/Hot_Reload.md`)
 - Per-module config workaround guide in SDK Quick Start (BPF map, EnvironmentFile, config file patterns)
 - ABI v1→v2 migration guide (`docs/development/ABI_Migration_v1_to_v2.md`) with step-by-step checklist and common pitfalls
+- Multi-kernel compile matrix in CI (`kernel-compat` job) — validates CO-RE BTF compatibility against 6.2, 6.5, and 6.8 kernel headers
+- Performance baseline CI job (`perf-baseline`) — measures per-packet latency via `BPF_PROG_TEST_RUN` with regression detection
+- `test/ci/test_perf_baseline.c` — BPF performance test using repeat-mode packet injection
+- Performance testing documentation (`docs/development/Performance_Testing.md`)
 
 ### Changed
 - MAP_PINNING.md: clarified convention — core maps use flat `/sys/fs/bpf/` with `rs_` prefix, user modules use `/sys/fs/bpf/<project>/` subdirectories

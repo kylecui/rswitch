@@ -18,6 +18,10 @@
 - 热重载架构文档（`docs/development/Hot_Reload.md`）
 - SDK 快速开始中新增逐模块配置替代方案指南（BPF map、EnvironmentFile、配置文件模式）
 - ABI v1→v2 迁移指南（`docs/development/ABI_Migration_v1_to_v2.md`），包含分步清单和常见陷阱
+- CI 中新增多内核编译矩阵（`kernel-compat` 任务）— 验证 CO-RE BTF 对 6.2、6.5、6.8 内核头文件的兼容性
+- CI 性能基线任务（`perf-baseline`）— 通过 `BPF_PROG_TEST_RUN` 测量每包延迟，支持回归检测
+- `test/ci/test_perf_baseline.c` — 使用重复模式数据包注入的 BPF 性能测试
+- 性能测试文档（`docs/development/Performance_Testing.md`）
 
 ### 变更
 - MAP_PINNING.md: 明确约定 — 核心 map 使用 `/sys/fs/bpf/` 扁平路径（带 `rs_` 前缀），用户模块使用 `/sys/fs/bpf/<project>/` 子目录

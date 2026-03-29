@@ -121,6 +121,24 @@ test(ci): add BPF_PROG_TEST_RUN tests for VLAN module
 - [ ] ABI changes bump version in `module_abi.h` per [ABI Policy](docs/development/ABI_POLICY.md)
 - [ ] Documentation updated if behavior changed
 
+## CI Multi-Kernel Matrix
+
+The CI pipeline includes a `kernel-compat` job that compiles BPF objects against
+multiple kernel header versions to validate CO-RE BTF compatibility:
+
+| Matrix Entry | Source |
+|---|---|
+| `6.8.0-*` | Ubuntu 24.04 default (runner kernel) |
+| `6.5.0-*` | Ubuntu 23.10 |
+| `6.2.0-*` | Ubuntu 23.04 |
+
+Runtime tests (`BPF_PROG_TEST_RUN`) execute only on the host kernel.
+Multi-kernel runtime testing requires virtme-ng or self-hosted runners.
+
+A `perf-baseline` job measures per-packet latency using `BPF_PROG_TEST_RUN`
+with repeat counts. Results are stored as CI artifacts. Absolute numbers are
+runner-specific — only relative regression between runs is meaningful.
+
 ## Module Development
 
 See the [SDK Quick Start](sdk/docs/SDK_Quick_Start.md) for a tutorial on
