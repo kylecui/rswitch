@@ -61,6 +61,7 @@ Architecture deep-dives, module development, and API reference.
 | [ABI Policy](development/ABI_POLICY.md) | [ABI 稳定性策略](zh-CN/development/ABI_POLICY.md) | ABI versioning contract — stability tiers, breaking change policy, loader enforcement |
 | [Graceful Degradation](development/DEGRADATION.md) | | How modules should behave when the pipeline is partially available |
 | [Hot-Reload](development/Hot_Reload.md) | | Zero-downtime module updates — atomic prog_array replacement architecture |
+| [ABI Migration v1→v2](development/ABI_Migration_v1_to_v2.md) | [ABI 迁移指南](zh-CN/development/ABI_Migration_v1_to_v2.md) | Step-by-step upgrade guide from ABI v1.0 to v2.0 |
 | [Map Pinning](development/MAP_PINNING.md) | | BPF map pinning conventions — canonical paths, naming, user-space access |
 | [API Reference](development/API_Reference.md) | | Complete API — macros, structs, maps, helpers, flags, error codes |
 | [API Reference (Generated)](development/API_Reference_Generated.md) | | Auto-generated API documentation from source headers |
@@ -170,6 +171,7 @@ sdk/docs/
 - **Building a module?** → [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) / [SDK 快速开始](../sdk/docs/zh-CN/SDK_Quick_Start.md)
 - **Module dev guide?** → [Module Developer Guide](development/Module_Developer_Guide.md)
 - **ABI compatibility?** → [ABI Policy](development/ABI_POLICY.md)
+- **Upgrading from ABI v1?** → [ABI Migration v1→v2](development/ABI_Migration_v1_to_v2.md)
 - **Migrating old headers?** → [SDK Migration Guide](../sdk/docs/SDK_Migration_Guide.md) / [SDK 迁移指南](zh-CN/sdk/SDK_Migration_Guide.md)
 - **Deploying to production?** → [Systemd Integration](deployment/Systemd_Integration.md)
 - **Management UI?** → [Management Portal](deployment/Management_Portal.md)

@@ -246,4 +246,5 @@ If the loader rejects your module with "ABI major mismatch":
 - [SDK Quick Start](../../sdk/docs/SDK_Quick_Start.md) — Getting started with module development
 - [Module Developer Guide](Module_Developer_Guide.md) — Complete module authoring patterns
 - [API Reference](API_Reference.md) — Full API documentation
+- [ABI Migration v1→v2](ABI_Migration_v1_to_v2.md) — Step-by-step upgrade guide from ABI v1.0 to v2.0
 - Header: [`rswitch_abi.h`](../../sdk/include/rswitch_abi.h) — Canonical ABI definitions

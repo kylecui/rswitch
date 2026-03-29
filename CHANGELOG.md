@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deprecation warnings (`#warning`) on all legacy headers: `uapi.h`, `map_defs.h`, `rswitch_bpf.h`, `module_abi.h`
 - Hot-Reload architecture documentation (`docs/development/Hot_Reload.md`)
 - Per-module config workaround guide in SDK Quick Start (BPF map, EnvironmentFile, config file patterns)
+- ABI v1→v2 migration guide (`docs/development/ABI_Migration_v1_to_v2.md`) with step-by-step checklist and common pitfalls
 
 ### Changed
 - MAP_PINNING.md: clarified convention — core maps use flat `/sys/fs/bpf/` with `rs_` prefix, user modules use `/sys/fs/bpf/<project>/` subdirectories
