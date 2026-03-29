@@ -28,7 +28,7 @@ rSwitch is a high-performance, programmable network switch built on XDP (eXpress
 ### 🔧 Technical Highlights
 - **Zero-Copy Data Paths**: AF_XDP integration for high-throughput scenarios
 - **Event-Driven Architecture**: Structured event bus for observability
-- **Hot-Reload**: Runtime module updates `[Planned: atomic replacement]`
+- **Hot-Reload**: Runtime module updates — atomic prog_array replacement without XDP detach
 - **BPF Verifier Friendly**: Bounds checking and offset masking for reliability
 - **Production Ready**: Comprehensive testing and validation framework
 
@@ -481,8 +481,8 @@ The following features are documented or referenced but **not yet fully implemen
 | Stateful ACL with connection tracking | Planned | [Product Backlog 2.2](docs/backlog/product-backlog.md) |
 | Ingress QoS traffic classification module | Planned | [Product Backlog 3.1](docs/backlog/product-backlog.md) |
 | QinQ double VLAN tagging | Planned | [Product Backlog 1.1](docs/backlog/product-backlog.md) |
-| Robust hot-reload with atomic replacement | Planned | [Platform Backlog 2.1](docs/backlog/platform-backlog.md) |
-| Per-module `config:` in YAML profiles | Planned | [Platform Backlog 1.3](docs/backlog/platform-backlog.md) |
+| Robust hot-reload with atomic replacement | ✅ Implemented | [Hot-Reload Documentation](docs/development/Hot_Reload.md) |
+| Per-module `config:` in YAML profiles | Planned (v2.1) | [Platform Backlog 1.3](docs/backlog/platform-backlog.md) |
 | Conditional `optional_modules:` loading | Planned | [Platform Backlog 1.2](docs/backlog/platform-backlog.md) |
 
 > See the [Backlog](#-backlog) section for the full roadmap.

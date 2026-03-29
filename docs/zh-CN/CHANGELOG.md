@@ -15,11 +15,15 @@
 - SDK 迁移指南（`sdk/docs/SDK_Migration_Guide.md`），包含头文件映射表和分步迁移说明
 - `sdk/scripts/generate_vmlinux.sh` 辅助脚本，用于生成 vmlinux.h
 - 所有旧版头文件添加弃用警告（`#warning`）：`uapi.h`、`map_defs.h`、`rswitch_bpf.h`、`module_abi.h`
+- 热重载架构文档（`docs/development/Hot_Reload.md`）
+- SDK 快速开始中新增逐模块配置替代方案指南（BPF map、EnvironmentFile、配置文件模式）
 
 ### 变更
 - MAP_PINNING.md: 明确约定 — 核心 map 使用 `/sys/fs/bpf/` 扁平路径（带 `rs_` 前缀），用户模块使用 `/sys/fs/bpf/<project>/` 子目录
 - `module_abi.h`（sdk + bpf/core）: 从 202 行的重复定义缩减为 18 行的薄层包装器，重导出 `rswitch_abi.h`
 - SDK 快速开始: 新增 `generate_vmlinux.sh` 用法和迁移指南链接
+- README.md: 热重载状态从"计划中"更新为"✅ 已实现"
+- README.md: 逐模块配置标记为"计划中 (v2.1)"，带版本目标
 
 ### 修复
 - MAP_PINNING.md 与 `rswitch_helpers.h` 关于子目录固定路径的矛盾

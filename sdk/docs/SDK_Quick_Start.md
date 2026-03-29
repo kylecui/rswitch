@@ -445,14 +445,62 @@ struct iphdr *iph = data + ctx->layers.l3_offset;  // REJECTED
 
 ### 6.9 Module Configuration
 
-Modules can receive per-module configuration parameters from YAML profiles:
+> **Status**: Per-module `config:` in YAML profiles is planned for v2.1. The `rs_module_config_map` infrastructure exists in the BPF layer, but the loader does not yet parse `config:` sections from profile YAML. Until then, use the workarounds below.
+
+#### Workaround 1: Direct BPF Map Updates (Recommended)
+
+The `rs_module_config_map` is already pinned. You can populate it from user-space before or after loading:
 
 ```c
 #include "rswitch_module.h"
 #include "rswitch_maps.h"       /* Needed for rs_get_module_config */
 
-// Read a config parameter set by the profile
+// Read a config parameter set via user-space tool
 struct rs_module_config_value *val = rs_get_module_config("my_filter", "threshold");
+```
+
+Populate from user-space with `bpftool`:
+
+```bash
+# Write a config value to the pinned map
+bpftool map update pinned /sys/fs/bpf/rs_module_config_map \
+    key <module_name_bytes> <param_name_bytes> \
+    value <type_and_value_bytes>
+```
+
+Or use a companion user-space program to read a config file and populate the map at startup.
+
+#### Workaround 2: Environment Variables via Systemd
+
+For static configuration that doesn't change at runtime:
+
+```ini
+# /etc/rswitch/module-env.conf
+MY_MODULE_THRESHOLD=1000
+MY_MODULE_LOG_LEVEL=2
+```
+
+```ini
+# In your module's systemd service
+[Service]
+EnvironmentFile=/etc/rswitch/module-env.conf
+```
+
+#### Workaround 3: Module-Specific Config Files
+
+Create a user-space companion that reads a module-specific config and populates BPF maps:
+
+```bash
+# /etc/rswitch/modules/my_filter.conf
+threshold = 1000
+max_flows = 65536
+```
+
+This is the pattern used by production deployments (e.g., jz_sniff_rn) and is proven in the field.
+
+#### Future: YAML Profile Config (v2.1)
+
+When implemented, per-module config will work as follows:
 if (val && val->type == 0 /* int */) {
     __s64 threshold = val->int_val;
     // Use threshold...

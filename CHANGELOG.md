@@ -15,11 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SDK Migration Guide (`sdk/docs/SDK_Migration_Guide.md`) with header mapping table and step-by-step migration
 - `sdk/scripts/generate_vmlinux.sh` helper script for vmlinux.h generation
 - Deprecation warnings (`#warning`) on all legacy headers: `uapi.h`, `map_defs.h`, `rswitch_bpf.h`, `module_abi.h`
+- Hot-Reload architecture documentation (`docs/development/Hot_Reload.md`)
+- Per-module config workaround guide in SDK Quick Start (BPF map, EnvironmentFile, config file patterns)
 
 ### Changed
 - MAP_PINNING.md: clarified convention — core maps use flat `/sys/fs/bpf/` with `rs_` prefix, user modules use `/sys/fs/bpf/<project>/` subdirectories
 - `module_abi.h` (sdk + bpf/core): reduced from 202-line duplicate to 18-line thin wrapper re-exporting `rswitch_abi.h`
 - SDK Quick Start: added `generate_vmlinux.sh` usage and link to Migration Guide
+- README.md: hot-reload status updated from "Planned" to "✅ Implemented"
+- README.md: per-module config marked as "Planned (v2.1)" with version target
 
 ### Fixed
 - MAP_PINNING.md contradiction with `rswitch_helpers.h` regarding subdirectory pin paths
