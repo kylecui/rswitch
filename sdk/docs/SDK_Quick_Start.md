@@ -50,8 +50,14 @@ sdk/
 If `include/vmlinux.h` is not present, generate it:
 
 ```bash
+# Using the provided helper script (recommended)
+sdk/scripts/generate_vmlinux.sh include/vmlinux.h
+
+# Or manually
 bpftool btf dump file /sys/kernel/btf/vmlinux format c > include/vmlinux.h
 ```
+
+> **Migrating from legacy headers?** See the [SDK Migration Guide](SDK_Migration_Guide.md) for the complete header mapping and step-by-step migration instructions.
 
 ### Install SDK System-Wide (Optional)
 

@@ -8,6 +8,8 @@
 #ifndef __RSWITCH_UAPI_H
 #define __RSWITCH_UAPI_H
 
+#warning "uapi.h is deprecated. Use #include <rswitch_module.h> instead. See sdk/docs/SDK_Migration_Guide.md"
+
 /* BPF programs use vmlinux.h (CO-RE), user-space uses kernel headers */
 #ifdef __BPF__
     /* BPF side: types already defined in vmlinux.h (included via rswitch_bpf.h) */

@@ -12,9 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reserved byte allocation registry in ABI policy documentation
 - Downstream service ordering guide in Systemd Integration docs
 - Shared map discovery table in MAP_PINNING.md
+- SDK Migration Guide (`sdk/docs/SDK_Migration_Guide.md`) with header mapping table and step-by-step migration
+- `sdk/scripts/generate_vmlinux.sh` helper script for vmlinux.h generation
+- Deprecation warnings (`#warning`) on all legacy headers: `uapi.h`, `map_defs.h`, `rswitch_bpf.h`, `module_abi.h`
 
 ### Changed
 - MAP_PINNING.md: clarified convention — core maps use flat `/sys/fs/bpf/` with `rs_` prefix, user modules use `/sys/fs/bpf/<project>/` subdirectories
+- `module_abi.h` (sdk + bpf/core): reduced from 202-line duplicate to 18-line thin wrapper re-exporting `rswitch_abi.h`
+- SDK Quick Start: added `generate_vmlinux.sh` usage and link to Migration Guide
 
 ### Fixed
 - MAP_PINNING.md contradiction with `rswitch_helpers.h` regarding subdirectory pin paths

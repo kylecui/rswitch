@@ -67,6 +67,7 @@ Architecture deep-dives, module development, and API reference.
 | [Distributed State Sync](development/Distributed_State_Sync.md) | | Multi-switch state synchronization design document |
 | [Contributing](development/Contributing.md) | [贡献指南](zh-CN/development/CONTRIBUTING.md) | Contribution workflow, coding standards, PR process, licensing |
 | [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) | [SDK 快速开始](../sdk/docs/zh-CN/SDK_Quick_Start.md) | External module development kit — build, test, package, deploy |
+| [SDK Migration Guide](../sdk/docs/SDK_Migration_Guide.md) | [SDK 迁移指南](zh-CN/sdk/SDK_Migration_Guide.md) | Migrate from legacy headers (uapi.h, map_defs.h, etc.) to SDK v2.0 headers |
 
 ---
 
@@ -149,6 +150,7 @@ SDK documentation:
 ```
 sdk/docs/
 ├── SDK_Quick_Start.md
+├── SDK_Migration_Guide.md
 ├── Module_Development_Spec.md
 └── zh-CN/
     └── SDK_Quick_Start.md     # SDK 快速开始（中文）
@@ -167,6 +169,7 @@ sdk/docs/
 - **Building a module?** → [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) / [SDK 快速开始](../sdk/docs/zh-CN/SDK_Quick_Start.md)
 - **Module dev guide?** → [Module Developer Guide](development/Module_Developer_Guide.md)
 - **ABI compatibility?** → [ABI Policy](development/ABI_POLICY.md)
+- **Migrating old headers?** → [SDK Migration Guide](../sdk/docs/SDK_Migration_Guide.md) / [SDK 迁移指南](zh-CN/sdk/SDK_Migration_Guide.md)
 - **Deploying to production?** → [Systemd Integration](deployment/Systemd_Integration.md)
 - **Management UI?** → [Management Portal](deployment/Management_Portal.md)
 - **Need API details?** → [API Reference](development/API_Reference.md)

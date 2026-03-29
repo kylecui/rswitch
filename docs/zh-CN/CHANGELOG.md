@@ -12,9 +12,14 @@
 - ABI 策略文档中新增保留字节分配注册表
 - Systemd 集成文档中新增下游服务排序指南
 - MAP_PINNING.md 中新增共享 map 发现表
+- SDK 迁移指南（`sdk/docs/SDK_Migration_Guide.md`），包含头文件映射表和分步迁移说明
+- `sdk/scripts/generate_vmlinux.sh` 辅助脚本，用于生成 vmlinux.h
+- 所有旧版头文件添加弃用警告（`#warning`）：`uapi.h`、`map_defs.h`、`rswitch_bpf.h`、`module_abi.h`
 
 ### 变更
 - MAP_PINNING.md: 明确约定 — 核心 map 使用 `/sys/fs/bpf/` 扁平路径（带 `rs_` 前缀），用户模块使用 `/sys/fs/bpf/<project>/` 子目录
+- `module_abi.h`（sdk + bpf/core）: 从 202 行的重复定义缩减为 18 行的薄层包装器，重导出 `rswitch_abi.h`
+- SDK 快速开始: 新增 `generate_vmlinux.sh` 用法和迁移指南链接
 
 ### 修复
 - MAP_PINNING.md 与 `rswitch_helpers.h` 关于子目录固定路径的矛盾

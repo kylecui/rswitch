@@ -2,6 +2,8 @@
 #ifndef __RSWITCH_BPF_H
 #define __RSWITCH_BPF_H
 
+#warning "rswitch_bpf.h is deprecated. Use #include <rswitch_module.h> instead. See sdk/docs/SDK_Migration_Guide.md"
+
 /*
  * rSwitch BPF Common Header with CO-RE Support
  * 
