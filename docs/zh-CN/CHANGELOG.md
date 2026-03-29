@@ -7,6 +7,12 @@
 
 ## [未发布]
 
+### 新增
+- SDK 快速开始中新增独立 libbpf 加载指南 — 文档化 `__RSWITCH_MAPS_H` 逃逸机制，适用于使用自定义加载器（非 `rs_loader`）的项目
+
+### 修复
+- `sdk/include/rswitch_bpf.h`: 修复相对路径引用 `../core/map_defs.h` → `map_defs.h`（修复下游 SDK 贩售构建）
+
 ---
 
 ## [2.1.0] - 2026-03-29

@@ -27,7 +27,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_core_read.h>
-#include "../core/map_defs.h"
+#include "map_defs.h"
 
 #ifndef RS_API_STABLE
 #define RS_API_STABLE

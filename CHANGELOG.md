@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Standalone libbpf loading guide in SDK Quick Start — documents `__RSWITCH_MAPS_H` escape hatch for projects using custom loaders instead of `rs_loader`
+
+### Fixed
+- `sdk/include/rswitch_bpf.h`: broken relative include `../core/map_defs.h` → `map_defs.h` (fixes downstream vendored SDK builds)
+
 ---
 
 ## [2.1.0] - 2026-03-29

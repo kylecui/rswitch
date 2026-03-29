@@ -863,7 +863,94 @@ For detailed descriptions, see [Platform Architecture — Module Classification]
 
 ---
 
-## 13. Further Reading
+## 13. Loading Modules Without rs_loader
+
+The default SDK workflow assumes modules are loaded by `rs_loader`, which resolves `extern` map references automatically at load time. If your project uses **standard libbpf APIs** (`bpf_object__open()` / `bpf_object__load()`) with its own loader, the `extern` pipeline map declarations in `rswitch_helpers.h` will cause load failures because libbpf cannot resolve them without explicit BTF-based map reuse setup.
+
+### The `__RSWITCH_MAPS_H` Escape Hatch
+
+`rswitch_helpers.h` guards its extern map declarations with `#ifndef __RSWITCH_MAPS_H`. Define this macro **before** including any rSwitch headers to suppress the externs, then provide your own concrete (non-extern) map definitions with `LIBBPF_PIN_BY_NAME` pinning.
+
+### Step-by-Step
+
+1. **Create a local map header** (e.g., `my_maps.h`):
+
+```c
+/* Suppress extern map declarations from rswitch_helpers.h */
+#ifndef __RSWITCH_MAPS_H
+#define __RSWITCH_MAPS_H
+#endif
+
+#include <rswitch_module.h>
+
+/* Concrete (non-extern) pipeline map definitions.
+ * These attach to the same pinned maps created by rSwitch core
+ * via LIBBPF_PIN_BY_NAME. */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct rs_ctx);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_ctx_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __uint(max_entries, RS_MAX_PROGS);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_progs SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, RS_MAX_PROGS);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_prog_chain SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 1024 * 1024);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_event_bus SEC(".maps");
+```
+
+2. **Include your map header first** in each BPF module:
+
+```c
+#include "my_maps.h"    /* Must come before rswitch_module.h */
+
+SEC("xdp")
+int my_module(struct xdp_md *ctx)
+{
+    struct rs_ctx *rs = RS_GET_CTX();
+    if (!rs) return XDP_PASS;
+    /* ... module logic ... */
+    RS_TAIL_CALL_NEXT(ctx, rs);
+    return XDP_PASS;
+}
+```
+
+3. **Set the pin path** in your loader so libbpf finds the rSwitch core maps:
+
+```c
+struct bpf_object *obj = bpf_object__open(path);
+/* Point to the rSwitch pinned map directory */
+bpf_object__set_pin_maps_dir(obj, "/sys/fs/bpf");
+bpf_object__load(obj);
+```
+
+### Important Notes
+
+- Map type, key/value types, and `max_entries` **must exactly match** the core definitions in `rswitch_helpers.h` (lines 251-281). Mismatches will cause silent data corruption or load failures.
+- All pipeline macros (`RS_GET_CTX`, `RS_TAIL_CALL_NEXT`, `RS_EMIT_EVENT`, etc.) continue to work normally — they reference maps by name, not by extern linkage.
+- This pattern is used in production by [jz_sniff_rn](https://github.com/kylecui/jz_sniff_rn) (8 BPF modules loaded via custom `bpf_loader.c`).
+
+---
+
+## 14. Further Reading
 
 - [ABI Stability Policy](../../docs/development/ABI_POLICY.md) — Version semantics, stability tiers, deprecation rules
 - [Map Pinning Convention](../../docs/development/MAP_PINNING.md) — Map pin path standards
