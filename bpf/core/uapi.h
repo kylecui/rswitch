@@ -55,6 +55,7 @@
  * Populated by parsing modules and consumed by downstream modules.
  * Avoids re-parsing the same packet multiple times.
  */
+#ifndef __RSWITCH_ABI_H  /* Skip if rswitch_abi.h already defined these structs */
 struct rs_layers {
     __u16 eth_proto;            /* Ethernet protocol (ETH_P_IP, ETH_P_IPV6, etc.) */
     __u16 vlan_ids[RS_VLAN_MAX_DEPTH]; /* VLAN IDs (outer to inner) */
@@ -123,6 +124,7 @@ struct rs_ctx {
     /* Reserved for future use (64 bytes — ABI v2) */
     __u32 reserved[16];
 };
+#endif /* !__RSWITCH_ABI_H */
 
 /* Error codes */
 #define RS_ERROR_NONE           0

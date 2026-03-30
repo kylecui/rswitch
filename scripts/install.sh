@@ -189,6 +189,7 @@ install_deps_apt() {
         libelf-dev
         zlib1g-dev
         libsqlite3-dev
+        libsystemd-dev
         dhcpcd5
         ethtool
         iproute2

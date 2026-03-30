@@ -185,6 +185,7 @@ RS_API_EXPERIMENTAL struct rs_module_deps {
 
 /* ── Parsed packet layer offsets ───────────────────────────────── */
 
+#ifndef __RSWITCH_UAPI_H  /* Skip if uapi.h already defined these structs */
 struct rs_layers {
     __u16 eth_proto;            /* Ethernet protocol (ETH_P_IP, ETH_P_IPV6, etc.) */
     __u16 vlan_ids[RS_VLAN_MAX_DEPTH]; /* VLAN IDs (outer to inner) */
@@ -249,6 +250,7 @@ struct rs_ctx {
     /* Reserved for future use (64 bytes — ABI v2) */
     __u32 reserved[16];
 };
+#endif /* !__RSWITCH_UAPI_H */
 
 /* ── Error codes ───────────────────────────────────────────────── */
 

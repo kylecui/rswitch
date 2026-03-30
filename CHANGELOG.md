@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sdk/include/rswitch_bpf.h`: broken relative include `../core/map_defs.h` → `map_defs.h` (fixes downstream vendored SDK builds)
 - Makefile: added `-I./sdk/include` to `INCLUDES` so `bpf/core/module_abi.h` can resolve `rswitch_abi.h` during builds
 - `.gitmodules`: changed libbpf submodule from private SSH URL (`git@github.com:kylecui/libbpf.git`) to public HTTPS (`https://github.com/libbpf/libbpf.git`)
+- `rswitch_abi.h` / `uapi.h`: added cross-include guards to prevent `rs_layers` and `rs_ctx` struct redefinition when both headers are included
+- `install.sh`: added `libsystemd-dev` to apt dependency list (required for `sd_notify` build)
 
 ---
 
