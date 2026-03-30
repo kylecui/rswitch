@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `sdk/include/rswitch_bpf.h`: broken relative include `../core/map_defs.h` → `map_defs.h` (fixes downstream vendored SDK builds)
+- Makefile: added `-I./sdk/include` to `INCLUDES` so `bpf/core/module_abi.h` can resolve `rswitch_abi.h` during builds
+- `.gitmodules`: changed libbpf submodule from private SSH URL (`git@github.com:kylecui/libbpf.git`) to public HTTPS (`https://github.com/libbpf/libbpf.git`)
 
 ---
 

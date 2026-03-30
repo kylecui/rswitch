@@ -12,6 +12,8 @@
 
 ### 修复
 - `sdk/include/rswitch_bpf.h`: 修复相对路径引用 `../core/map_defs.h` → `map_defs.h`（修复下游 SDK 贩售构建）
+- Makefile: `INCLUDES` 新增 `-I./sdk/include`，使 `bpf/core/module_abi.h` 构建时能找到 `rswitch_abi.h`
+- `.gitmodules`: libbpf 子模块从私有 SSH URL（`git@github.com:kylecui/libbpf.git`）改为公开 HTTPS（`https://github.com/libbpf/libbpf.git`）
 
 ---
 
