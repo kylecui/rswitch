@@ -34,6 +34,7 @@
 #endif
 
 #include "rswitch_abi.h"
+#include "rswitch_obs.h"
 
 /* ── Module config constants ───────────────────────────────────── */
 
@@ -280,6 +281,66 @@ struct {
     __uint(max_entries, 64);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_module_stats_map SEC(".maps");
+
+/* ── Observability maps (L0 always-on) ─────────────────────────── */
+
+#ifndef BPF_F_MMAPABLE
+#define BPF_F_MMAPABLE  (1U << 5)
+#endif
+
+#ifndef BPF_F_NO_PREALLOC
+#define BPF_F_NO_PREALLOC (1U << 0)
+#endif
+
+/* Observability config (single entry, mmap-able for fast userspace read) */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct rs_obs_cfg);
+    __uint(map_flags, BPF_F_MMAPABLE);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_obs_cfg_map SEC(".maps");
+
+/* Per-stage/module/action packet and byte counters */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct rs_obs_stats_key);
+    __type(value, struct rs_obs_stats_val);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_obs_stats_map SEC(".maps");
+
+/* Per-stage/module drop reason counters */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct rs_drop_stats_key);
+    __type(value, struct rs_drop_stats_val);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_drop_stats_map SEC(".maps");
+
+/* Packet length histogram (log2 buckets) */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, 32768);
+    __type(key, struct rs_hist_key);
+    __type(value, struct rs_hist_val);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_hist_map SEC(".maps");
+
+/* Stage hit matrix (pipeline × profile × stage × module) */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, 8192);
+    __type(key, struct rs_stage_hit_key);
+    __type(value, struct rs_stage_hit_val);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} rs_stage_hit_map SEC(".maps");
 
 /* ── Map helper functions ──────────────────────────────────────── */
 
