@@ -23,6 +23,12 @@
 
 #include "../include/rswitch_common.h"
 
+/* Observability identity for this compilation unit */
+enum {
+    RS_THIS_STAGE_ID  = 100,
+    RS_THIS_MODULE_ID = RS_MOD_EGRESS,
+};
+
 char _license[] SEC("license") = "GPL";
 
 /* REMOVED: All VLAN-specific helper functions moved to egress_vlan module
@@ -66,6 +72,8 @@ int rswitch_egress(struct xdp_md *ctx)
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
     __u32 pkt_len = data_end - data;
+    
+    RS_OBS_STAGE_HIT(ctx, rctx, pkt_len);
     
     __u32 stats_key = egress_ifindex;
     struct rs_stats *stats = bpf_map_lookup_elem(&rs_stats_map, &stats_key);
@@ -130,6 +138,8 @@ int rswitch_egress(struct xdp_md *ctx)
     if (!first_egress_prog || *first_egress_prog == 0) {
         /* No egress pipeline configured - pass directly */
         rs_debug("No egress pipeline configured, passing directly");
+        rctx->action = XDP_PASS;
+        RS_OBS_FINAL_ACTION(ctx, rctx, pkt_len);
         return XDP_PASS;
     }
     
@@ -146,6 +156,8 @@ int rswitch_egress(struct xdp_md *ctx)
      * Fall back to direct XDP_PASS (parsed won't be cleared, but packet transmits)
      */
     rs_debug("WARN: Tail-call to egress pipeline failed, passing directly");
+    rctx->action = XDP_PASS;
+    RS_OBS_FINAL_ACTION(ctx, rctx, pkt_len);
     return XDP_PASS;
 }
 

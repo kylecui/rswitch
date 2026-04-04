@@ -20,6 +20,12 @@
 
 #include "../include/rswitch_common.h"
 
+/* Observability identity for this compilation unit */
+enum {
+    RS_THIS_STAGE_ID  = RS_STAGE_PREPROCESS,
+    RS_THIS_MODULE_ID = RS_MOD_DISPATCHER,
+};
+
 char _license[] SEC("license") = "GPL";
 
 /* Static zero-initialized templates for efficient reset */
@@ -69,7 +75,7 @@ static __always_inline int init_context(struct xdp_md *ctx, struct rs_ctx *rctx,
     int eth_proto = parse_ethhdr_vlan(&nh, data_end, &eth, &vlans);
     if (eth_proto < 0 || !eth) {
         rctx->error = RS_ERROR_PARSE_FAILED;
-        rctx->drop_reason = RS_DROP_PARSE_ERROR;
+        rctx->drop_reason = RS_DROP_PARSE_ETH;
         return -1;
     }
     
@@ -209,7 +215,11 @@ int rswitch_dispatcher(struct xdp_md *ctx)
     if (init_context(ctx, rctx, cfg) < 0) {
         /* Parsing failed - malformed packet */
         rs_debug("Packet parsing failed on port %u", ifindex);
-        rctx->drop_reason = RS_DROP_PARSE_ERROR;
+        RS_RECORD_DROP(ctx, rctx, RS_DROP_PARSE_ETH);
+        void *_de = (void *)(long)ctx->data_end;
+        void *_d  = (void *)(long)ctx->data;
+        __u32 _pl = _de - _d;
+        RS_OBS_FINAL_ACTION(ctx, rctx, _pl);
         rs_stats_update_drop(rctx);
         return XDP_DROP;
     }
@@ -230,10 +240,15 @@ int rswitch_dispatcher(struct xdp_md *ctx)
     __u32 pkt_len = data_end - data;
     rs_stats_update_rx(rctx, pkt_len);
     
+    /* L0: Record stage hit + packet-length histogram */
+    RS_OBS_STAGE_HIT(ctx, rctx, pkt_len);
+    
     /* Get first program in pipeline */
     if (get_first_prog(rctx) < 0) {
         /* No modules loaded - pass through */
         rs_debug("No pipeline configured, passing packet");
+        rctx->action = XDP_PASS;
+        RS_OBS_FINAL_ACTION(ctx, rctx, pkt_len);
         return XDP_PASS;
     }
     
@@ -247,7 +262,8 @@ int rswitch_dispatcher(struct xdp_md *ctx)
     /* Tail-call failed - this should not happen if loader is correct */
     rs_debug("CRITICAL: Tail-call to prog_id %u failed", rctx->next_prog_id);
     rctx->error = RS_ERROR_INTERNAL;
-    rctx->drop_reason = RS_DROP_PARSE_ERROR;
+    RS_RECORD_DROP(ctx, rctx, RS_DROP_TAILCALL_FAIL);
+    RS_OBS_FINAL_ACTION(ctx, rctx, pkt_len);
     rs_stats_update_drop(rctx);
     
     return XDP_DROP;
