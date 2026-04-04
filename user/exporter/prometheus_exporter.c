@@ -24,6 +24,7 @@
 #endif
 
 #include "../../bpf/core/afxdp_common.h"
+#include "../../sdk/include/rswitch_obs.h"
 #include "prometheus_exporter.h"
 
 #define RS_STATS_MAP_PATH "/sys/fs/bpf/rs_stats_map"
@@ -32,6 +33,10 @@
 #define QDEPTH_MAP_PATH "/sys/fs/bpf/qdepth_map"
 #define RS_MAC_TABLE_MAP_PATH "/sys/fs/bpf/rs_mac_table"
 #define RS_VLAN_MAP_PATH "/sys/fs/bpf/rs_vlan_map"
+#define RS_OBS_CFG_MAP_PATH "/sys/fs/bpf/rs_obs_cfg_map"
+#define RS_OBS_STATS_MAP_PATH "/sys/fs/bpf/rs_obs_stats_map"
+#define RS_DROP_STATS_MAP_PATH "/sys/fs/bpf/rs_drop_stats_map"
+#define RS_STAGE_HIT_MAP_PATH "/sys/fs/bpf/rs_stage_hit_map"
 
 #define HTTP_BACKLOG 32
 #define HTTP_REQ_BUF 2048
@@ -85,6 +90,10 @@ struct exporter_ctx {
     struct map_handle qdepth;
     struct map_handle mac_table;
     struct map_handle vlan_map;
+    struct map_handle obs_cfg;
+    struct map_handle obs_stats;
+    struct map_handle drop_stats;
+    struct map_handle stage_hit;
     struct metrics_buf out;
     int ncpus;
     int server_fd;
@@ -121,6 +130,75 @@ static const struct metric_family g_static_families[] = {
     {"rswitch_uptime_seconds", "Exporter process uptime in seconds", "gauge"},
     {"rswitch_info", "Static exporter information", "gauge"},
 };
+
+static const struct metric_family g_obs_families[] = {
+    {"rswitch_obs_stage_packets_total", "Stage-aware packet counter from obs map", "counter"},
+    {"rswitch_obs_stage_bytes_total", "Stage-aware byte counter from obs map", "counter"},
+    {"rswitch_drop_reason_total", "Drop reason counter per stage and module", "counter"},
+    {"rswitch_profile_stage_hit_total", "Stage hit counter per pipeline/profile", "counter"},
+    {"rswitch_obs_config", "Observability configuration", "gauge"},
+};
+
+static const char *module_id_to_name(__u16 mod_id)
+{
+    static char user_buf[32];
+
+    switch (mod_id) {
+    case RS_MOD_DISPATCHER: return "dispatcher";
+    case RS_MOD_VLAN: return "vlan";
+    case RS_MOD_QOS_CLASSIFY: return "qos_classify";
+    case RS_MOD_ACL: return "acl";
+    case RS_MOD_ROUTE: return "route";
+    case RS_MOD_FLOW_TABLE: return "flow_table";
+    case RS_MOD_MIRROR: return "mirror";
+    case RS_MOD_L2LEARN: return "l2learn";
+    case RS_MOD_SFLOW: return "sflow";
+    case RS_MOD_LASTCALL: return "lastcall";
+    case RS_MOD_EGRESS: return "egress";
+    case RS_MOD_EGRESS_QOS: return "egress_qos";
+    case RS_MOD_EGRESS_VLAN: return "egress_vlan";
+    case RS_MOD_EGRESS_FINAL: return "egress_final";
+    case RS_MOD_VETH_EGRESS: return "veth_egress";
+    default:
+        if (mod_id >= RS_MOD_USER_BASE) {
+            snprintf(user_buf, sizeof(user_buf), "user_%u", mod_id);
+            return user_buf;
+        }
+        return "unknown";
+    }
+}
+
+static const char *drop_reason_to_name(__u16 reason)
+{
+    static char reason_buf[32];
+
+    switch (reason) {
+    case RS_DROP_PARSE_ETH:      return "PARSE_ETH";
+    case RS_DROP_PARSE_VLAN_TAG: return "PARSE_VLAN_TAG";
+    case RS_DROP_PARSE_IP:       return "PARSE_IP";
+    case RS_DROP_ACL_DENY:       return "ACL_DENY";
+    case RS_DROP_NO_ROUTE:       return "NO_ROUTE";
+    case RS_DROP_TTL_EXCEEDED:   return "TTL_EXCEEDED";
+    case RS_DROP_QUEUE_FULL:     return "QUEUE_FULL";
+    case RS_DROP_RATE_EXCEEDED:  return "RATE_EXCEEDED";
+    case RS_DROP_TAILCALL_FAIL:  return "TAILCALL_FAIL";
+    case RS_DROP_INTERNAL:       return "INTERNAL";
+    case RS_DROP_REDIRECT_FAIL:  return "REDIRECT_FAIL";
+    default:
+        snprintf(reason_buf, sizeof(reason_buf), "reason_%u", reason);
+        return reason_buf;
+    }
+}
+
+static const char *obs_level_to_name(__u32 level)
+{
+    switch (level) {
+    case RS_OBS_LEVEL_L0: return "L0";
+    case RS_OBS_LEVEL_L1: return "L1";
+    case RS_OBS_LEVEL_L2: return "L2";
+    default:              return "UNKNOWN";
+    }
+}
 
 static uint64_t ts_ns(const struct timespec *ts)
 {
@@ -684,6 +762,139 @@ static int emit_static_metrics(struct exporter_ctx *ctx)
     return 0;
 }
 
+static int emit_obs_metrics(struct exporter_ctx *ctx)
+{
+    uint32_t cfg_key = 0;
+    struct rs_obs_cfg cfg = {0};
+
+    if (emit_families(&ctx->out, g_obs_families,
+                      sizeof(g_obs_families) / sizeof(g_obs_families[0])) < 0) {
+        return -ENOMEM;
+    }
+
+    if (map_open(&ctx->obs_cfg) == 0 &&
+        bpf_map_lookup_elem(ctx->obs_cfg.fd, &cfg_key, &cfg) == 0) {
+        if (out_appendf(&ctx->out,
+                        "rswitch_obs_config{level=\"%s\",sample_ppm=\"%u\",event_mask=\"0x%llx\",burst_limit=\"%u\"} 1\n",
+                        obs_level_to_name(cfg.level),
+                        cfg.sample_ppm,
+                        (unsigned long long)cfg.event_mask,
+                        cfg.burst_limit) < 0) {
+            return -ENOMEM;
+        }
+    }
+
+    if (map_open(&ctx->obs_stats) == 0) {
+        struct rs_obs_stats_key key;
+        struct rs_obs_stats_key next_key;
+        struct rs_obs_stats_val *vals = calloc((size_t)ctx->ncpus, sizeof(*vals));
+
+        if (!vals)
+            return -ENOMEM;
+
+        if (bpf_map_get_next_key(ctx->obs_stats.fd, NULL, &next_key) == 0) {
+            do {
+                __u64 packets = 0;
+                __u64 bytes = 0;
+
+                key = next_key;
+                if (bpf_map_lookup_elem(ctx->obs_stats.fd, &key, vals) == 0) {
+                    for (int c = 0; c < ctx->ncpus; c++) {
+                        packets += vals[c].packets;
+                        bytes += vals[c].bytes;
+                    }
+                    if (packets || bytes) {
+                        if (out_appendf(&ctx->out,
+                                        "rswitch_obs_stage_packets_total{pipeline_id=\"%u\",profile_id=\"%u\",stage_id=\"%u\",module=\"%s\"} %llu\n",
+                                        key.pipeline_id, key.profile_id, key.stage_id,
+                                        module_id_to_name(key.module_id),
+                                        (unsigned long long)packets) < 0 ||
+                            out_appendf(&ctx->out,
+                                        "rswitch_obs_stage_bytes_total{pipeline_id=\"%u\",profile_id=\"%u\",stage_id=\"%u\",module=\"%s\"} %llu\n",
+                                        key.pipeline_id, key.profile_id, key.stage_id,
+                                        module_id_to_name(key.module_id),
+                                        (unsigned long long)bytes) < 0) {
+                            free(vals);
+                            return -ENOMEM;
+                        }
+                    }
+                }
+            } while (bpf_map_get_next_key(ctx->obs_stats.fd, &key, &next_key) == 0);
+        }
+
+        free(vals);
+    }
+
+    if (map_open(&ctx->drop_stats) == 0) {
+        struct rs_drop_stats_key key;
+        struct rs_drop_stats_key next_key;
+        struct rs_drop_stats_val *vals = calloc((size_t)ctx->ncpus, sizeof(*vals));
+
+        if (!vals)
+            return -ENOMEM;
+
+        if (bpf_map_get_next_key(ctx->drop_stats.fd, NULL, &next_key) == 0) {
+            do {
+                __u64 packets = 0;
+
+                key = next_key;
+                if (bpf_map_lookup_elem(ctx->drop_stats.fd, &key, vals) == 0) {
+                    for (int c = 0; c < ctx->ncpus; c++)
+                        packets += vals[c].packets;
+                    if (packets) {
+                        if (out_appendf(&ctx->out,
+                                        "rswitch_drop_reason_total{pipeline_id=\"%u\",profile_id=\"%u\",stage_id=\"%u\",module=\"%s\",reason=\"%s\"} %llu\n",
+                                        key.pipeline_id, key.profile_id, key.stage_id,
+                                        module_id_to_name(key.module_id),
+                                        drop_reason_to_name(key.reason),
+                                        (unsigned long long)packets) < 0) {
+                            free(vals);
+                            return -ENOMEM;
+                        }
+                    }
+                }
+            } while (bpf_map_get_next_key(ctx->drop_stats.fd, &key, &next_key) == 0);
+        }
+
+        free(vals);
+    }
+
+    if (map_open(&ctx->stage_hit) == 0) {
+        struct rs_stage_hit_key key;
+        struct rs_stage_hit_key next_key;
+        struct rs_stage_hit_val *vals = calloc((size_t)ctx->ncpus, sizeof(*vals));
+
+        if (!vals)
+            return -ENOMEM;
+
+        if (bpf_map_get_next_key(ctx->stage_hit.fd, NULL, &next_key) == 0) {
+            do {
+                __u64 hits = 0;
+
+                key = next_key;
+                if (bpf_map_lookup_elem(ctx->stage_hit.fd, &key, vals) == 0) {
+                    for (int c = 0; c < ctx->ncpus; c++)
+                        hits += vals[c].hits;
+                    if (hits) {
+                        if (out_appendf(&ctx->out,
+                                        "rswitch_profile_stage_hit_total{pipeline_id=\"%u\",profile_id=\"%u\",stage_id=\"%u\",module=\"%s\"} %llu\n",
+                                        key.pipeline_id, key.profile_id, key.stage_id,
+                                        module_id_to_name(key.module_id),
+                                        (unsigned long long)hits) < 0) {
+                            free(vals);
+                            return -ENOMEM;
+                        }
+                    }
+                }
+            } while (bpf_map_get_next_key(ctx->stage_hit.fd, &key, &next_key) == 0);
+        }
+
+        free(vals);
+    }
+
+    return 0;
+}
+
 static int refresh_metrics(struct exporter_ctx *ctx)
 {
     struct timespec now;
@@ -695,7 +906,8 @@ static int refresh_metrics(struct exporter_ctx *ctx)
     if (emit_port_metrics(ctx) < 0 ||
         emit_module_metrics(ctx) < 0 ||
         emit_voqd_metrics(ctx) < 0 ||
-        emit_static_metrics(ctx) < 0) {
+        emit_static_metrics(ctx) < 0 ||
+        emit_obs_metrics(ctx) < 0) {
         RS_LOG_ERROR("Failed to build metrics payload");
         return -ENOMEM;
     }
@@ -859,6 +1071,10 @@ static void ctx_init(struct exporter_ctx *ctx, const struct prometheus_exporter_
     ctx->qdepth.path = QDEPTH_MAP_PATH;
     ctx->mac_table.path = RS_MAC_TABLE_MAP_PATH;
     ctx->vlan_map.path = RS_VLAN_MAP_PATH;
+    ctx->obs_cfg.path = RS_OBS_CFG_MAP_PATH;
+    ctx->obs_stats.path = RS_OBS_STATS_MAP_PATH;
+    ctx->drop_stats.path = RS_DROP_STATS_MAP_PATH;
+    ctx->stage_hit.path = RS_STAGE_HIT_MAP_PATH;
 
     ctx->rs_stats.fd = -1;
     ctx->rs_module_stats.fd = -1;
@@ -866,6 +1082,10 @@ static void ctx_init(struct exporter_ctx *ctx, const struct prometheus_exporter_
     ctx->qdepth.fd = -1;
     ctx->mac_table.fd = -1;
     ctx->vlan_map.fd = -1;
+    ctx->obs_cfg.fd = -1;
+    ctx->obs_stats.fd = -1;
+    ctx->drop_stats.fd = -1;
+    ctx->stage_hit.fd = -1;
 }
 
 static void ctx_destroy(struct exporter_ctx *ctx)
@@ -876,6 +1096,10 @@ static void ctx_destroy(struct exporter_ctx *ctx)
     map_close(&ctx->qdepth);
     map_close(&ctx->mac_table);
     map_close(&ctx->vlan_map);
+    map_close(&ctx->obs_cfg);
+    map_close(&ctx->obs_stats);
+    map_close(&ctx->drop_stats);
+    map_close(&ctx->stage_hit);
 
     if (ctx->server_fd >= 0) {
         close(ctx->server_fd);
