@@ -25,6 +25,7 @@ LIBXDP_LIBS = $(shell pkg-config --libs libxdp 2>/dev/null || echo "-lxdp")
 BPF_DIR = ./bpf
 CORE_DIR = $(BPF_DIR)/core
 MODULES_DIR = $(BPF_DIR)/modules
+DIAG_DIR = $(BPF_DIR)/diag
 INCLUDE_DIR = $(BPF_DIR)/include
 USER_DIR = ./user
 COMMON_DIR = $(USER_DIR)/common
@@ -70,6 +71,7 @@ EVENT_CONSUMER = $(BUILD_DIR)/rswitch-events
 PACKET_TRACE = $(BUILD_DIR)/rs_packet_trace
 SFLOW_EXPORT = $(BUILD_DIR)/rswitch-sflow
 PROMETHEUS_EXPORTER = $(BUILD_DIR)/rswitch-prometheus
+RSDIAG = $(BUILD_DIR)/rsdiag
 WATCHDOG = $(BUILD_DIR)/rswitch-watchdog
 CONTROLLER = $(BUILD_DIR)/rswitch-controller
 AGENT = $(BUILD_DIR)/rswitch-agent
@@ -81,11 +83,12 @@ WATCHDOG_OBJ = $(BUILD_DIR)/watchdog.o
 # AFXDP_TEST = $(BUILD_DIR)/afxdp_test  # Requires libbpf with xsk.h support
 CORE_OBJS = $(patsubst $(CORE_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(CORE_DIR)/*.bpf.c))
 MODULE_OBJS = $(patsubst $(MODULES_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(MODULES_DIR)/*.bpf.c))
-ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS)
+DIAG_OBJS = $(patsubst $(DIAG_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(DIAG_DIR)/*.bpf.c))
+ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS) $(DIAG_OBJS)
 
 .PHONY: all clean dirs vmlinux help test test-bpf test-ci fuzz integration-test benchmark gen-docs
 
-all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSFLOWCTL) $(RSNATCTL) $(RSVOQCTL) $(RSTUNNELCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(SFLOW_EXPORT) $(PROMETHEUS_EXPORTER) $(WATCHDOG) $(CONTROLLER) $(AGENT) $(SNMPAGENT) $(MGMTD) $(ALL_BPF_OBJS)
+all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSFLOWCTL) $(RSNATCTL) $(RSVOQCTL) $(RSTUNNELCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(SFLOW_EXPORT) $(PROMETHEUS_EXPORTER) $(RSDIAG) $(WATCHDOG) $(CONTROLLER) $(AGENT) $(SNMPAGENT) $(MGMTD) $(ALL_BPF_OBJS)
 	@echo "✓ Build complete"
 	@echo "  Loader: $(LOADER)"
 	@echo "  Reload: $(HOT_RELOAD)"
@@ -107,6 +110,7 @@ all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL
 	@echo "  Event Consumer: $(EVENT_CONSUMER)"
 	@echo "  sFlow: $(SFLOW_EXPORT)"
 	@echo "  Prometheus: $(PROMETHEUS_EXPORTER)"
+	@echo "  Diag Tool: $(RSDIAG)"
 	@echo "  Watchdog: $(WATCHDOG)"
 	@echo "  Controller: $(CONTROLLER)"
 	@echo "  Agent: $(AGENT)"
@@ -137,6 +141,13 @@ $(OBJ_DIR)/%.bpf.o: $(MODULES_DIR)/%.bpf.c $(INCLUDE_DIR)/vmlinux.h $(wildcard $
 	@echo "  CC [BPF]  $@"
 	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -DDEBUG \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		-c $< -o $@
+	@$(LLVM_STRIP) -g $@
+
+$(OBJ_DIR)/%.bpf.o: $(DIAG_DIR)/%.bpf.c $(INCLUDE_DIR)/vmlinux.h $(wildcard $(DIAG_DIR)/*.h) $(wildcard $(SDK_INCLUDE_DIR)/*.h)
+	@echo "  CC [BPF]  $@"
+	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -D__BPF__ \
+		$(INCLUDES) -I$(DIAG_DIR) $(CLANG_BPF_SYS_INCLUDES) \
 		-c $< -o $@
 	@$(LLVM_STRIP) -g $@
 
@@ -410,6 +421,14 @@ $(PROMETHEUS_EXPORTER): $(USER_DIR)/exporter/prometheus_exporter.c $(USER_DIR)/e
 		-o $@ $(USER_DIR)/exporter/prometheus_exporter.c \
 		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
 
+# Build rsdiag diagnostic CLI tool
+$(RSDIAG): $(USER_DIR)/tools/rsdiag.c $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/tools $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/tools/rsdiag.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
+
 # Build packet trace v2 (ringbuf-based)
 $(BUILD_DIR)/rs_packet_trace_v2: $(USER_DIR)/tools/rs_packet_trace_v2.c $(BPF_DIR)/tools/packet_trace.bpf.o
 	@echo "  CC [USER] $@"
@@ -619,7 +638,8 @@ install: all
 	@cp -f $(BUILD_DIR)/rswitch-sflow    $(INSTALL_PREFIX)/build/
 	@for f in $(BUILD_DIR)/rswitch-voqd $(BUILD_DIR)/rswitch-stpd $(BUILD_DIR)/rswitch-lldpd \
 	          $(BUILD_DIR)/rswitch-lacpd $(BUILD_DIR)/rswitch-prometheus \
-	          $(BUILD_DIR)/rswitch-controller $(BUILD_DIR)/rswitch-agent $(BUILD_DIR)/rswitch-snmpagent; do \
+	          $(BUILD_DIR)/rswitch-controller $(BUILD_DIR)/rswitch-agent $(BUILD_DIR)/rswitch-snmpagent \
+	          $(BUILD_DIR)/rsdiag; do \
 	    [ -f "$$f" ] && cp -f "$$f" $(INSTALL_PREFIX)/build/ || true; \
 	done
 	@# BPF objects
@@ -666,6 +686,7 @@ install-sdk:
 	@install -d $(SDK_INCLUDEDIR)
 	@install -m 644 sdk/include/rswitch_module.h   $(SDK_INCLUDEDIR)/
 	@install -m 644 sdk/include/rswitch_abi.h      $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_obs.h      $(SDK_INCLUDEDIR)/
 	@install -m 644 sdk/include/rswitch_helpers.h   $(SDK_INCLUDEDIR)/
 	@install -m 644 sdk/include/rswitch_maps.h     $(SDK_INCLUDEDIR)/
 	@install -m 644 sdk/include/rswitch_common.h   $(SDK_INCLUDEDIR)/
@@ -709,7 +730,8 @@ help:
 	@echo "Directory structure:"
 	@echo "  $(CORE_DIR)/       - Core BPF programs (dispatcher, egress)"
 	@echo "  $(MODULES_DIR)/    - Pluggable modules (vlan, acl, route, etc.)"
-	@echo "  $(USER_DIR)/       - User-space programs (loader, cli)"
+	@echo "  $(DIAG_DIR)/       - Diagnostic BPF programs (fentry/fexit, tracepoints)"
+	@echo "  $(USER_DIR)/       - User-space programs (loader, cli, rsdiag)"
 	@echo "  $(BUILD_DIR)/      - Build output"
 	@echo ""
 	@echo "Usage:"
