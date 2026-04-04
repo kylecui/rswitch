@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 15,
+    RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 4,
+};
+
 char _license[] SEC("license") = "GPL";
 
 RS_DECLARE_MODULE("tunnel", RS_HOOK_XDP_INGRESS, 15,
@@ -342,6 +347,11 @@ int tunnel_xdp(struct xdp_md *xdp)
 
     if (!ctx)
         return XDP_PASS;
+
+    void *data_end = (void *)(long)xdp->data_end;
+    void *data = (void *)(long)xdp->data;
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp, ctx, pkt_len);
 
     if (!ctx->parsed) {
         RS_TAIL_CALL_NEXT(xdp, ctx);

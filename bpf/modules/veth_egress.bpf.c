@@ -2,6 +2,11 @@
 #include "../include/rswitch_common.h"
 #include "../core/veth_egress_common.h"
 
+enum {
+	RS_THIS_STAGE_ID  = 191,
+	RS_THIS_MODULE_ID = RS_MOD_VETH_EGRESS,
+};
+
 char _license[] SEC("license") = "GPL";
 
 RS_DECLARE_MODULE(
@@ -55,8 +60,13 @@ int veth_egress_redirect(struct xdp_md *ctx)
 {
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
+	__u32 obs_pkt_len = data_end - data;
 	struct voq_tx_meta *meta;
 	__u32 key = 0;
+
+	struct rs_ctx *obs_ctx = RS_GET_CTX();
+	if (obs_ctx)
+		RS_OBS_STAGE_HIT(ctx, obs_ctx, obs_pkt_len);
 	
 	struct veth_egress_config *config = bpf_map_lookup_elem(&veth_egress_config_map, &key);
 	if (!config || !config->enabled) {
