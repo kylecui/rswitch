@@ -14,6 +14,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 25,
+    RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 10,
+};
+
 char _license[] SEC("license") = "GPL";
 
 /* Module metadata */
@@ -153,6 +158,9 @@ int arp_learn_ingress(struct xdp_md *xdp_ctx)
     if (!ctx) {
         return XDP_PASS;
     }
+
+    __u32 pkt_len = (__u32)(data_end - data);
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
     
     /* Only process ARP packets */
     if (ctx->layers.eth_proto != ETH_P_ARP) {
