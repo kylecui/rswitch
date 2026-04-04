@@ -18,7 +18,9 @@
 #endif
 
 #include "uapi.h"
+#ifdef __BPF__
 #include "rswitch_obs.h"
+#endif
 
 /* VLAN mode enumeration */
 enum rs_vlan_mode {
@@ -72,6 +74,7 @@ struct rs_port_config {
     __u32 reserved2[4];
 };
 
+#ifdef __BPF__
 /* Port configuration map */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -101,6 +104,7 @@ struct {
     __type(value, __u32);                   /* port_idx (0-based) */
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_ifindex_to_port_map SEC(".maps");
+#endif /* __BPF__ */
 
 #define RS_MODULE_CONFIG_KEY_LEN 32
 #define RS_MODULE_CONFIG_VAL_LEN 64
@@ -120,6 +124,7 @@ struct rs_module_config_value {
     };
 };
 
+#ifdef __BPF__
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, struct rs_module_config_key);
@@ -127,6 +132,7 @@ struct {
     __uint(max_entries, RS_MAX_MODULE_CONFIG_ENTRIES);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_module_config_map SEC(".maps");
+#endif /* __BPF__ */
 
 
 
@@ -197,6 +203,7 @@ struct rs_vlan_members {
     __u32 reserved[4];
 };
 
+#ifdef __BPF__
 /* VLAN membership map */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -205,6 +212,7 @@ struct {
     __type(value, struct rs_vlan_members);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_vlan_map SEC(".maps");
+#endif /* __BPF__ */
 
 /* NOTE: rs_xdp_devmap removed from here!
  * Following PoC pattern: devmap is defined ONLY in lastcall.bpf.c
@@ -228,6 +236,7 @@ struct rs_stats {
     __u64 tx_errors;
 } __attribute__((aligned(8)));
 
+#ifdef __BPF__
 /* Per-interface statistics */
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -236,6 +245,7 @@ struct {
     __type(value, struct rs_stats);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_stats_map SEC(".maps");
+#endif /* __BPF__ */
 
 struct rs_module_stats {
     __u64 packets_processed;
@@ -248,6 +258,7 @@ struct rs_module_stats {
     char  name[32];
 } __attribute__((aligned(8)));
 
+#ifdef __BPF__
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, __u32);
@@ -311,8 +322,6 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_stage_hit_map SEC(".maps");
 
-/* Helper functions for map operations */
-
 /* Update statistics atomically */
 static __always_inline void rs_stats_update_rx(struct rs_ctx *ctx, __u32 bytes) {
     __u32 key = ctx->ifindex;
@@ -331,26 +340,12 @@ static __always_inline void rs_stats_update_drop(struct rs_ctx *ctx) {
     }
 }
 
-/* Lookup port configuration */
 static __always_inline struct rs_port_config *rs_get_port_config(__u32 ifindex) {
     return bpf_map_lookup_elem(&rs_port_config_map, &ifindex);
 }
 
-/* MAC table helper functions
- * 
- * NOTE: These helpers require rs_mac_table to be available:
- * - In l2learn.bpf.c: rs_mac_table is defined locally
- * - In other modules: must use extern declaration before calling these helpers
- * 
- * Example usage in other modules:
- *   extern struct { ... } rs_mac_table SEC(".maps");
- *   struct rs_mac_entry *entry = rs_mac_lookup(mac, vlan);
- */
-
 #ifndef RS_MAC_TABLE_OWNER
-/* Only provide helpers if not the owner (owner defines rs_mac_table directly) */
 
-/* Lookup MAC forwarding entry */
 static __always_inline struct rs_mac_entry *rs_mac_lookup(__u8 *mac, __u16 vlan) {
     struct rs_mac_key key = {};
     __builtin_memcpy(key.mac, mac, 6);
@@ -358,7 +353,6 @@ static __always_inline struct rs_mac_entry *rs_mac_lookup(__u8 *mac, __u16 vlan)
     return bpf_map_lookup_elem(&rs_mac_table, &key);
 }
 
-/* Update MAC table (for learning) */
 static __always_inline int rs_mac_update(__u8 *mac, __u16 vlan, __u32 ifindex, __u64 timestamp) {
     struct rs_mac_key key = {};
     struct rs_mac_entry entry = {
@@ -374,7 +368,6 @@ static __always_inline int rs_mac_update(__u8 *mac, __u16 vlan, __u32 ifindex, _
 
 #endif /* !RS_MAC_TABLE_OWNER */
 
-/* Check if port is member of VLAN (tagged or untagged) */
 static __always_inline int rs_is_vlan_member(__u16 vlan, __u32 ifindex, int *is_tagged) {
     struct rs_vlan_members *members = bpf_map_lookup_elem(&rs_vlan_map, &vlan);
     if (!members)
@@ -398,5 +391,7 @@ static __always_inline int rs_is_vlan_member(__u16 vlan, __u32 ifindex, int *is_
     
     return 0;
 }
+
+#endif /* __BPF__ */
 
 #endif /* __RSWITCH_MAP_DEFS_H */

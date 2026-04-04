@@ -786,7 +786,9 @@ static int compare_modules(const void *a, const void *b)
 {
     const struct loaded_module *ma = (const struct loaded_module *)a;
     const struct loaded_module *mb = (const struct loaded_module *)b;
-    return ma->stage - mb->stage;
+    if (ma->stage < mb->stage) return -1;
+    if (ma->stage > mb->stage) return 1;
+    return 0;
 }
 
 /* Load core dispatcher and egress programs */
@@ -1574,7 +1576,8 @@ static int configure_ports(struct loader_ctx *ctx)
         }
         
         char ifname[IF_NAMESIZE];
-        if_indextoname(ifindex, ifname);
+        if (!if_indextoname(ifindex, ifname))
+            snprintf(ifname, sizeof(ifname), "if%u", ifindex);
         
         const char *mode_str[] = {"OFF", "ACCESS", "TRUNK", "HYBRID"};
         printf("  Port %u (%s) -> port_idx %u: mode=%s, vlan=%d, learning=%s\n", 
@@ -2154,7 +2157,8 @@ static int populate_devmaps(struct loader_ctx *ctx)
     for (i = 0; i < ctx->num_interfaces; i++) {
         __u32 ifindex = ctx->interfaces[i];
         char ifname[IF_NAMESIZE];
-        if_indextoname(ifindex, ifname);
+        if (!if_indextoname(ifindex, ifname))
+            snprintf(ifname, sizeof(ifname), "if%u", ifindex);
         
         /* XDP devmap: queue 1 (round-robin across 1-3 in production) */
         if (xdp_devmap_fd >= 0) {
@@ -2280,7 +2284,8 @@ static int setup_veth_egress(struct loader_ctx *ctx)
             err = bpf_map_update_elem(ctx->voq_egress_devmap_fd, &ifindex, &val, BPF_ANY);
             if (err) {
                 char ifname[IF_NAMESIZE];
-                if_indextoname(ifindex, ifname);
+                if (!if_indextoname(ifindex, ifname))
+                    snprintf(ifname, sizeof(ifname), "if%u", ifindex);
                 RS_LOG_WARN("Failed to add %s to voq_egress_devmap: %s",
                             ifname, strerror(errno));
             }
@@ -2540,7 +2545,8 @@ static int attach_xdp(struct loader_ctx *ctx)
         __u32 ifindex = ctx->interfaces[i];
         char ifname[IF_NAMESIZE];
         
-        if_indextoname(ifindex, ifname);
+        if (!if_indextoname(ifindex, ifname))
+            snprintf(ifname, sizeof(ifname), "if%u", ifindex);
         
         /* Prepare interface (promisc + disable VLAN offload) */
         prepare_interface(ifname);
@@ -2577,13 +2583,23 @@ static int start_voqd(struct loader_ctx *ctx)
     }
     
     /* Build interface list */
+    size_t iface_off = 0;
     for (i = 0; i < ctx->num_interfaces; i++) {
         char ifname[IF_NAMESIZE];
-        if_indextoname(ctx->interfaces[i], ifname);
+        if (!if_indextoname(ctx->interfaces[i], ifname)) {
+            RS_LOG_ERROR("if_indextoname failed for ifindex %u", ctx->interfaces[i]);
+            continue;
+        }
         
-        if (i > 0) strcat(iface_list, ",");
-        strcat(iface_list, ifname);
+        if (iface_off > 0 && iface_off + 1 < sizeof(iface_list))
+            iface_list[iface_off++] = ',';
+        size_t nlen = strlen(ifname);
+        if (iface_off + nlen >= sizeof(iface_list))
+            break;
+        memcpy(iface_list + iface_off, ifname, nlen);
+        iface_off += nlen;
     }
+    iface_list[iface_off] = '\0';
     
     /* Build VOQd command from profile configuration */
     struct rs_profile_voqd *voqd = &ctx->profile.voqd;
@@ -2667,7 +2683,8 @@ static void detach_xdp(struct loader_ctx *ctx)
         char ifname[IF_NAMESIZE];
         char cmd[256];
         
-        if_indextoname(ifindex, ifname);
+        if (!if_indextoname(ifindex, ifname))
+            snprintf(ifname, sizeof(ifname), "if%u", ifindex);
         
         /* Detach XDP program */
         if (bpf_xdp_detach(ifindex, ctx->xdp_flags, NULL) < 0) {
@@ -2877,7 +2894,8 @@ static void cleanup(struct loader_ctx *ctx)
     printf("\nFlushing TX queues...\n");
     for (i = 0; i < ctx->num_interfaces; i++) {
         char ifname[IF_NAMESIZE];
-        if_indextoname(ctx->interfaces[i], ifname);
+        if (!if_indextoname(ctx->interfaces[i], ifname))
+            snprintf(ifname, sizeof(ifname), "if%u", ctx->interfaces[i]);
         
         /* Bring interface down briefly to flush queues */
         char cmd[256];

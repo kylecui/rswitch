@@ -6,6 +6,9 @@
 #include <stdbool.h>
 
 #include "voq.h"
+#if __has_include(<xdp/xsk.h>) && !defined(HAVE_LIBBPF_XSK)
+#define HAVE_LIBBPF_XSK
+#endif
 #include "afxdp_socket.h"
 
 /*
@@ -47,12 +50,14 @@ struct sw_queue_mgr {
 	/* Memory pool for queue entries */
 	struct sw_queue_entry *pool;    /* Pre-allocated entry pool */
 	uint32_t pool_size;             /* Pool size */
-	uint32_t pool_used;             /* Used entries in pool */
+	uint32_t *entry_free_stack;
+	uint32_t entry_free_count;
 	
 	/* Packet buffer pool */
 	uint8_t *buffer_pool;           /* Pre-allocated packet buffers */
 	uint32_t buffer_size;           /* Size of each buffer */
-	uint32_t buffers_used;          /* Used buffers */
+	uint32_t *buffer_free_stack;
+	uint32_t buffer_free_count;
 };
 
 /* Data plane configuration */

@@ -49,11 +49,23 @@ static char *trim(char *str)
     return str;
 }
 
-/* Remove comments from line */
+/* Remove comments from line, respecting quoted strings */
 static void remove_comment(char *line)
 {
-    char *hash = strchr(line, '#');
-    if (hash) *hash = '\0';
+    int in_single = 0;
+    int in_double = 0;
+    char *p;
+
+    for (p = line; *p != '\0'; p++) {
+        if (*p == '\'' && !in_double)
+            in_single = !in_single;
+        else if (*p == '"' && !in_single)
+            in_double = !in_double;
+        else if (*p == '#' && !in_single && !in_double) {
+            *p = '\0';
+            return;
+        }
+    }
 }
 
 /* Parse a simple key: value line */

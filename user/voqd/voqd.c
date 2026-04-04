@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <errno.h>
+#include <stdatomic.h>
 
 #if __has_include("rs_log.h")
 #include "rs_log.h"
@@ -50,7 +51,7 @@ struct voqd_ctx {
 	char *ifnames[MAX_PORTS];  /* Interface names per port */
 	
 	/* Runtime flags */
-	volatile bool running;
+	_Atomic bool running;
 	bool scheduler_enabled;
 	
 	/* Statistics reporting */
@@ -63,7 +64,9 @@ static struct voqd_ctx g_ctx;
 /* Signal handler */
 static void signal_handler(int sig)
 {
-	printf("\nReceived signal %d, shutting down...\n", sig);
+	static const char msg[] = "\nReceived signal, shutting down...\n";
+	(void) sig;
+	(void) !write(STDERR_FILENO, msg, sizeof(msg) - 1);
 	g_ctx.running = false;
 }
 

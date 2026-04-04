@@ -93,6 +93,20 @@ static struct voq_entry *alloc_entry(struct voq_mgr *mgr)
 			pthread_mutex_unlock(&mgr->pool_lock);
 			return NULL;
 		}
+
+		if (mgr->num_chunks == mgr->max_chunks) {
+			uint32_t new_max = mgr->max_chunks ? mgr->max_chunks * 2 : 4;
+			struct voq_entry **new_chunk_ptrs = realloc(mgr->chunk_ptrs,
+			                                           new_max * sizeof(*new_chunk_ptrs));
+			if (!new_chunk_ptrs) {
+				free(chunk);
+				pthread_mutex_unlock(&mgr->pool_lock);
+				return NULL;
+			}
+			mgr->chunk_ptrs = new_chunk_ptrs;
+			mgr->max_chunks = new_max;
+		}
+		mgr->chunk_ptrs[mgr->num_chunks++] = chunk;
 		
 		/* Link chunk into free list */
 		for (int i = 0; i < POOL_CHUNK_SIZE - 1; i++) {
@@ -137,6 +151,9 @@ int voq_mgr_init(struct voq_mgr *mgr, uint32_t num_ports)
 	memset(mgr, 0, sizeof(*mgr));
 	mgr->num_ports = num_ports;
 	mgr->running = true;
+	mgr->chunk_ptrs = NULL;
+	mgr->num_chunks = 0;
+	mgr->max_chunks = 0;
 	
 	/* Initialize pool lock */
 	pthread_mutex_init(&mgr->pool_lock, NULL);
@@ -209,22 +226,9 @@ void voq_mgr_destroy(struct voq_mgr *mgr)
 		pthread_mutex_destroy(&port->lock);
 	}
 	
-	/* Free memory pool chunks */
-	struct voq_entry *chunk = mgr->free_entries;
-	while (chunk) {
-		struct voq_entry *next_chunk = NULL;
-		
-		/* Find chunk boundary (assumes POOL_CHUNK_SIZE alignment) */
-		for (int i = 0; i < POOL_CHUNK_SIZE && chunk; i++) {
-			struct voq_entry *next = chunk->next;
-			if (i == POOL_CHUNK_SIZE - 1)
-				next_chunk = next;
-			chunk = next;
-		}
-		
-		/* Note: Simplified - in production, track chunk pointers separately */
-		chunk = next_chunk;
-	}
+	for (uint32_t i = 0; i < mgr->num_chunks; i++)
+		free(mgr->chunk_ptrs[i]);
+	free(mgr->chunk_ptrs);
 	
 	pthread_mutex_destroy(&mgr->pool_lock);
 }
