@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 60,
+    RS_THIS_MODULE_ID = RS_MOD_FLOW_TABLE,
+};
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -138,6 +143,8 @@ int flow_table(struct xdp_md *xdp_ctx)
     if (!ctx)
         return XDP_DROP;
 
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
+
     struct flow_config *cfg = bpf_map_lookup_elem(&flow_config_map, &cfg_key);
     if (!cfg || !cfg->enabled) {
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
@@ -227,7 +234,7 @@ found:
             RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
             return XDP_PASS;
         case FLOW_ACTION_DROP:
-            ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
+            RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_NO_FWD_ENTRY);
             flow_stat_inc(FLOW_STAT_DROPS);
             return XDP_DROP;
         case FLOW_ACTION_SET_VLAN:

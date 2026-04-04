@@ -16,6 +16,11 @@
 #include "../include/rswitch_common.h"
 #include "../core/afxdp_common.h"
 
+enum {
+	RS_THIS_STAGE_ID  = 85,
+	RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 12,
+};
+
 char _license[] SEC("license") = "GPL";
 
 /* Module declaration */
@@ -199,6 +204,11 @@ int afxdp_redirect_ingress(struct xdp_md *ctx)
 	rs_ctx = RS_GET_CTX();
 	if (!rs_ctx)
 		return XDP_PASS;
+
+	void *data_end = (void *)(long)ctx->data_end;
+	void *data = (void *)(long)ctx->data;
+	__u32 pkt_len = data_end - data;
+	RS_OBS_STAGE_HIT(ctx, rs_ctx, pkt_len);
 	
 	/* Check for errors from previous modules */
 	if (rs_ctx->action == XDP_DROP)

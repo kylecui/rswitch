@@ -16,6 +16,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 20,
+    RS_THIS_MODULE_ID = RS_MOD_VLAN,
+};
+
 char _license[] SEC("license") = "GPL";
 
 // Module metadata for auto-discovery
@@ -99,7 +104,10 @@ static __always_inline int is_port_in_vlan(struct rs_vlan_members *members, __u3
 }
 
 // Helper: Validate VLAN has active peers (not isolated)
-static __always_inline int validate_vlan_peers(struct rs_ctx *ctx, __u16 vlan_id, int is_tagged)
+static __always_inline int validate_vlan_peers(struct xdp_md *xdp_ctx,
+                                               struct rs_ctx *ctx,
+                                               __u16 vlan_id,
+                                               int is_tagged)
 {
     // Lookup vlan_peers in map
     __u16 vlan_key = vlan_id;  // Key is __u16
@@ -109,7 +117,7 @@ static __always_inline int validate_vlan_peers(struct rs_ctx *ctx, __u16 vlan_id
     if (!members) {
         rs_debug("VLAN %d not configured on switch", vlan_id);
         ctx->error = RS_ERROR_INVALID_VLAN;
-        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
         return -1;
     }
     
@@ -117,7 +125,7 @@ static __always_inline int validate_vlan_peers(struct rs_ctx *ctx, __u16 vlan_id
     if (members->member_count == 0) {
         rs_debug("VLAN %d has no members", vlan_id);
         ctx->error = RS_ERROR_INVALID_VLAN;
-        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
         return -1;
     }
     
@@ -129,7 +137,7 @@ static __always_inline int validate_vlan_peers(struct rs_ctx *ctx, __u16 vlan_id
     if (!is_member) {
         rs_debug("Port %d is not a member of VLAN %d", ctx->ifindex, vlan_id);
         ctx->error = RS_ERROR_INVALID_VLAN;
-        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
         return -1;
     }
     
@@ -160,14 +168,14 @@ static __always_inline int process_qinq_ingress(struct xdp_md *xdp_ctx,
     if (!qinq_cfg) {
         rs_debug("QinQ mode enabled but no QinQ config for port %d", ctx->ifindex);
         ctx->error = RS_ERROR_INVALID_VLAN;
-        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
         return XDP_DROP;
     }
 
     if (bpf_ntohs(eth->h_proto) != ETH_P_8021AD) {
         rs_debug("QinQ port %d received non-802.1ad frame", ctx->ifindex);
         ctx->error = RS_ERROR_INVALID_VLAN;
-        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
         return XDP_DROP;
     }
 
@@ -178,7 +186,7 @@ static __always_inline int process_qinq_ingress(struct xdp_md *xdp_ctx,
     if (bpf_ntohs(outer->h_vlan_encapsulated_proto) != ETH_P_8021Q) {
         rs_debug("QinQ port %d missing inner 802.1Q tag", ctx->ifindex);
         ctx->error = RS_ERROR_INVALID_VLAN;
-        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
         return XDP_DROP;
     }
 
@@ -195,7 +203,7 @@ static __always_inline int process_qinq_ingress(struct xdp_md *xdp_ctx,
         rs_debug("QinQ port %d S-VLAN mismatch: got=%u cfg=%u",
                  ctx->ifindex, s_vlan, qinq_cfg->s_vlan);
         ctx->error = RS_ERROR_INVALID_VLAN;
-        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
         return XDP_DROP;
     }
 
@@ -203,11 +211,11 @@ static __always_inline int process_qinq_ingress(struct xdp_md *xdp_ctx,
         rs_debug("QinQ port %d C-VLAN %u outside allowed range %u-%u",
                  ctx->ifindex, c_vlan, qinq_cfg->c_vlan_start, qinq_cfg->c_vlan_end);
         ctx->error = RS_ERROR_INVALID_VLAN;
-        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
         return XDP_DROP;
     }
 
-    if (validate_vlan_peers(ctx, c_vlan, 1) < 0)
+    if (validate_vlan_peers(xdp_ctx, ctx, c_vlan, 1) < 0)
         return XDP_DROP;
 
     ctx->ingress_vlan = c_vlan;
@@ -234,12 +242,17 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
         rs_debug("Failed to get rs_ctx");
         return XDP_DROP;
     }
+
+    void *data_end = (void *)(long)xdp_ctx->data_end;
+    void *data = (void *)(long)xdp_ctx->data;
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
     
     // Verify packet was parsed (dispatcher should have done this)
     if (!ctx->parsed) {
         rs_debug("Packet not parsed, cannot process VLAN");
         ctx->error = RS_ERROR_PARSE_FAILED;
-        ctx->drop_reason = RS_DROP_PARSE_ERROR;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_PARSE_ETH);
         return XDP_DROP;
     }
     
@@ -248,7 +261,7 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
     if (!port) {
         rs_debug("No port config for ifindex %d", ctx->ifindex);
         ctx->error = RS_ERROR_INVALID_VLAN;  // Use existing error code
-        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
         return XDP_DROP;
     }
 
@@ -316,7 +329,7 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
     }
     
     // Validate VLAN has active peers (not isolated)
-    if (validate_vlan_peers(ctx, effective_vlan, is_tagged) < 0) {
+    if (validate_vlan_peers(xdp_ctx, ctx, effective_vlan, is_tagged) < 0) {
         // Error details already set by validate_vlan_peers
         return XDP_DROP;
     }
@@ -336,7 +349,7 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
             rs_debug("ACCESS port %d received tagged packet (VLAN %d), dropping",
                      ctx->ifindex, ctx->layers.vlan_ids[0]);
             ctx->error = RS_ERROR_INVALID_VLAN;
-            ctx->drop_reason = RS_DROP_VLAN_FILTER;
+            RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
             return XDP_DROP;
         }
         // Untagged packets get access_vlan assigned (already in effective_vlan)
@@ -351,7 +364,7 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
                 rs_debug("TRUNK port %d received disallowed VLAN %d, dropping",
                          ctx->ifindex, ctx->layers.vlan_ids[0]);
                 ctx->error = RS_ERROR_INVALID_VLAN;
-                ctx->drop_reason = RS_DROP_VLAN_FILTER;
+                RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
                 return XDP_DROP;
             }
         } else {
@@ -362,7 +375,7 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
                 rs_debug("TRUNK port %d native VLAN %d not in allowed list, dropping",
                          ctx->ifindex, port->native_vlan);
                 ctx->error = RS_ERROR_INVALID_VLAN;
-                ctx->drop_reason = RS_DROP_VLAN_FILTER;
+                RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
                 return XDP_DROP;
             }
         }
@@ -383,7 +396,7 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
                 rs_debug("HYBRID port %d received disallowed tagged VLAN %d, dropping",
                          ctx->ifindex, ctx->layers.vlan_ids[0]);
                 ctx->error = RS_ERROR_INVALID_VLAN;
-                ctx->drop_reason = RS_DROP_VLAN_FILTER;
+                RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
                 return XDP_DROP;
             }
         } else {
@@ -400,7 +413,7 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
                 rs_debug("HYBRID port %d PVID %d not in untagged allowed list, dropping",
                          ctx->ifindex, port->pvid);
                 ctx->error = RS_ERROR_INVALID_VLAN;
-                ctx->drop_reason = RS_DROP_VLAN_FILTER;
+                RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
                 return XDP_DROP;
             }
         }
@@ -409,7 +422,7 @@ int vlan_ingress(struct xdp_md *xdp_ctx)
     default:
         rs_debug("Unknown VLAN mode %d on port %d", port->vlan_mode, ctx->ifindex);
         ctx->error = RS_ERROR_INVALID_VLAN;
-        ctx->drop_reason = RS_DROP_VLAN_FILTER;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_VLAN_FILTER);
         return XDP_DROP;
     }
     

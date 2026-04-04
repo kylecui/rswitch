@@ -30,6 +30,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 30,
+    RS_THIS_MODULE_ID = RS_MOD_ACL,
+};
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -266,14 +271,22 @@ static __always_inline void update_stat(__u32 stat_id)
 static __always_inline int apply_acl_action(struct xdp_md *xdp_ctx, 
                                              struct rs_ctx *ctx,
                                              struct acl_result *result,
-                                             __u32 stat_id)
+                                             __u32 stat_id,
+                                             __u32 pkt_len)
 {
     update_stat(stat_id);
     
     switch (result->action) {
     case ACL_ACTION_DROP:
-        ctx->drop_reason = RS_DROP_ACL_BLOCK;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_ACL_BLOCK);
         update_stat(ACL_STAT_TOTAL_DROPS);
+
+        {
+            struct rs_obs_event evt = {0};
+            rs_obs_build_event(xdp_ctx, ctx, &evt, RS_EVENT_OBS_DROP, RS_OBS_F_DROP,
+                               RS_DROP_ACL_BLOCK, pkt_len);
+            RS_EMIT_SAMPLED_EVENT(ctx, &evt, sizeof(evt));
+        }
         
         /* Optional: Emit event for logging */
         if (result->log_event) {
@@ -320,6 +333,11 @@ int acl_filter(struct xdp_md *xdp_ctx)
     if (!ctx) {
         return XDP_DROP;
     }
+
+    void *data_end = (void *)(long)xdp_ctx->data_end;
+    void *data = (void *)(long)xdp_ctx->data;
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
     
     __u32 cfg_key = 0;
     struct acl_config *cfg = bpf_map_lookup_elem(&acl_config_map, &cfg_key);
@@ -447,7 +465,7 @@ int acl_filter(struct xdp_md *xdp_ctx)
     
     if (best_priority >= 0) {
         rs_debug("ACL: matched priority=%d action=%d", best_priority, best_match.action);
-        int ret = apply_acl_action(xdp_ctx, ctx, &best_match, best_stat_id);
+        int ret = apply_acl_action(xdp_ctx, ctx, &best_match, best_stat_id, pkt_len);
         if (ret == XDP_DROP) {
             return XDP_DROP;
         }
@@ -457,9 +475,16 @@ int acl_filter(struct xdp_md *xdp_ctx)
     
     if (cfg->default_action == ACL_ACTION_DROP) {
         rs_debug("ACL: default DROP");
-        ctx->drop_reason = RS_DROP_ACL_BLOCK;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_ACL_BLOCK);
         update_stat(ACL_STAT_L7_DEFAULT_DROP);
         update_stat(ACL_STAT_TOTAL_DROPS);
+
+        {
+            struct rs_obs_event evt = {0};
+            rs_obs_build_event(xdp_ctx, ctx, &evt, RS_EVENT_OBS_DROP, RS_OBS_F_DROP,
+                               RS_DROP_ACL_BLOCK, pkt_len);
+            RS_EMIT_SAMPLED_EVENT(ctx, &evt, sizeof(evt));
+        }
         return XDP_DROP;
     }
     
