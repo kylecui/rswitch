@@ -28,6 +28,7 @@
 #include <getopt.h>
 #include <net/if.h>
 #include <linux/if_link.h>
+#include <linux/bpf.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -135,6 +136,22 @@ struct rs_module_config_value {
     };
 };
 
+/* Diagnostic target structs — must match rswitch_obs.h */
+struct rs_diag_target_key {
+    __u32 prog_id;
+};
+
+struct rs_diag_target {
+    __u32 prog_id;
+    __u32 attach_btf_id;
+    __u16 stage_id;
+    __u16 module_id;
+    __u16 hook;
+    __u16 kind;
+    char  prog_name[32];
+    char  module_name[32];
+};
+
 #define MAX_MODULES 64
 #define MAX_INTERFACES 64
 #define BPF_PIN_PATH "/sys/fs/bpf"
@@ -207,6 +224,8 @@ struct loader_ctx {
     int rs_mac_table_fd;
     int rs_vlan_map_fd;
     int rs_module_config_map_fd;
+    int rs_obs_cfg_map_fd;
+    int rs_diag_targets_fd;
     
     /* Configuration */
     __u32 interfaces[MAX_INTERFACES];
@@ -956,6 +975,12 @@ static int get_pinned_maps(struct loader_ctx *ctx)
     snprintf(path, sizeof(path), "%s/rs_module_config_map", BPF_PIN_PATH);
     ctx->rs_module_config_map_fd = bpf_obj_get(path);
     
+    snprintf(path, sizeof(path), "%s/rs_obs_cfg_map", BPF_PIN_PATH);
+    ctx->rs_obs_cfg_map_fd = bpf_obj_get(path);
+
+    snprintf(path, sizeof(path), "%s/rs_diag_targets", BPF_PIN_PATH);
+    ctx->rs_diag_targets_fd = bpf_obj_get(path);
+    
     if (ctx->rs_progs_fd < 0) {
         RS_LOG_WARN("Failed to get rs_progs from /sys/fs/bpf/rs_progs");
         /* Try to get from dispatcher object */
@@ -1002,6 +1027,13 @@ static int get_pinned_maps(struct loader_ctx *ctx)
         }
     }
     
+    if (ctx->rs_obs_cfg_map_fd < 0) {
+        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_obs_cfg_map");
+        if (map) {
+            ctx->rs_obs_cfg_map_fd = bpf_map__fd(map);
+        }
+    }
+    
     if (ctx->rs_stats_map_fd < 0) {
         struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_stats_map");
         if (map) {
@@ -1038,13 +1070,16 @@ static int reuse_shared_maps(struct bpf_object *obj, struct loader_ctx *ctx)
     const char *names_to_reuse[] = {
         "rs_ctx_map", "rs_progs", "rs_prog_chain", "rs_port_config_map",
         "rs_ifindex_to_port_map", "rs_stats_map", "rs_event_bus", 
-        "rs_vlan_map", "rs_module_config_map", "rs_devmap", "rs_xdp_devmap"
+        "rs_vlan_map", "rs_module_config_map", "rs_devmap", "rs_xdp_devmap",
+        "rs_obs_cfg_map", "rs_obs_stats_map", "rs_drop_stats_map",
+        "rs_hist_map", "rs_stage_hit_map", "rs_diag_targets"
     };
     int fds_to_reuse[] = {
         ctx->rs_ctx_map_fd, ctx->rs_progs_fd, ctx->rs_prog_chain_fd, 
         ctx->rs_port_config_map_fd, ctx->rs_ifindex_to_port_map_fd, 
         ctx->rs_stats_map_fd, ctx->rs_event_bus_fd, ctx->rs_vlan_map_fd,
-        ctx->rs_module_config_map_fd, ctx->rs_devmap_fd, ctx->rs_devmap_fd
+        ctx->rs_module_config_map_fd, ctx->rs_devmap_fd, ctx->rs_devmap_fd,
+        ctx->rs_obs_cfg_map_fd, -1, -1, -1, -1, ctx->rs_diag_targets_fd
     };
     int num_maps = sizeof(names_to_reuse) / sizeof(names_to_reuse[0]);
     
@@ -1875,6 +1910,192 @@ static int initialize_qos_config(struct loader_ctx *ctx)
     return 0;
 }
 
+/* Register a single BPF program as a diagnostic target.
+ * Uses bpf_obj_get_info_by_fd() to derive prog_id from the live FD. */
+static int register_diag_target(int targets_fd, int prog_fd,
+                                __u16 stage_id, __u16 module_id,
+                                __u16 hook, __u16 kind,
+                                const char *prog_name, const char *module_name)
+{
+    struct bpf_prog_info info = {};
+    __u32 info_len = sizeof(info);
+    int err;
+
+    if (targets_fd < 0 || prog_fd < 0)
+        return -1;
+
+    err = bpf_prog_get_info_by_fd(prog_fd, &info, &info_len);
+    if (err) {
+        RS_LOG_WARN("diag: bpf_prog_get_info_by_fd failed for %s: %s",
+                    prog_name ? prog_name : "?", strerror(errno));
+        return -1;
+    }
+
+    struct rs_diag_target_key key = { .prog_id = info.id };
+    struct rs_diag_target val = {
+        .prog_id       = info.id,
+        .attach_btf_id = info.btf_id,
+        .stage_id      = stage_id,
+        .module_id     = module_id,
+        .hook          = hook,
+        .kind          = kind,
+    };
+    if (prog_name)
+        snprintf(val.prog_name, sizeof(val.prog_name), "%s", prog_name);
+    if (module_name)
+        snprintf(val.module_name, sizeof(val.module_name), "%s", module_name);
+
+    err = bpf_map_update_elem(targets_fd, &key, &val, BPF_ANY);
+    if (err) {
+        RS_LOG_WARN("diag: failed to register target %s (prog_id=%u): %s",
+                    prog_name, info.id, strerror(errno));
+        return -1;
+    }
+
+    RS_LOG_INFO("diag: registered target %s (prog_id=%u, stage=%u, module=%u, hook=%u, kind=%u)",
+                prog_name, info.id, stage_id, module_id, hook, kind);
+    return 0;
+}
+
+/* Populate rs_diag_targets with all loaded BPF programs */
+static int populate_diag_targets(struct loader_ctx *ctx)
+{
+    if (ctx->rs_diag_targets_fd < 0) {
+        printf("Diag targets: rs_diag_targets map not available, skipping\n");
+        return 0;
+    }
+
+    int registered = 0;
+
+    /* Register dispatcher (stage=1 = RS_STAGE_PREPROCESS, module=1 = RS_MOD_DISPATCHER) */
+    if (ctx->dispatcher_fd >= 0) {
+        if (register_diag_target(ctx->rs_diag_targets_fd, ctx->dispatcher_fd,
+                                 1, 1, 0 /* RS_HOOK_XDP_INGRESS */,
+                                 1 /* RS_DIAG_TARGET_DISPATCHER */,
+                                 "rswitch_dispatcher", "dispatcher") == 0)
+            registered++;
+    }
+
+    /* Register egress (stage=100, module=2 = RS_MOD_EGRESS) */
+    if (ctx->egress_fd >= 0) {
+        if (register_diag_target(ctx->rs_diag_targets_fd, ctx->egress_fd,
+                                 100, 2, 1 /* RS_HOOK_XDP_EGRESS */,
+                                 2 /* RS_DIAG_TARGET_EGRESS */,
+                                 "rswitch_egress", "egress") == 0)
+            registered++;
+    }
+
+    /* Register veth_egress if loaded */
+    if (ctx->veth_egress_fd >= 0) {
+        if (register_diag_target(ctx->rs_diag_targets_fd, ctx->veth_egress_fd,
+                                 191, 0x100 + 13 /* RS_MOD_USER_BASE + 13 */,
+                                 0 /* RS_HOOK_XDP_INGRESS */,
+                                 2 /* RS_DIAG_TARGET_EGRESS */,
+                                 "veth_egress_prog", "veth_egress") == 0)
+            registered++;
+    }
+
+    /* Register all loaded modules */
+    for (int i = 0; i < ctx->num_modules; i++) {
+        struct loaded_module *mod = &ctx->modules[i];
+        if (!mod->obj || mod->prog_fd < 0)
+            continue;
+
+        /* Determine hook from stage: stages >= 100 are egress */
+        __u16 hook = (mod->stage >= 100) ? 1 : 0;
+
+        /* Module ID: we use stage as a proxy since modules embed their
+         * RS_THIS_MODULE_ID in BPF code, but we don't have easy access
+         * to that value from user-space. The stage_id + module_name together
+         * uniquely identify the module for rsdiag. For the module_id field,
+         * we store 0 and let rsdiag match by prog_name/stage. */
+        __u16 module_id_val = 0;
+
+        /* Map well-known module names to their enum values.
+         * Must match enum rs_obs_module_id in rswitch_abi.h:
+         *   RS_MOD_USER_BASE = 4096 (0x1000) */
+        static const struct {
+            const char *name;
+            __u16 module_id;
+        } known_modules[] = {
+            { "vlan",           20 },  /* RS_MOD_VLAN */
+            { "qos_classify",   25 },  /* RS_MOD_QOS_CLASSIFY */
+            { "acl",            30 },  /* RS_MOD_ACL */
+            { "route",          40 },  /* RS_MOD_ROUTE */
+            { "flow_table",     60 },  /* RS_MOD_FLOW_TABLE */
+            { "mirror",         70 },  /* RS_MOD_MIRROR */
+            { "l2learn",        80 },  /* RS_MOD_L2LEARN */
+            { "sflow",          85 },  /* RS_MOD_SFLOW */
+            { "lastcall",       90 },  /* RS_MOD_LASTCALL */
+            { "egress_qos",    170 },  /* RS_MOD_EGRESS_QOS */
+            { "egress_vlan",   180 },  /* RS_MOD_EGRESS_VLAN */
+            { "egress_final",  190 },  /* RS_MOD_EGRESS_FINAL */
+            { "veth_egress",   191 },  /* RS_MOD_VETH_EGRESS */
+            { "source_guard",  4097 }, /* RS_MOD_USER_BASE + 1 */
+            { "lldp",          4098 }, /* RS_MOD_USER_BASE + 2 */
+            { "lacp",          4099 }, /* RS_MOD_USER_BASE + 3 */
+            { "tunnel",        4100 }, /* RS_MOD_USER_BASE + 4 */
+            { "nat",           4101 }, /* RS_MOD_USER_BASE + 5 */
+            { "rate_limiter",  4102 }, /* RS_MOD_USER_BASE + 6 */
+            { "stp",           4103 }, /* RS_MOD_USER_BASE + 7 */
+            { "dhcp_snoop",    4104 }, /* RS_MOD_USER_BASE + 8 */
+            { "conntrack",     4105 }, /* RS_MOD_USER_BASE + 9 */
+            { "arp_learn",     4106 }, /* RS_MOD_USER_BASE + 10 */
+            { "core_example",  4107 }, /* RS_MOD_USER_BASE + 11 */
+            { "afxdp_redirect",4108 }, /* RS_MOD_USER_BASE + 12 */
+        };
+
+        for (int k = 0; k < (int)(sizeof(known_modules) / sizeof(known_modules[0])); k++) {
+            if (strcmp(mod->name, known_modules[k].name) == 0) {
+                module_id_val = known_modules[k].module_id;
+                break;
+            }
+        }
+
+        if (register_diag_target(ctx->rs_diag_targets_fd, mod->prog_fd,
+                                 (__u16)mod->stage, module_id_val, hook,
+                                 3 /* RS_DIAG_TARGET_MODULE */,
+                                 mod->name, mod->name) == 0)
+            registered++;
+    }
+
+    printf("Diag targets: registered %d programs\n", registered);
+    return 0;
+}
+
+static int initialize_obs_config(struct loader_ctx *ctx)
+{
+    if (ctx->rs_obs_cfg_map_fd < 0) {
+        printf("Obs config: rs_obs_cfg_map not available, skipping\n");
+        return 0;
+    }
+
+    struct {
+        __u32 level;
+        __u32 sample_ppm;
+        __u64 event_mask;
+        __u32 burst_limit;
+        __u32 reserved;
+    } cfg = {
+        .level       = 0,        /* RS_OBS_LEVEL_L0 */
+        .sample_ppm  = 1000,     /* 0.1 % */
+        .event_mask  = 0xFFFF,
+        .burst_limit = 4,
+        .reserved    = 0,
+    };
+
+    __u32 key = 0;
+    int err = bpf_map_update_elem(ctx->rs_obs_cfg_map_fd, &key, &cfg, BPF_ANY);
+    if (err) {
+        RS_LOG_WARN("Failed to write rs_obs_cfg_map: %s", strerror(errno));
+        return -1;
+    }
+
+    printf("Obs config: L0 enabled, sample_ppm=%u, burst_limit=%u\n",
+           cfg.sample_ppm, cfg.burst_limit);
+    return 0;
+}
+
 /* Populate devmaps with queue isolation
  * 
  * Following PoC pattern: find rs_xdp_devmap from lastcall module object
@@ -2519,6 +2740,14 @@ static void close_map_fds(struct loader_ctx *ctx)
         close(ctx->rs_module_config_map_fd);
         printf("  Closed rs_module_config_map_fd\n");
     }
+    if (ctx->rs_obs_cfg_map_fd >= 0) {
+        close(ctx->rs_obs_cfg_map_fd);
+        printf("  Closed rs_obs_cfg_map_fd\n");
+    }
+    if (ctx->rs_diag_targets_fd >= 0) {
+        close(ctx->rs_diag_targets_fd);
+        printf("  Closed rs_diag_targets_fd\n");
+    }
     
     if (ctx->rs_mac_table_fd >= 0) {
         close(ctx->rs_mac_table_fd);
@@ -2793,6 +3022,8 @@ int main(int argc, char **argv)
     ctx.rs_devmap_fd = -1;
     ctx.rs_stats_map_fd = -1;
     ctx.rs_module_config_map_fd = -1;
+    ctx.rs_obs_cfg_map_fd = -1;
+    ctx.rs_diag_targets_fd = -1;
     ctx.veth_egress_fd = -1;
     ctx.voq_egress_devmap_fd = -1;
     ctx.veth_out_ifindex = 0;
@@ -2988,6 +3219,12 @@ int main(int argc, char **argv)
     
     /* Initialize QoS configuration */
     initialize_qos_config(&ctx);
+    
+    /* Initialize observability configuration */
+    initialize_obs_config(&ctx);
+
+    /* Populate diagnostic targets for rsdiag */
+    populate_diag_targets(&ctx);
     
     /* Populate devmaps with queue isolation */
     populate_devmaps(&ctx);
