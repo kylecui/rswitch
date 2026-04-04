@@ -15,5 +15,6 @@
 #define __RSWITCH_MODULE_H
 
 #include "rswitch_helpers.h"
+#include "rswitch_obs.h"
 
 #endif /* __RSWITCH_MODULE_H */
