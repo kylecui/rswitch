@@ -1,0 +1,35 @@
+{
+  "skill_name": "generate-test-cases",
+  "evals": [
+    {
+      "id": "tc-api-service",
+      "prompt": "请根据当前仓库的 API 设计与代码，生成测试策略、traceability matrix 和首批回归测试用例。",
+      "expected_output": "输出应包含项目理解、测试策略、traceability matrix、分层测试建议，以及 grounded 的 API 测试用例。",
+      "assertions": [
+        "输出包含项目理解摘要",
+        "输出包含 traceability matrix",
+        "输出区分正常路径、异常路径和边界条件",
+        "输出没有编造不存在的模块或端点"
+      ]
+    },
+    {
+      "id": "tc-cli-project",
+      "prompt": "请根据这个 CLI 项目的代码和 help 信息，生成命令级测试用例、配置测试和错误路径测试。",
+      "expected_output": "输出应覆盖命令成功路径、参数错误、配置缺失、帮助输出和退出码。",
+      "assertions": [
+        "输出包含 CLI 入口或命令对象",
+        "输出包含错误路径测试",
+        "输出包含优先级或自动化建议"
+      ]
+    },
+    {
+      "id": "tc-library",
+      "prompt": "根据当前库项目的 public API 和现有实现，列出单元测试与集成测试要点。",
+      "expected_output": "输出应优先覆盖 public API、边界条件和集成边界。",
+      "assertions": [
+        "输出区分 unit 与 integration",
+        "输出基于 public surface 而非泛化建议"
+      ]
+    }
+  ]
+}

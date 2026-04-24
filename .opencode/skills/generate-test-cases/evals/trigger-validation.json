@@ -1,0 +1,6 @@
+[
+  { "query": "请围绕当前仓库补一套 API 冒烟测试和负面测试", "should_trigger": true },
+  { "query": "结合现有代码和设计说明，为这个模块整理 regression cases", "should_trigger": true },
+  { "query": "根据我的项目代码生成 README", "should_trigger": false },
+  { "query": "如何在 pytest 里写 fixture？", "should_trigger": false }
+]

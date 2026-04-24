@@ -1,0 +1,10 @@
+[
+  { "query": "根据当前项目代码生成使用文档", "should_trigger": true },
+  { "query": "帮我补一份 README 和 quick start", "should_trigger": true },
+  { "query": "请基于当前仓库生成配置说明和排障文档", "should_trigger": true },
+  { "query": "根据 API 设计与代码补一份接口使用说明", "should_trigger": true },
+  { "query": "根据当前项目生成测试用例", "should_trigger": false },
+  { "query": "帮我解释 README 应该怎么写", "should_trigger": false },
+  { "query": "把这段产品介绍润色一下", "should_trigger": false },
+  { "query": "给我写一篇宣传文案", "should_trigger": false }
+]
