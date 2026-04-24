@@ -13,10 +13,10 @@
 3. [L3 Router / 三层路由器](#3-l3-router--三层路由器)
 4. [Firewall / 防火墙](#4-firewall--防火墙)
 5. [Load Balancer / 负载均衡器](#5-load-balancer--负载均衡器)
-6. [NAT Gateway / NAT 网关](#6-nat-gateway--nat-网关)
-7. [QoS Gateway / QoS 网关](#7-qos-gateway--qos-网关)
+6. [NAT Gateway / NAT网关](#6-nat-gateway--nat-网关)
+7. [QoS Gateway / QoS网关](#7-qos-gateway--qos-网关)
 8. [Network Monitor / 网络监控设备](#8-network-monitor--网络监控设备)
-9. [VPN Gateway / VPN 网关](#9-vpn-gateway--vpn-网关)
+9. [VPN Gateway / VPN网关](#9-vpn-gateway--vpn-网关)
 10. [Campus Edge Switch / 校园边缘交换机](#10-campus-edge-switch--校园边缘交换机)
 11. [Data Center ToR / 数据中心接入交换机](#11-data-center-tor--数据中心接入交换机)
 12. [Module Reference / 模块参考](#12-module-reference--模块参考)
@@ -41,16 +41,16 @@ rSwitch is not a single-purpose network device — it's a platform for building 
 
 **中文:**
 
-rSwitch 不是单一用途的网络设备——它是一个用于构建**任何**类型网络设备的平台。通过在配置文件中选择不同的 BPF 模块组合，您可以创建：
+rSwitch不是单一用途的网络设备——它是一个用于构建**任何**类型网络设备的平台。通过在配置文件中选择不同的BPF模块组合，您可以创建：
 
-- 二层交换机（VLAN、STP、MAC 学习）
+- 二层交换机（VLAN、STP、MAC学习）
 - 三层路由器（路由、ARP、ECMP）
 - 防火墙（ACL、状态检测、速率限制）
 - 负载均衡器（流分配、健康检查）
-- NAT 网关（SNAT、DNAT、伪装）
-- QoS 执行点（分类、调度）
+- NAT网关（SNAT、DNAT、伪装）
+- QoS执行点（分类、调度）
 - 网络监控设备（镜像、sFlow、分析）
-- VPN 网关（VXLAN、GRE 隧道）
+- VPN网关（VXLAN、GRE隧道）
 - 组合多种功能的混合设备
 
 ---
@@ -82,12 +82,12 @@ settings:
 ```
 
 **Features / 功能:**
-- Dynamic MAC address learning / 动态 MAC 地址学习
-- VLAN tagging and trunk/access ports / VLAN 标记和 Trunk/Access 端口
+- Dynamic MAC address learning / 动态MAC地址学习
+- VLAN tagging and trunk/access ports / VLAN标记和Trunk/Access端口
 - Unknown unicast flooding / 未知单播泛洪
 - Broadcast forwarding / 广播转发
 
-### Enterprise L2 Switch with STP / 带 STP 的企业二层交换机
+### Enterprise L2 Switch with STP / 带STP的企业二层交换机
 
 ```yaml
 # etc/profiles/l2-enterprise.yaml
@@ -107,8 +107,8 @@ egress:
 ```
 
 **Additional features / 额外功能:**
-- Loop prevention via STP/RSTP / 通过 STP/RSTP 防止环路
-- Link aggregation via LACP / 通过 LACP 链路聚合
+- Loop prevention via STP/RSTP / 通过STP/RSTP防止环路
+- Link aggregation via LACP / 通过LACP链路聚合
 - Suitable for multi-switch topologies / 适用于多交换机拓扑
 
 ---
@@ -137,8 +137,8 @@ egress:
 **Features / 功能:**
 - Static and dynamic routing / 静态和动态路由
 - ECMP (Equal Cost Multi-Path) / ECMP（等价多路径）
-- ARP resolution / ARP 解析
-- Inter-VLAN routing / VLAN 间路由
+- ARP resolution / ARP解析
+- Inter-VLAN routing / VLAN间路由
 
 ### High-Performance Router with Flow Table / 带流表的高性能路由器
 
@@ -188,7 +188,7 @@ egress:
 ```
 
 **Features / 功能:**
-- 5-tuple ACL matching (src/dst IP, src/dst port, protocol) / 五元组 ACL 匹配
+- 5-tuple ACL matching (src/dst IP, src/dst port, protocol) / 五元组ACL匹配
 - Rate limiting per-rule / 按规则速率限制
 - Deny logging / 拒绝日志记录
 
@@ -247,15 +247,15 @@ egress:
 - Health check integration (via user-space daemon) / 健康检查集成
 
 **Use cases / 使用场景:**
-- Web server farms / Web 服务器集群
+- Web server farms / Web服务器集群
 - Database clusters / 数据库集群
 - Microservice ingress / 微服务入口
 
 ---
 
-## 6. NAT Gateway / NAT 网关
+## 6. NAT Gateway / NAT网关
 
-### Source NAT (Masquerading) / 源 NAT（伪装）
+### Source NAT (Masquerading) / 源NAT（伪装）
 
 ```yaml
 # etc/profiles/nat-snat.yaml
@@ -276,11 +276,11 @@ egress:
 ```
 
 **Features / 功能:**
-- Outbound NAT for private networks / 私有网络出站 NAT
+- Outbound NAT for private networks / 私有网络出站NAT
 - Port address translation (PAT) / 端口地址转换
 - Connection tracking for return traffic / 返回流量连接跟踪
 
-### Destination NAT (Port Forwarding) / 目的 NAT（端口转发）
+### Destination NAT (Port Forwarding) / 目的NAT（端口转发）
 
 ```yaml
 # etc/profiles/nat-dnat.yaml
@@ -303,11 +303,11 @@ egress:
 **Features / 功能:**
 - Inbound port forwarding / 入站端口转发
 - Expose internal services externally / 向外部公开内部服务
-- 1:1 NAT for DMZ servers / DMZ 服务器 1:1 NAT
+- 1:1 NAT for DMZ servers / DMZ服务器1:1 NAT
 
 ---
 
-## 7. QoS Gateway / QoS 网关
+## 7. QoS Gateway / QoS网关
 
 ```yaml
 # etc/profiles/qos-gateway.yaml
@@ -335,15 +335,15 @@ voqd_config:
 ```
 
 **Features / 功能:**
-- DSCP/PCP-based classification / 基于 DSCP/PCP 分类
-- 8 priority queues per port / 每端口 8 个优先级队列
-- DRR/WFQ scheduling via VOQd / 通过 VOQd 的 DRR/WFQ 调度
+- DSCP/PCP-based classification / 基于DSCP/PCP分类
+- 8 priority queues per port / 每端口8个优先级队列
+- DRR/WFQ scheduling via VOQd / 通过VOQd的DRR/WFQ调度
 - Token bucket rate limiting / 令牌桶速率限制
 
 **Use cases / 使用场景:**
-- VoIP prioritization / VoIP 优先级
-- Video conferencing QoS / 视频会议 QoS
-- SLA enforcement / SLA 执行
+- VoIP prioritization / VoIP优先级
+- Video conferencing QoS / 视频会议QoS
+- SLA enforcement / SLA执行
 
 ---
 
@@ -370,11 +370,11 @@ egress:
 
 **Features / 功能:**
 - Local port mirroring (SPAN) / 本地端口镜像
-- RSPAN (remote span via VLAN) / 远程 SPAN（通过 VLAN）
-- ERSPAN (encapsulated remote span) / 封装远程 SPAN
-- Selective mirroring via ACL / 通过 ACL 选择性镜像
+- RSPAN (remote span via VLAN) / 远程SPAN（通过VLAN）
+- ERSPAN (encapsulated remote span) / 封装远程SPAN
+- Selective mirroring via ACL / 通过ACL选择性镜像
 
-### sFlow Collector / sFlow 收集器
+### sFlow Collector / sFlow收集器
 
 ```yaml
 # etc/profiles/monitor-sflow.yaml
@@ -394,14 +394,14 @@ egress:
 ```
 
 **Features / 功能:**
-- sFlow v5 packet sampling / sFlow v5 数据包采样
+- sFlow v5 packet sampling / sFlow v5数据包采样
 - Configurable sample rate / 可配置采样率
-- Export to sFlow collector / 导出到 sFlow 收集器
+- Export to sFlow collector / 导出到sFlow收集器
 - Flow visibility without full capture / 无需完整捕获即可获得流可见性
 
 ---
 
-## 9. VPN Gateway / VPN 网关
+## 9. VPN Gateway / VPN网关
 
 ```yaml
 # etc/profiles/vpn-gateway.yaml
@@ -422,14 +422,14 @@ egress:
 ```
 
 **Features / 功能:**
-- VXLAN overlay networking / VXLAN 覆盖网络
-- GRE tunneling / GRE 隧道
+- VXLAN overlay networking / VXLAN覆盖网络
+- GRE tunneling / GRE隧道
 - Tunnel termination / 隧道终结
 - Multi-tenant isolation / 多租户隔离
 
 **Use cases / 使用场景:**
 - Data center overlay networks / 数据中心覆盖网络
-- Site-to-site VPN / 站点间 VPN
+- Site-to-site VPN / 站点间VPN
 - Cloud connectivity / 云连接
 
 ---
@@ -459,11 +459,11 @@ egress:
 ```
 
 **Features / 功能:**
-- IP source guard prevents spoofing / IP 源防护防止欺骗
-- DHCP snooping builds binding table / DHCP 监听构建绑定表
-- Rogue DHCP server prevention / 恶意 DHCP 服务器防护
-- Per-user QoS / 每用户 QoS
-- LLDP topology discovery / LLDP 拓扑发现
+- IP source guard prevents spoofing / IP源防护防止欺骗
+- DHCP snooping builds binding table / DHCP监听构建绑定表
+- Rogue DHCP server prevention / 恶意DHCP服务器防护
+- Per-user QoS / 每用户QoS
+- LLDP topology discovery / LLDP拓扑发现
 
 **Ideal for / 适用于:**
 - University networks / 大学网络
@@ -501,9 +501,9 @@ voqd_config:
 ```
 
 **Features / 功能:**
-- VXLAN fabric integration / VXLAN 网络集成
-- ECMP to spine layer / ECMP 到脊柱层
-- Microsecond latency QoS / 微秒级延迟 QoS
+- VXLAN fabric integration / VXLAN网络集成
+- ECMP to spine layer / ECMP到脊柱层
+- Microsecond latency QoS / 微秒级延迟QoS
 - High-density port aggregation / 高密度端口聚合
 - Flow-based optimization / 基于流的优化
 
@@ -522,16 +522,16 @@ voqd_config:
 |--------|-------|-------------------|
 | `dispatcher` | 10 | Pipeline entry point / 管道入口点 |
 | `lastcall` | 90 | Final forwarding decision / 最终转发决策 |
-| `egress` | — | Devmap egress callback / Devmap 出口回调 |
+| `egress` | — | Devmap egress callback / Devmap出口回调 |
 | `egress_final` | 190 | Packet delivery / 数据包传送 |
 
 ### L2 Modules / 二层模块
 
 | Module | Stage | Description / 描述 |
 |--------|-------|-------------------|
-| `vlan` | 20 | VLAN classification and filtering / VLAN 分类和过滤 |
-| `egress_vlan` | 180 | VLAN tag insertion/removal / VLAN 标签插入/移除 |
-| `l2learn` | 80 | MAC address learning / MAC 地址学习 |
+| `vlan` | 20 | VLAN classification and filtering / VLAN分类和过滤 |
+| `egress_vlan` | 180 | VLAN tag insertion/removal / VLAN标签插入/移除 |
+| `l2learn` | 80 | MAC address learning / MAC地址学习 |
 | `stp` | 12 | Spanning Tree Protocol / 生成树协议 |
 | `lacp` | 11 | Link Aggregation Control / 链路聚合控制 |
 | `lldp` | 11 | Link Layer Discovery / 链路层发现 |
@@ -540,8 +540,8 @@ voqd_config:
 
 | Module | Stage | Description / 描述 |
 |--------|-------|-------------------|
-| `route` | 50 | L3 routing with ECMP / 带 ECMP 的三层路由 |
-| `arp_learn` | 80 | Dynamic ARP learning / 动态 ARP 学习 |
+| `route` | 50 | L3 routing with ECMP / 带ECMP的三层路由 |
+| `arp_learn` | 80 | Dynamic ARP learning / 动态ARP学习 |
 | `conntrack` | 32 | Connection tracking / 连接跟踪 |
 | `nat` | 55 | NAT (SNAT/DNAT) / NAT（源/目的） |
 | `flow_table` | 60 | Flow-based fast path / 基于流的快速路径 |
@@ -551,30 +551,30 @@ voqd_config:
 | Module | Stage | Description / 描述 |
 |--------|-------|-------------------|
 | `acl` | 30 | Access control lists / 访问控制列表 |
-| `source_guard` | 18 | IP source validation / IP 源验证 |
-| `dhcp_snoop` | 19 | DHCP snooping / DHCP 监听 |
+| `source_guard` | 18 | IP source validation / IP源验证 |
+| `dhcp_snoop` | 19 | DHCP snooping / DHCP监听 |
 | `rate_limiter` | 28 | Rate limiting / 速率限制 |
 
-### QoS Modules / QoS 模块
+### QoS Modules / QoS模块
 
 | Module | Stage | Description / 描述 |
 |--------|-------|-------------------|
 | `qos_classify` | 25 | Traffic classification / 流量分类 |
 | `egress_qos` | 170 | Egress scheduling / 出口调度 |
-| `afxdp_redirect` | 85 | AF_XDP QoS offload / AF_XDP QoS 卸载 |
+| `afxdp_redirect` | 85 | AF_XDP QoS offload / AF_XDP QoS卸载 |
 
 ### Monitoring Modules / 监控模块
 
 | Module | Stage | Description / 描述 |
 |--------|-------|-------------------|
 | `mirror` | 45 | Traffic mirroring / 流量镜像 |
-| `sflow` | 85 | sFlow v5 sampling / sFlow v5 采样 |
+| `sflow` | 85 | sFlow v5 sampling / sFlow v5采样 |
 
 ### Tunneling Modules / 隧道模块
 
 | Module | Stage | Description / 描述 |
 |--------|-------|-------------------|
-| `tunnel` | 15 | VXLAN/GRE decap / VXLAN/GRE 解封装 |
+| `tunnel` | 15 | VXLAN/GRE decap / VXLAN/GRE解封装 |
 
 ---
 

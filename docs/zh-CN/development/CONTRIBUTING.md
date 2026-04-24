@@ -1,15 +1,15 @@
 > 📖 [English Version](../../../CONTRIBUTING.md)
-# 为 rSwitch 贡献代码
+# 为rSwitch贡献代码
 
-感谢您有兴趣为 rSwitch 贡献代码！本文档涵盖了构建、测试和提交更改的工作流程。
+感谢您有兴趣为rSwitch贡献代码！本文档涵盖了构建、测试和提交更改的工作流程。
 
 ## 先决条件
 
-- **Clang 16+** (推荐 17 或 18)
+- **Clang 16+** (推荐17或18)
 - **libbpf** (从 `external/libbpf/src` 构建)
 - **libelf**, **zlib** 开发头文件
-- **Linux kernel 5.15+** (用于 BPF_PROG_TEST_RUN 和 XDP 特性)
-- **bpftool** (用于 vmlinux.h 生成)
+- **Linux kernel 5.15+** (用于BPF_PROG_TEST_RUN和XDP特性)
+- **bpftool** (用于vmlinux.h生成)
 
 ## 快速入门
 
@@ -47,9 +47,9 @@ make test
 sudo ./test/unit/run_tests.sh
 ```
 
-### BPF 测试（需要 root）
+### BPF测试（需要root）
 
-BPF 测试使用 `BPF_PROG_TEST_RUN` 在内核中练习 BPF 程序，而无需附加到真实接口。
+BPF测试使用 `BPF_PROG_TEST_RUN` 在内核中练习BPF程序，而无需附加到真实接口。
 
 ```bash
 make test-bpf   # 构建并运行所有 BPF 测试
@@ -72,20 +72,20 @@ sudo bash ./test/integration/run_all.sh
 项目使用 `clang-format`，配置位于 `.clang-format`。
 关键约定：
 
-- **4 空格缩进** (不使用 tab)
-- **K&R 大括号风格** (Linux kernel 风格)
-- **100 列限制**
-- **`//` 注释** 在 BPF 代码中优先使用
+- **4空格缩进** (不使用tab)
+- **K&R大括号风格** (Linux kernel风格)
+- **100列限制**
+- **`//` 注释** 在BPF代码中优先使用
 - **指针对齐**：`int *ptr` (而非 `int* ptr`)
 
-在 commit 之前格式化您的更改：
+在commit之前格式化您的更改：
 ```bash
 clang-format -i path/to/file.c
 ```
 
-## Commit 消息
+## Commit消息
 
-我们使用语义化 commit 消息：
+我们使用语义化commit消息：
 
 ```
 <type>(<scope>): <description>
@@ -103,35 +103,35 @@ docs: update module development spec for egress stages
 test(ci): add BPF_PROG_TEST_RUN tests for VLAN module
 ```
 
-## Pull Request 工作流
+## Pull Request工作流
 
-1. Fork 仓库并从 `dev` 分支创建特性分支
+1. Fork仓库并从 `dev` 分支创建特性分支
 2. 进行更改，遵循上述代码风格
 3. 为您的更改添加或更新测试
 4. 运行完整的测试套件 (`make test && make test-bpf`)
-5. 使用语义化消息进行 commit
-6. 向 `dev` 分支发起 PR
+5. 使用语义化消息进行commit
+6. 向 `dev` 分支发起PR
 
-### PR 检查清单
+### PR检查清单
 
 - [ ] `make all` 编译无警告
 - [ ] `make test` 构建所有单元测试
-- [ ] 新的 BPF 模块包含具有正确阶段/标志的 `RS_DECLARE_MODULE()`
-- [ ] ABI 更改根据 [ABI 策略](../../development/ABI_POLICY.md) 增加 `module_abi.h` 中的版本
+- [ ] 新的BPF模块包含具有正确阶段/标志的 `RS_DECLARE_MODULE()`
+- [ ] ABI更改根据 [ABI策略](../../development/ABI_POLICY.md) 增加 `module_abi.h` 中的版本
 - [ ] 如果行为发生变化，已更新文档
 
 ## 模块开发
 
-请参阅 [SDK 快速入门](../../../sdk/docs/SDK_Quick_Start.md) 了解编写第一个模块的教程，以及 [模块开发规范](../../../sdk/docs/Module_Development_Spec.md) 了解完整的 API 参考。
+请参阅 [SDK快速入门](../../../sdk/docs/SDK_Quick_Start.md) 了解编写第一个模块的教程，以及 [模块开发规范](../../../sdk/docs/Module_Development_Spec.md) 了解完整的API参考。
 
 ### 关键文件
 
 | 文件 | 用途 |
 |------|---------|
 | `sdk/include/rswitch_module.h` | 模块的顶层包含文件 |
-| `sdk/include/rswitch_abi.h` | ABI struct 和版本常量 |
-| `sdk/include/rswitch_helpers.h` | BPF 辅助宏和数据包解析器 |
-| `sdk/include/rswitch_maps.h` | 核心 BPF map 定义 |
+| `sdk/include/rswitch_abi.h` | ABI struct和版本常量 |
+| `sdk/include/rswitch_helpers.h` | BPF辅助宏和数据包解析器 |
+| `sdk/include/rswitch_maps.h` | 核心BPF map定义 |
 | `sdk/templates/simple_module.bpf.c` | 入门模板 |
 | `sdk/Makefile.module` | 独立模块构建系统 |
 
@@ -141,4 +141,4 @@ test(ci): add BPF_PROG_TEST_RUN tests for VLAN module
 
 ## 许可证
 
-rSwitch 采用 LGPL-2.1-or-later 许可。BPF 内核程序使用 GPL-2.0 SPDX 标头（BPF 辅助函数访问所需）。通过贡献代码，您同意您的贡献将根据相同的条款获得许可。
+rSwitch采用LGPL-2.1-or-later许可。BPF内核程序使用GPL-2.0 SPDX标头（BPF辅助函数访问所需）。通过贡献代码，您同意您的贡献将根据相同的条款获得许可。

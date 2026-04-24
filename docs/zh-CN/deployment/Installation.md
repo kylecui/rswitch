@@ -2,21 +2,21 @@
 
 # 安装
 
-从源码构建 rSwitch 的完整指南。
+从源码构建rSwitch的完整指南。
 
 ## 系统要求
 
 ### 操作系统
 
-- Linux 内核 5.8 或更高版本
-- 已启用 BTF 支持 (`CONFIG_DEBUG_INFO_BTF=y`)
+- Linux内核5.8或更高版本
+- 已启用BTF支持 (`CONFIG_DEBUG_INFO_BTF=y`)
 - 已验证：Ubuntu 22.04+、Debian 12+
 
 ### 硬件
 
-- x86_64 架构
-- 至少 2 个用于交换的网络接口
-- 推荐：Intel X710 (i40e) 或 Mellanox CX-5 (mlx5) 以支持原生 XDP
+- x86_64架构
+- 至少2个用于交换的网络接口
+- 推荐：Intel X710 (i40e) 或Mellanox CX-5 (mlx5) 以支持原生XDP
 
 ### 内核验证
 
@@ -99,7 +99,7 @@ cd rSwitch/rswitch
 git submodule update --init --recursive
 ```
 
-如果你的系统版本太旧，`external/libbpf` 子模块提供了一个自备的 libbpf。
+如果你的系统版本太旧，`external/libbpf` 子模块提供了一个自备的libbpf。
 
 ### 构建
 
@@ -119,24 +119,24 @@ make
 
 | 二进制文件 | 描述 |
 |--------|-------------|
-| `rswitch_loader` | 主 loader — 加载 BPF modules，管理 pipeline |
-| `rswitch-voqd` | VOQd 用户空间 QoS 调度器 |
-| `rswitchctl` | Pipeline 管理和监控 |
-| `rsvlanctl` | VLAN 配置 |
-| `rsaclctl` | ACL 管理 |
-| `rsqosctl` | QoS 监控 |
+| `rswitch_loader` | 主loader — 加载BPF modules，管理pipeline |
+| `rswitch-voqd` | VOQd用户空间QoS调度器 |
+| `rswitchctl` | Pipeline管理和监控 |
+| `rsvlanctl` | VLAN配置 |
+| `rsaclctl` | ACL管理 |
+| `rsqosctl` | QoS监控 |
 
-BPF object files 位于 `build/bpf/`：
+BPF object files位于 `build/bpf/`：
 
 | 对象 | 描述 |
 |--------|-------------|
-| `dispatcher.bpf.o` | XDP ingress 入口点 |
-| `egress.bpf.o` | Devmap egress 回调 |
-| `vlan.bpf.o` | VLAN 处理 module |
+| `dispatcher.bpf.o` | XDP ingress入口点 |
+| `egress.bpf.o` | Devmap egress回调 |
+| `vlan.bpf.o` | VLAN处理module |
 | `acl.bpf.o` | ACL module |
-| `l2learn.bpf.o` | MAC 学习 module |
-| `lastcall.bpf.o` | 最终转发 module |
-| `*.bpf.o` | 其他 modules |
+| `l2learn.bpf.o` | MAC学习module |
+| `lastcall.bpf.o` | 最终转发module |
+| `*.bpf.o` | 其他modules |
 
 ### 清理构建
 
@@ -162,7 +162,7 @@ sudo bpftool map show | grep rswitch
 
 ## 跨内核部署
 
-得益于 CO-RE，编译后的 BPF objects 可以在不同的内核版本上运行而无需重新编译：
+得益于CO-RE，编译后的BPF objects可以在不同的内核版本上运行而无需重新编译：
 
 ```bash
 # 在开发机上构建
@@ -177,13 +177,13 @@ ssh target "cd /opt/rswitch && sudo ./build/rswitch_loader --profile etc/profile
 ```
 
 **目标机要求**：
-- Linux 内核 5.8+ 并带有 BTF (`/sys/kernel/btf/vmlinux`)
-- libbpf 运行时库
-- Root 权限
+- Linux内核5.8+ 并带有BTF (`/sys/kernel/btf/vmlinux`)
+- libbpf运行时库
+- Root权限
 
 ## 故障排除构建问题
 
-### vmlinux.h 生成失败
+### vmlinux.h生成失败
 
 ```
 bpftool: command not found
@@ -195,21 +195,21 @@ sudo apt install linux-tools-$(uname -r)
 make BPFTOOL=/usr/local/sbin/bpftool vmlinux
 ```
 
-### 缺失 BTF
+### 缺失BTF
 
 ```
 /sys/kernel/btf/vmlinux: No such file or directory
 ```
 
-你的内核没有启用 BTF。请升级到启用了 `CONFIG_DEBUG_INFO_BTF=y` 的内核（大多数现代发行版中的标准配置）。
+你的内核没有启用BTF。请升级到启用了 `CONFIG_DEBUG_INFO_BTF=y` 的内核（大多数现代发行版中的标准配置）。
 
-### libbpf 版本太旧
+### libbpf版本太旧
 
 ```
 undefined reference to 'bpf_object__open_file'
 ```
 
-使用自备的 libbpf：
+使用自备的libbpf：
 ```bash
 cd external/libbpf/src
 make
@@ -217,13 +217,13 @@ make install PREFIX=/usr/local
 ldconfig
 ```
 
-### clang 太旧
+### clang太旧
 
 ```
 error: unknown argument: '-mcpu=v3'
 ```
 
-将 clang 升级到 10 或更高版本：
+将clang升级到10或更高版本：
 ```bash
 sudo apt install clang-14
 export CC=clang-14
@@ -255,7 +255,7 @@ rswitch/
 
 ## 下一步
 
-- [快速入门](../../usage/Quick_Start.md) — 5 分钟内运行
-- [NIC 配置](NIC_Configuration.md) — 特定硬件设置
-- [配置](Configuration.md) — YAML profile 参考
-- [Systemd 集成](Systemd_Integration.md) — 生产服务设置
+- [快速入门](../../usage/Quick_Start.md) — 5分钟内运行
+- [NIC配置](NIC_Configuration.md) — 特定硬件设置
+- [配置](Configuration.md) — YAML profile参考
+- [Systemd集成](Systemd_Integration.md) — 生产服务设置

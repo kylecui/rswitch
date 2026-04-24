@@ -1,29 +1,29 @@
 > 📖 [English Version](../../development/CO-RE_Guide.md)
 
-# CO-RE 可移植性指南 (CO-RE Portability Guide)
+# CO-RE可移植性指南 (CO-RE Portability Guide)
 
-**CO-RE (Compile Once - Run Everywhere，一次编译，到处运行)** 使得在某一内核版本上编译的 rSwitch BPF module 无需重新编译即可在任何其他内核版本 (5.8+) 上运行。本指南涵盖了 CO-RE 的工作原理、如何编写符合 CO-RE 规范的 module 以及如何跨内核版本进行部署。
+**CO-RE (Compile Once - Run Everywhere，一次编译，到处运行)** 使得在某一内核版本上编译的rSwitch BPF module无需重新编译即可在任何其他内核版本 (5.8+) 上运行。本指南涵盖了CO-RE的工作原理、如何编写符合CO-RE规范的module以及如何跨内核版本进行部署。
 
 ---
 
 ## 概览 (Overview)
 
-### 传统 BPF vs CO-RE
+### 传统BPF vs CO-RE
 
 | 维度 | 传统方式 | CO-RE |
 |--------|------------|-------|
 | **头文件** | 多个 `<linux/*.h>` 文件 | 单个 `vmlinux.h` + 辅助函数 |
 | **可移植性** | 必须针对每个内核重新编译 | 一次编译，到处运行 |
-| **字段访问** | 直接访问结构体（布局改变时会崩溃） | 加载时进行 BTF 感知的重定位 (relocation) |
-| **依赖关系** | 构建和目标机器均需内核头文件 | 仅构建机器需要；目标机器需要 BTF |
-| **二进制大小** | 较大（冗余的类型定义） | 减小 20-30% |
+| **字段访问** | 直接访问结构体（布局改变时会崩溃） | 加载时进行BTF感知的重定位 (relocation) |
+| **依赖关系** | 构建和目标机器均需内核头文件 | 仅构建机器需要；目标机器需要BTF |
+| **二进制大小** | 较大（冗余的类型定义） | 减小20-30% |
 | **运行时开销** | 无 | 无（重定位发生在加载时） |
 
 ### 工作原理
 
 1. **BTF (BPF Type Format)**: 内核通过 `/sys/kernel/btf/vmlinux` 导出类型信息
-2. **vmlinux.h**: 从 BTF 生成，包含单个头文件中的所有内核类型定义
-3. **libbpf 重定位**: 在加载时，libbpf 读取目标内核的 BTF 并调整结构体字段偏移量
+2. **vmlinux.h**: 从BTF生成，包含单个头文件中的所有内核类型定义
+3. **libbpf重定位**: 在加载时，libbpf读取目标内核的BTF并调整结构体字段偏移量
 4. **特性检测**: `bpf_core_field_exists()` 允许在运行时适配内核能力
 
 ---
@@ -39,7 +39,7 @@
   CONFIG_DEBUG_INFO_BTF_MODULES=y  # Module BTF (可选)
   ```
 
-### 验证 BTF 支持
+### 验证BTF支持
 
 ```bash
 # 检查 BTF 是否可用
@@ -53,13 +53,13 @@ bpftool btf dump file /sys/kernel/btf/vmlinux format c | head -20
 
 | 工具 | 最低版本 | 用途 |
 |------|-----------------|---------|
-| bpftool | 5.8+ | 生成 vmlinux.h |
-| libbpf | 0.6+ | 加载时进行 CO-RE 重定位 |
-| clang/LLVM | 10+ | 在编译对象中生成 BTF |
+| bpftool | 5.8+ | 生成vmlinux.h |
+| libbpf | 0.6+ | 加载时进行CO-RE重定位 |
+| clang/LLVM | 10+ | 在编译对象中生成BTF |
 
 ---
 
-## 生成 vmlinux.h
+## 生成vmlinux.h
 
 在首次构建之前（或内核升级之后）：
 
@@ -68,15 +68,15 @@ cd rswitch/
 make vmlinux
 ```
 
-这将从当前运行内核的 BTF 生成 `bpf/include/vmlinux.h`。注意：
+这将从当前运行内核的BTF生成 `bpf/include/vmlinux.h`。注意：
 
-- vmlinux.h 约有 150,000 行；它已包含在 `.gitignore` 中
+- vmlinux.h约有150,000行；它已包含在 `.gitignore` 中
 - 每个开发环境都会生成自己的版本
 - 仅在内核版本更改后才需要重新生成
 
 ---
 
-## 编写 CO-RE Module
+## 编写CO-RE Module
 
 ### 头文件引用
 
@@ -92,7 +92,7 @@ make vmlinux
 
 ### 数据包访问辅助函数
 
-`rswitch_bpf.h` 为数据包解析提供了 CO-RE 安全的辅助函数：
+`rswitch_bpf.h` 为数据包解析提供了CO-RE安全的辅助函数：
 
 ```c
 // 安全的 Ethernet 报头访问
@@ -110,7 +110,7 @@ struct ipv6hdr *ip6h = get_ipv6hdr(ctx, l3_offset);
 struct tcphdr *tcp = GET_HEADER(ctx, l4_offset, struct tcphdr);
 ```
 
-### CO-RE 字段访问
+### CO-RE字段访问
 
 对于跨版本可能发生布局变化的内核结构体：
 
@@ -173,9 +173,9 @@ if (!CHECK_BOUNDS(ctx, ptr, size)) {
 
 ---
 
-## 偏移掩码以确保 Verifier 合规 (Offset Masking for Verifier Compliance)
+## 偏移掩码以确保Verifier合规 (Offset Masking for Verifier Compliance)
 
-BPF verifier 要求可证明的有界内存访问。请使用偏移掩码：
+BPF verifier要求可证明的有界内存访问。请使用偏移掩码：
 
 ```c
 // 错误 —— verifier 无法证明偏移量是有界的
@@ -189,9 +189,9 @@ if ((void *)(iph + 1) > data_end)
 
 | 掩码 | 值 | 最大值 | 用途 |
 |------|-------|---------|-----|
-| `RS_L3_OFFSET_MASK` | `0x3F` | 63 字节 | L2 报头偏移 |
-| `RS_L4_OFFSET_MASK` | `0x7F` | 127 字节 | L3 报头偏移 |
-| `RS_PAYLOAD_MASK` | `0xFF` | 255 字节 | 完整报头栈 |
+| `RS_L3_OFFSET_MASK` | `0x3F` | 63字节 | L2报头偏移 |
+| `RS_L4_OFFSET_MASK` | `0x7F` | 127字节 | L3报头偏移 |
+| `RS_PAYLOAD_MASK` | `0xFF` | 255字节 | 完整报头栈 |
 
 ---
 
@@ -212,15 +212,15 @@ ssh server "cd /opt/rswitch && sudo ./rswitch_loader --profile profiles/l2.yaml 
 ```
 
 **目标机器的要求：**
-- 内核 5.8+ 且开启 BTF (`/sys/kernel/btf/vmlinux` 必须存在)
-- 已安装 libbpf
-- 不需要内核头文件或 vmlinux.h
+- 内核5.8+ 且开启BTF (`/sys/kernel/btf/vmlinux` 必须存在)
+- 已安装libbpf
+- 不需要内核头文件或vmlinux.h
 
 ---
 
-## 将现有 Module 迁移到 CO-RE
+## 将现有Module迁移到CO-RE
 
-### 第 1 步：替换头文件
+### 第1步：替换头文件
 
 ```diff
 - #include <linux/if_ether.h>
@@ -229,7 +229,7 @@ ssh server "cd /opt/rswitch && sudo ./rswitch_loader --profile profiles/l2.yaml 
 + #include "../include/rswitch_bpf.h"
 ```
 
-### 第 2 步：更新字段访问 (如果需要)
+### 第2步：更新字段访问 (如果需要)
 
 对于 `xdp_md` 字段（布局稳定），直接访问即可：
 ```c
@@ -244,7 +244,7 @@ void *data = (void *)(long)ctx->data;  // 无需更改
 + bpf_core_read(&tstamp, sizeof(tstamp), &skb->tstamp);  // CO-RE 安全
 ```
 
-### 第 3 步：添加特性检测 (可选)
+### 第3步：添加特性检测 (可选)
 
 ```c
 if (bpf_core_field_exists(struct xdp_md, rx_queue_index)) {
@@ -254,7 +254,7 @@ if (bpf_core_field_exists(struct xdp_md, rx_queue_index)) {
 }
 ```
 
-### 第 4 步：重新构建并测试
+### 第4步：重新构建并测试
 
 ```bash
 make vmlinux     # 重新生成 vmlinux.h (如果尚未完成)
@@ -264,25 +264,25 @@ sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml --ifaces eth0 --verbo
 
 ---
 
-## 当前 CO-RE 状态
+## 当前CO-RE状态
 
-所有 rSwitch module 均兼容 CO-RE，并可在内核 5.8+ 之间移植：
+所有rSwitch module均兼容CO-RE，并可在内核5.8+ 之间移植：
 
-| 组件 | CO-RE 状态 |
+| 组件 | CO-RE状态 |
 |-----------|-------------|
-| `dispatcher.bpf.c` | 完全 CO-RE |
-| `egress.bpf.c` | 完全 CO-RE |
-| `vlan.bpf.c` | 完全 CO-RE |
-| `acl.bpf.c` | 完全 CO-RE |
-| `l2learn.bpf.c` | 完全 CO-RE |
-| `lastcall.bpf.c` | 完全 CO-RE |
-| `afxdp_redirect.bpf.c` | 完全 CO-RE |
-| `core_example.bpf.c` | 完全 CO-RE (参考实现) |
-| `route.bpf.c` | 完全 CO-RE |
-| `mirror.bpf.c` | 完全 CO-RE |
-| `egress_vlan.bpf.c` | 完全 CO-RE |
-| `egress_qos.bpf.c` | 完全 CO-RE |
-| `egress_final.bpf.c` | 完全 CO-RE |
+| `dispatcher.bpf.c` | 完全CO-RE |
+| `egress.bpf.c` | 完全CO-RE |
+| `vlan.bpf.c` | 完全CO-RE |
+| `acl.bpf.c` | 完全CO-RE |
+| `l2learn.bpf.c` | 完全CO-RE |
+| `lastcall.bpf.c` | 完全CO-RE |
+| `afxdp_redirect.bpf.c` | 完全CO-RE |
+| `core_example.bpf.c` | 完全CO-RE (参考实现) |
+| `route.bpf.c` | 完全CO-RE |
+| `mirror.bpf.c` | 完全CO-RE |
+| `egress_vlan.bpf.c` | 完全CO-RE |
+| `egress_qos.bpf.c` | 完全CO-RE |
+| `egress_final.bpf.c` | 完全CO-RE |
 
 ---
 
@@ -290,8 +290,8 @@ sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml --ifaces eth0 --verbo
 
 | 阶段 | 影响 | 备注 |
 |-------|--------|-------|
-| 编译时间 | +10-20% | 处理 vmlinux.h (~150K 行) |
-| 加载时间 | +5-10% | libbpf BTF 重定位 |
+| 编译时间 | +10-20% | 处理vmlinux.h (~150K行) |
+| 加载时间 | +5-10% | libbpf BTF重定位 |
 | **运行时** | **0%** | 重定位后的代码与直接访问完全一致 |
 | 二进制大小 | -20-30% | 减少了冗余的类型定义 |
 
@@ -307,7 +307,7 @@ make
 
 ## 故障排除 (Troubleshooting)
 
-### vmlinux.h 生成失败
+### vmlinux.h生成失败
 
 ```bash
 # 错误: 找不到 bpftool
@@ -316,7 +316,7 @@ sudo apt install linux-tools-$(uname -r)
 make BPFTOOL=/usr/local/sbin/bpftool vmlinux
 ```
 
-### 目标机器上 BTF 不可用
+### 目标机器上BTF不可用
 
 ```bash
 # 错误: 找不到 /sys/kernel/btf/vmlinux
@@ -345,26 +345,26 @@ make clean && make
 
 ## 最佳实践 (Best Practices)
 
-1. **始终为新 module 使用 `rswitch_bpf.h`** — 永远不要包含单独的 `<linux/*.h>` 头文件
-2. **每个环境生成一次 vmlinux.h** — 并将其添加到 `.gitignore`
-3. **使用 `bpf_core_field_exists()`** 来处理可能在旧版本内核中不存在的内核 5.18+ 特性
-4. **在多个内核上进行测试** — 验证至少在 5.15, 6.1 和 6.6 上可以正常加载
+1. **始终为新module使用 `rswitch_bpf.h`** — 永远不要包含单独的 `<linux/*.h>` 头文件
+2. **每个环境生成一次vmlinux.h** — 并将其添加到 `.gitignore`
+3. **使用 `bpf_core_field_exists()`** 来处理可能在旧版本内核中不存在的内核5.18+ 特性
+4. **在多个内核上进行测试** — 验证至少在5.15, 6.1和6.6上可以正常加载
 5. **记录最低内核版本**，针对任何带有特性门控 (feature-gated) 的代码路径
-6. **使用 `core_example.bpf.c` module** 作为 CO-RE 模式的参考
+6. **使用 `core_example.bpf.c` module** 作为CO-RE模式的参考
 
 ---
 
 ## 参考资料 (References)
 
-- [BPF CO-RE 参考 (Nakryiko)](https://nakryiko.com/posts/bpf-portability-and-co-re/)
+- [BPF CO-RE参考 (Nakryiko)](https://nakryiko.com/posts/bpf-portability-and-co-re/)
 - [libbpf CO-RE API](https://github.com/libbpf/libbpf)
-- [BTF 规范](https://www.kernel.org/doc/html/latest/bpf/btf.html)
-- [CO-RE 可移植性模式](../../paperwork/CO-RE_Portability_Patterns.md) — rSwitch 特有的深度解析
+- [BTF规范](https://www.kernel.org/doc/html/latest/bpf/btf.html)
+- [CO-RE可移植性模式](../../paperwork/CO-RE_Portability_Patterns.md) — rSwitch特有的深度解析
 
 ---
 
 ## 另请参阅 (See Also)
 
 - [Architecture.md](./Architecture.md) — 系统架构概览
-- [Module_Developer_Guide.md](./Module_Developer_Guide.md) — Module 开发教程
-- [API_Reference.md](./API_Reference.md) — 完整 API 参考
+- [Module_Developer_Guide.md](./Module_Developer_Guide.md) — Module开发教程
+- [API_Reference.md](./API_Reference.md) — 完整API参考

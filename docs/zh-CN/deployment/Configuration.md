@@ -2,11 +2,11 @@
 
 # 配置参考
 
-本文档是 rSwitch YAML profile 配置的权威参考。有关面向使用的指南，请参阅 [场景 Profile](../../usage/Scenario_Profiles.md)。
+本文档是rSwitch YAML profile配置的权威参考。有关面向使用的指南，请参阅 [场景Profile](../../usage/Scenario_Profiles.md)。
 
-## Profile 文件格式
+## Profile文件格式
 
-Profiles 是位于 `etc/profiles/` 中的 YAML 文件。它们定义了 rSwitch 实例的完整运行时配置。
+Profiles是位于 `etc/profiles/` 中的YAML文件。它们定义了rSwitch实例的完整运行时配置。
 
 ```yaml
 # 必填
@@ -45,11 +45,11 @@ voqd_config:
   # ...
 ```
 
-## Module 选择
+## Module选择
 
 ### Ingress Modules
 
-在 `ingress:` 下列出 module 名称。只有列出的 modules 会被加载。执行顺序由 BPF ELF metadata 中嵌入的 stage 编号决定，**而不是**由 YAML 列表顺序决定。
+在 `ingress:` 下列出module名称。只有列出的modules会被加载。执行顺序由BPF ELF metadata中嵌入的stage编号决定，**而不是**由YAML列表顺序决定。
 
 ```yaml
 ingress:
@@ -73,12 +73,12 @@ egress:
 
 ### 规则
 
-- `lastcall` 必须是最后一个 ingress module。
-- `egress_final` 必须是最后一个 egress module。
-- Module 名称必须与 `RS_DECLARE_MODULE()` 中的 `name` 参数匹配。
-- 目前仅支持简单的 module 名称列表。Module 子字段（stage 覆盖、可选 modules、逐个 module 的配置）已在计划中，但尚未实现。
+- `lastcall` 必须是最后一个ingress module。
+- `egress_final` 必须是最后一个egress module。
+- Module名称必须与 `RS_DECLARE_MODULE()` 中的 `name` 参数匹配。
+- 目前仅支持简单的module名称列表。Module子字段（stage覆盖、可选modules、逐个module的配置）已在计划中，但尚未实现。
 
-## Settings 部分
+## Settings部分
 
 在加载时应用的全局行为设置。
 
@@ -97,17 +97,17 @@ settings:
 
 | 键 (Key) | 类型 | 默认值 | 描述 |
 |-----|------|---------|-------------|
-| `mac_learning` | bool | `true` | 全局 MAC 学习开关 |
-| `mac_aging_time` | int | `300` | 已学习的 MAC 条目过期前的秒数 |
-| `vlan_enforcement` | bool | `true` | 丢弃违反 VLAN 成员身份的数据包 |
-| `default_vlan` | int | `1` | 分配给未打标签流量的 VLAN |
-| `unknown_unicast_flood` | bool | `true` | 泛洪具有未知目的 MAC 的帧 |
+| `mac_learning` | bool | `true` | 全局MAC学习开关 |
+| `mac_aging_time` | int | `300` | 已学习的MAC条目过期前的秒数 |
+| `vlan_enforcement` | bool | `true` | 丢弃违反VLAN成员身份的数据包 |
+| `default_vlan` | int | `1` | 分配给未打标签流量的VLAN |
+| `unknown_unicast_flood` | bool | `true` | 泛洪具有未知目的MAC的帧 |
 | `broadcast_flood` | bool | `true` | 向所有端口泛洪广播帧 |
-| `stats_enabled` | bool | `true` | 收集逐端口的 RX/TX/drop 统计信息 |
+| `stats_enabled` | bool | `true` | 收集逐端口的RX/TX/drop统计信息 |
 | `ringbuf_enabled` | bool | `true` | 启用 `rs_event_bus` ring buffer |
-| `debug` | bool | `false` | 启用详细的 BPF debug 输出 |
+| `debug` | bool | `false` | 启用详细的BPF debug输出 |
 
-## Ports 部分
+## Ports部分
 
 逐个接口的配置。
 
@@ -135,24 +135,24 @@ ports:
 | `interface` | string | 接口名称 (例如 `ens34`) |
 | `enabled` | bool | 该端口是否处于活动状态 |
 | `vlan_mode` | string | `off`, `access`, `trunk`, 或 `hybrid` |
-| `pvid` | int | 端口 VLAN ID (用于 access 模式) |
-| `native_vlan` | int | Native VLAN (用于 trunk 模式下的未打标签帧) |
-| `allowed_vlans` | int[] | 允许的 VLAN ID 列表 (trunk/hybrid 模式) |
-| `mac_learning` | bool | 逐端口覆盖 MAC 学习设置 |
-| `default_priority` | int | 默认 QoS 优先级 0–7 (7 = 最高) |
+| `pvid` | int | 端口VLAN ID (用于access模式) |
+| `native_vlan` | int | Native VLAN (用于trunk模式下的未打标签帧) |
+| `allowed_vlans` | int[] | 允许的VLAN ID列表 (trunk/hybrid模式) |
+| `mac_learning` | bool | 逐端口覆盖MAC学习设置 |
+| `default_priority` | int | 默认QoS优先级0–7 (7 = 最高) |
 
-### VLAN 模式
+### VLAN模式
 
 | 模式 | 值 | 行为 |
 |------|-------|----------|
-| `off` | 0 | 该端口不进行 VLAN 处理 |
+| `off` | 0 | 该端口不进行VLAN处理 |
 | `access` | 1 | 仅限未打标签流量；分配给 `pvid` |
 | `trunk` | 2 | 打标签流量；`native_vlan` 用于未打标签帧 |
-| `hybrid` | 3 | 混合打标签和未打标签的 VLAN |
+| `hybrid` | 3 | 混合打标签和未打标签的VLAN |
 
-## VLANs 部分
+## VLANs部分
 
-定义跨端口的 VLAN 成员身份。
+定义跨端口的VLAN成员身份。
 
 ```yaml
 vlans:
@@ -169,14 +169,14 @@ vlans:
 
 | 键 (Key) | 类型 | 描述 |
 |-----|------|-------------|
-| `vlan_id` | int | VLAN 标识符 (1–4094) |
-| `name` | string | 人类可读的 VLAN 名称 |
-| `tagged_ports` | string[] | 为该 VLAN 发送/接收打标签帧的接口 |
-| `untagged_ports` | string[] | 为该 VLAN 发送/接收未打标签帧的接口 |
+| `vlan_id` | int | VLAN标识符 (1–4094) |
+| `name` | string | 人类可读的VLAN名称 |
+| `tagged_ports` | string[] | 为该VLAN发送/接收打标签帧的接口 |
+| `untagged_ports` | string[] | 为该VLAN发送/接收未打标签帧的接口 |
 
-## VOQd 配置部分
+## VOQd配置部分
 
-配置 VOQd 用户空间 QoS 调度器。有关部署详情，请参阅 [VOQd 设置](VOQd_Setup.md)。
+配置VOQd用户空间QoS调度器。有关部署详情，请参阅 [VOQd设置](VOQd_Setup.md)。
 
 ```yaml
 voqd_config:
@@ -209,20 +209,20 @@ voqd_config:
 
 | 键 (Key) | 类型 | 描述 |
 |-----|------|-------------|
-| `enabled` | bool | 随 loader 自动启动 VOQd |
-| `mode` | string | `bypass` (仅快路径), `shadow` (观察), `active` (完整 QoS) |
-| `num_ports` | int | VOQd 管理的端口数量 |
+| `enabled` | bool | 随loader自动启动VOQd |
+| `mode` | string | `bypass` (仅快路径), `shadow` (观察), `active` (完整QoS) |
+| `num_ports` | int | VOQd管理的端口数量 |
 | `prio_mask` | hex/int | 要拦截的优先级的位掩码 |
-| `enable_afxdp` | bool | 启用 AF_XDP 数据平面 |
-| `zero_copy` | bool | Zero-copy AF_XDP (需要 NIC 支持) |
+| `enable_afxdp` | bool | 启用AF_XDP数据平面 |
+| `zero_copy` | bool | Zero-copy AF_XDP (需要NIC支持) |
 | `rx_ring_size` | int | AF_XDP RX ring size |
 | `tx_ring_size` | int | AF_XDP TX ring size |
-| `frame_size` | int | UMEM 帧大小（字节） |
-| `batch_size` | int | 每次 poll 的数据包批处理大小 |
-| `poll_timeout_ms` | int | Poll 超时时间（毫秒） |
-| `busy_poll` | bool | 启用 busy polling (更低延迟，更高 CPU 占用) |
-| `enable_scheduler` | bool | 启用 DRR/WFQ 调度器 |
-| `cpu_affinity` | int | 绑定 VOQd 线程的 CPU 核心 |
+| `frame_size` | int | UMEM帧大小（字节） |
+| `batch_size` | int | 每次poll的数据包批处理大小 |
+| `poll_timeout_ms` | int | Poll超时时间（毫秒） |
+| `busy_poll` | bool | 启用busy polling (更低延迟，更高CPU占用) |
+| `enable_scheduler` | bool | 启用DRR/WFQ调度器 |
+| `cpu_affinity` | int | 绑定VOQd线程的CPU核心 |
 | `software_queues.enabled` | bool | 启用软件队列模拟 |
 | `software_queues.queue_depth` | int | 每个软件队列的深度 |
 | `software_queues.num_priorities` | int | 优先级层级数量 |
@@ -303,15 +303,15 @@ voqd_config:
 
 以下特性已设计但尚未实现：
 
-- **Stage 覆盖**: 从 YAML 覆盖 ELF 定义的 stage 编号
-- **可选 modules**: 根据构建标志或运行时条件进行条件加载
-- **Module 子字段**: 逐个 module 的配置参数 (例如 ACL 最大规则数)
-- **Profile 继承**: `inherits: base-profile.yaml` 用于配置复用
-- **模板系统**: 带有变量替换的参数化 profiles
+- **Stage覆盖**: 从YAML覆盖ELF定义的stage编号
+- **可选modules**: 根据构建标志或运行时条件进行条件加载
+- **Module子字段**: 逐个module的配置参数 (例如ACL最大规则数)
+- **Profile继承**: `inherits: base-profile.yaml` 用于配置复用
+- **模板系统**: 带有变量替换的参数化profiles
 
 ## 另请参阅
 
-- [场景 Profile](../../usage/Scenario_Profiles.md) — 面向使用的 profile 指南
-- [VOQd 设置](VOQd_Setup.md) — VOQd 部署
-- [NIC 配置](NIC_Configuration.md) — NIC 特定设置
+- [场景Profile](../../usage/Scenario_Profiles.md) — 面向使用的profile指南
+- [VOQd设置](VOQd_Setup.md) — VOQd部署
+- [NIC配置](NIC_Configuration.md) — NIC特定设置
 - [安装](Installation.md) — 从源码构建

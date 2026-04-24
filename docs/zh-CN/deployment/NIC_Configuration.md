@@ -1,12 +1,12 @@
 # 网卡配置
 
-rSwitch 运行在 XDP 层，该层在数据包到达 Linux 网络栈之前的网卡驱动中运行。这需要特定的网卡配置。
+rSwitch运行在XDP层，该层在数据包到达Linux网络栈之前的网卡驱动中运行。这需要特定的网卡配置。
 
 ## 关键要求
 
-### 1. 禁用硬件 VLAN 卸载 (VLAN Offload)
+### 1. 禁用硬件VLAN卸载 (VLAN Offload)
 
-现代网卡会在 XDP 程序看到 VLAN 标签之前在硬件中将其剥离。这会**破坏** rSwitch 的 VLAN 处理。
+现代网卡会在XDP程序看到VLAN标签之前在硬件中将其剥离。这会**破坏** rSwitch的VLAN处理。
 
 **检查状态**：
 ```bash
@@ -27,7 +27,7 @@ sudo ./tools/scripts/all/disable_vlan_offload.sh ens34 ens35 ens36
 
 ### 2. 启用混杂模式 (Promiscuous Mode)
 
-交换机运行需要接收网络段上的**所有**数据包，而不仅仅是发送到网卡自身 MAC 地址的数据包。
+交换机运行需要接收网络段上的**所有**数据包，而不仅仅是发送到网卡自身MAC地址的数据包。
 
 ```bash
 sudo ip link set dev ens34 promisc on
@@ -35,22 +35,22 @@ sudo ip link set dev ens35 promisc on
 sudo ip link set dev ens36 promisc on
 ```
 
-> **注意**：rSwitch 加载器 v1.1+ 在挂载 XDP 程序时会自动应用这两个设置。只有在旧版本或进行故障排除时才需要手动配置。
+> **注意**：rSwitch加载器v1.1+在挂载XDP程序时会自动应用这两个设置。只有在旧版本或进行故障排除时才需要手动配置。
 
 ## 网卡兼容性
 
 ### 支持的网卡
 
-| 网卡 | 驱动 | 原生 XDP | AF_XDP 零拷贝 | 备注 |
+| 网卡 | 驱动 | 原生XDP | AF_XDP零拷贝 | 备注 |
 |-----|--------|-----------|------------------|-------|
 | Intel X710 | i40e | 是 | 是 | 推荐用于生产环境 |
 | Intel X520/X540 | ixgbe | 是 | 是 | 较旧但支持良好 |
 | Mellanox CX-5 | mlx5 | 是 | 是 | 推荐用于生产环境 |
-| Intel E810 | ice | 是 | 是 | 最新的 Intel XDP 支持 |
+| Intel E810 | ice | 是 | 是 | 最新的Intel XDP支持 |
 | Broadcom | bnxt_en | 是 | 有限 | 检查驱动版本 |
 | VMware | vmxnet3 | 是 | 否 | 实验室/测试使用 |
 | Hyper-V | hv_netvsc | **仅通用模式** | 否 | 性能显著降低 |
-| Realtek | r8169 | 有限 | 否 | 某些型号不支持禁用 VLAN 卸载 |
+| Realtek | r8169 | 有限 | 否 | 某些型号不支持禁用VLAN卸载 |
 
 ### 检查你的网卡
 
@@ -69,7 +69,7 @@ ip link set dev ens34 xdp obj /dev/null 2>&1
 
 ## 验证
 
-### VLAN 卸载
+### VLAN卸载
 
 ```bash
 ethtool -k ens34 | grep -i vlan
@@ -93,9 +93,9 @@ ip link show ens34
 3: ens34: <BROADCAST,MULTICAST,PROMISC,UP,LOWER_UP> ...
 ```
 
-### VLAN 标签可见性
+### VLAN标签可见性
 
-加载 rSwitch 后，检查 VLAN 标签是否可见：
+加载rSwitch后，检查VLAN标签是否可见：
 
 ```bash
 sudo cat /sys/kernel/debug/tracing/trace_pipe | grep "vlan_depth"
@@ -106,13 +106,13 @@ sudo cat /sys/kernel/debug/tracing/trace_pipe | grep "vlan_depth"
 [rSwitch] Packet received on ifindex 3, vlan_depth=1, vlan_id=10
 ```
 
-如果你对本应带标签的流量 (已通过 Wireshark 验证) 看到 `vlan_depth=0`，则说明 VLAN 卸载仍处于启用状态。
+如果你对本应带标签的流量 (已通过Wireshark验证) 看到 `vlan_depth=0`，则说明VLAN卸载仍处于启用状态。
 
 ## 队列配置
 
-### IRQ 亲和性和队列隔离
+### IRQ亲和性和队列隔离
 
-为了获得最佳性能，请隔离网卡队列并设置 CPU 亲和性：
+为了获得最佳性能，请隔离网卡队列并设置CPU亲和性：
 
 ```bash
 # 配置网卡队列 (接口, 队列数量)
@@ -121,8 +121,8 @@ sudo scripts/setup_nic_queues.sh ens34 2
 
 该脚本会：
 1. 设置合并队列的数量
-2. 配置 IRQ 亲和性以分散到各个 CPU
-3. 隔离用于 XDP 处理的队列
+2. 配置IRQ亲和性以分散到各个CPU
+3. 隔离用于XDP处理的队列
 
 ### 手动队列设置
 
@@ -142,7 +142,7 @@ echo 1 | sudo tee /proc/irq/<irq_num>/smp_affinity
 
 加载器的自动配置**不是持久的**。对于生产环境，请在启动时进行配置。
 
-### 使用 systemd (推荐)
+### 使用systemd (推荐)
 
 创建 `/etc/systemd/system/rswitch-nic.service`：
 
@@ -171,7 +171,7 @@ WantedBy=multi-user.target
 sudo systemctl enable rswitch-nic.service
 ```
 
-### 使用 udev 规则
+### 使用udev规则
 
 对于在重启和热插拔后仍能保持的特定接口配置：
 
@@ -183,14 +183,14 @@ ACTION=="add", SUBSYSTEM=="net", KERNEL=="ens34", RUN+="/usr/sbin/ip link set de
 
 ## 故障排除
 
-### VLAN 流量无法正常工作
+### VLAN流量无法正常工作
 
-**症状**：VLAN 10 流量无法在 trunk 端口和 access 端口之间转发。
+**症状**：VLAN 10流量无法在trunk端口和access端口之间转发。
 
 **诊断**：
-1. 物理链路上的 Wireshark 显示 VLAN 10 标签 → 硬件看到了标签
-2. BPF 追踪显示 `vlan_depth=0` → XDP 未看到标签
-3. 结论：硬件 VLAN 卸载正在剥离标签
+1. 物理链路上的Wireshark显示VLAN 10标签 → 硬件看到了标签
+2. BPF追踪显示 `vlan_depth=0` → XDP未看到标签
+3. 结论：硬件VLAN卸载正在剥离标签
 
 **修复**：
 ```bash
@@ -206,17 +206,17 @@ Warning: Failed to enable promiscuous mode on ens35
 ```
 
 **原因**：
-- `ethtool` 或 `ip` 不在 PATH 中
-- 未以 root 身份运行
+- `ethtool` 或 `ip` 不在PATH中
+- 未以root身份运行
 - 网卡驱动不支持该操作 (`[fixed]` 标志)
 
 **修复**：
 - 使用 `sudo` 运行加载器
 - 安装 `ethtool`：`sudo apt install ethtool`
-- 对于网卡限制，请在启动 rSwitch 之前手动配置
+- 对于网卡限制，请在启动rSwitch之前手动配置
 
 ## 另请参阅
 
 - [安装](Installation.md) — 从源码构建
-- [VOQd 设置](VOQd_Setup.md) — AF_XDP 要求
+- [VOQd设置](VOQd_Setup.md) — AF_XDP要求
 - [故障排除](../usage/Troubleshooting.md) — 通用故障排除

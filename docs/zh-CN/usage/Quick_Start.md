@@ -2,15 +2,15 @@
 
 # 快速入门
 
-在 5 分钟内运行 rSwitch。
+在5分钟内运行rSwitch。
 
 ## 前置条件
 
-- Linux kernel 5.8+，支持 BTF（必须存在 `/sys/kernel/btf/vmlinux`）
-- Root / sudo 权限
+- Linux kernel 5.8+，支持BTF（必须存在 `/sys/kernel/btf/vmlinux`）
+- Root / sudo权限
 - 构建工具：`build-essential`, `cmake`, `clang`, `llvm`, `pkg-config`
 - 库：`libxdp-dev`, `libbpf-dev`, `linux-headers-$(uname -r)`
-- 至少 2 个用于交换的网络接口
+- 至少2个用于交换的网络接口
 
 > 有关详细的安装步骤，请参阅 [安装](../deployment/Installation.md)。
 
@@ -24,12 +24,12 @@ make
 
 二进制文件位于 `build/` 目录中：
 - `rswitch_loader` — 主加载器
-- `rswitch-voqd` — QoS 调度器
-- `rswitchctl`, `rsvlanctl`, `rsaclctl`, `rsqosctl` — CLI 工具
+- `rswitch-voqd` — QoS调度器
+- `rswitchctl`, `rsvlanctl`, `rsaclctl`, `rsqosctl` — CLI工具
 
-## 选择 Profile
+## 选择Profile
 
-Profile 定义了运行哪些模块以及运行顺序。它们位于 `etc/profiles/` 目录中：
+Profile定义了运行哪些模块以及运行顺序。它们位于 `etc/profiles/` 目录中：
 
 ```bash
 ls etc/profiles/
@@ -40,9 +40,9 @@ ls etc/profiles/
 | Profile | 描述 |
 |---------|-------------|
 | `dumb.yaml` | 简单的泛洪交换机（无学习功能） |
-| `l2.yaml` | 支持 VLAN 的 L2 学习型交换机 |
-| `l3.yaml` | 带有基础 ACL 的 L3 路由 |
-| `firewall.yaml` | 以安全为中心，带有有序 ACL |
+| `l2.yaml` | 支持VLAN的L2学习型交换机 |
+| `l3.yaml` | 带有基础ACL的L3路由 |
+| `firewall.yaml` | 以安全为中心，带有有序ACL |
 
 ## 运行
 
@@ -55,7 +55,7 @@ INTERFACES=ens34,ens35,ens36
 sudo ./build/rswitch_loader --profile "$PROFILE" --ifaces $INTERFACES
 ```
 
-> **提示**：如果在读取 map 时看到 "No such file" 错误，请等待 3–5 秒进行初始化，或者使用自动处理计时的 `scripts/rswitch_start.sh`。
+> **提示**：如果在读取map时看到 "No such file" 错误，请等待3–5秒进行初始化，或者使用自动处理计时的 `scripts/rswitch_start.sh`。
 
 ## 验证
 
@@ -87,16 +87,16 @@ sudo ./scripts/unpin_maps.sh
 
 | 标志 | 描述 |
 |------|-------------|
-| `--profile <path>` | YAML profile 文件 |
+| `--profile <path>` | YAML profile文件 |
 | `--ifaces <if1,if2>` | 逗号分隔的接口列表 |
 | `--verbose` | 详细日志 |
 | `--debug` | 调试级别日志 |
 | `--xdp-mode <mode>` | `native` 或 `generic`（默认：native） |
-| `--detach` | 分离 XDP 程序并退出 |
+| `--detach` | 分离XDP程序并退出 |
 
 ## 后续步骤
 
 - [如何使用](How_To_Use.md) — 全面的使用指南
-- [场景 Profile](Scenario_Profiles.md) — 所有可用 profile 的说明
-- [CLI 参考](CLI_Reference.md) — CLI 工具命令
+- [场景Profile](Scenario_Profiles.md) — 所有可用profile的说明
+- [CLI参考](CLI_Reference.md) — CLI工具命令
 - [故障排除](Troubleshooting.md) — 常见问题及解决方案

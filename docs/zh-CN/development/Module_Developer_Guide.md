@@ -1,22 +1,22 @@
 > 📖 [English Version](../../development/Module_Developer_Guide.md)
 
-# Module 开发指南 (Module Developer Guide)
+# Module开发指南 (Module Developer Guide)
 
-本指南将引导您为 rSwitch pipeline 创建自定义 BPF module —— 从初始设置到生产部署。本指南与 `bpf/modules/` 中的源代码以及 `user/loader/rswitch_loader.c` 中的 loader 保持一致。
+本指南将引导您为rSwitch pipeline创建自定义BPF module —— 从初始设置到生产部署。本指南与 `bpf/modules/` 中的源代码以及 `user/loader/rswitch_loader.c` 中的loader保持一致。
 
 ---
 
 ## 前置条件 (Prerequisites)
 
-在编写 module 之前，您应该了解：
+在编写module之前，您应该了解：
 
-- C 语言编程和 eBPF 基础概念
-- [架构文档](./Architecture.md)（pipeline 阶段、tail-call、per-CPU context）
-- [API 参考](./API_Reference.md)（宏、数据结构、辅助函数）
+- C语言编程和eBPF基础概念
+- [架构文档](./Architecture.md)（pipeline阶段、tail-call、per-CPU context）
+- [API参考](./API_Reference.md)（宏、数据结构、辅助函数）
 
 构建环境要求：
 
-- Linux 内核 5.8+，且开启 `CONFIG_DEBUG_INFO_BTF=y`
+- Linux内核5.8+，且开启 `CONFIG_DEBUG_INFO_BTF=y`
 - clang/LLVM 10+, libbpf 0.6+, bpftool 5.8+
 - 详见 [安装指南](../../deployment/Installation.md) 获取完整依赖列表
 
@@ -24,7 +24,7 @@
 
 ## 快速上手：Hello World Module
 
-### 第 1 步：创建源文件
+### 第1步：创建源文件
 
 创建 `bpf/modules/hello_world.bpf.c`：
 
@@ -79,7 +79,7 @@ int hello_world(struct xdp_md *xdp_ctx)
 }
 ```
 
-### 第 2 步：构建
+### 第2步：构建
 
 ```bash
 cd rswitch/
@@ -89,9 +89,9 @@ make
 
 构建系统会自动发现 `bpf/modules/` 中新增的 `.bpf.c` 文件。
 
-### 第 3 步：添加到 Profile
+### 第3步：添加到Profile
 
-在 `etc/profiles/` 中创建或编辑 YAML profile：
+在 `etc/profiles/` 中创建或编辑YAML profile：
 
 ```yaml
 name: "Hello World Test"
@@ -107,9 +107,9 @@ egress:
   - egress_final
 ```
 
-> **注意：** Module 阶段仅由 BPF 代码中的 `RS_DECLARE_MODULE()` 宏决定。YAML profile 仅列出要加载哪些 module —— 目前不支持在 YAML 中覆盖阶段设置。
+> **注意：** Module阶段仅由BPF代码中的 `RS_DECLARE_MODULE()` 宏决定。YAML profile仅列出要加载哪些module —— 目前不支持在YAML中覆盖阶段设置。
 
-### 第 4 步：加载与测试
+### 第4步：加载与测试
 
 ```bash
 sudo ./build/rswitch_loader --profile etc/profiles/hello.yaml --ifaces eth0,eth1 --verbose
@@ -123,19 +123,19 @@ sudo bpftool map dump pinned /sys/fs/bpf/hello_stats
 
 ---
 
-## Module 结构详解 (Module Structure in Detail)
+## Module结构详解 (Module Structure in Detail)
 
 ### 必要元素 (Required Elements)
 
-每个 module 必须包含：
+每个module必须包含：
 
 1. **许可证声明 (License declaration)**: `char _license[] SEC("license") = "GPL";`
-2. **Module 元数据 (Module metadata)**: `RS_DECLARE_MODULE(...)` — 在 ELF 中嵌入自我描述
-3. **XDP 入口点 (XDP entry point)**: `SEC("xdp") int func_name(struct xdp_md *xdp_ctx) { ... }`
-4. **Context 获取 (Context retrieval)**: `struct rs_ctx *ctx = RS_GET_CTX();` 并进行空值检查
-5. **Pipeline 延续 (Pipeline continuation)**: 在末尾调用 `RS_TAIL_CALL_NEXT(xdp_ctx, ctx);`
+2. **Module元数据 (Module metadata)**: `RS_DECLARE_MODULE(...)` — 在ELF中嵌入自我描述
+3. **XDP入口点 (XDP entry point)**: `SEC("xdp") int func_name(struct xdp_md *xdp_ctx) { ... }`
+4. **Context获取 (Context retrieval)**: `struct rs_ctx *ctx = RS_GET_CTX();` 并进行空值检查
+5. **Pipeline延续 (Pipeline continuation)**: 在末尾调用 `RS_TAIL_CALL_NEXT(xdp_ctx, ctx);`
 
-### RS_DECLARE_MODULE 参数
+### RS_DECLARE_MODULE参数
 
 ```c
 RS_DECLARE_MODULE(name, hook, stage, flags, description)
@@ -143,45 +143,45 @@ RS_DECLARE_MODULE(name, hook, stage, flags, description)
 
 | 参数 | 类型 | 描述 |
 |-----------|------|-------------|
-| `name` | 字符串 | Module 标识符（最长 31 字符），用于 YAML profile |
+| `name` | 字符串 | Module标识符（最长31字符），用于YAML profile |
 | `hook` | 枚举 (enum) | `RS_HOOK_XDP_INGRESS` 或 `RS_HOOK_XDP_EGRESS` |
-| `stage` | u32 | 执行顺序：ingress 为 10-99，egress 为 100-199 |
-| `flags` | u32 | 能力标志位（通过 OR 组合） |
-| `description` | 字符串 | 易于阅读的描述（最长 63 字符） |
+| `stage` | u32 | 执行顺序：ingress为10-99，egress为100-199 |
+| `flags` | u32 | 能力标志位（通过OR组合） |
+| `description` | 字符串 | 易于阅读的描述（最长63字符） |
 
 ### 能力标志位 (Capability Flags)
 
 | 标志位 | 值 | 何时设置 |
 |------|-------|-------------|
-| `RS_FLAG_NEED_L2L3_PARSE` | `0x01` | Module 从 `ctx->layers` 读取 L2/L3 报头字段 |
-| `RS_FLAG_NEED_VLAN_INFO` | `0x02` | Module 读取 VLAN 信息 |
-| `RS_FLAG_NEED_FLOW_INFO` | `0x04` | Module 读取五元组流信息 (sport/dport) |
-| `RS_FLAG_MODIFIES_PACKET` | `0x08` | Module 可能会修改数据包数据 |
-| `RS_FLAG_MAY_DROP` | `0x10` | Module 可能会丢弃数据包 |
-| `RS_FLAG_CREATES_EVENTS` | `0x20` | Module 向事件总线 (event bus) 发送事件 |
+| `RS_FLAG_NEED_L2L3_PARSE` | `0x01` | Module从 `ctx->layers` 读取L2/L3报头字段 |
+| `RS_FLAG_NEED_VLAN_INFO` | `0x02` | Module读取VLAN信息 |
+| `RS_FLAG_NEED_FLOW_INFO` | `0x04` | Module读取五元组流信息 (sport/dport) |
+| `RS_FLAG_MODIFIES_PACKET` | `0x08` | Module可能会修改数据包数据 |
+| `RS_FLAG_MAY_DROP` | `0x10` | Module可能会丢弃数据包 |
+| `RS_FLAG_CREATES_EVENTS` | `0x20` | Module向事件总线 (event bus) 发送事件 |
 
 ### 阶段选择指南 (Stage Selection Guide)
 
-根据 module 的功能选择阶段编号：
+根据module的功能选择阶段编号：
 
-| 您的 Module 功能... | 推荐范围 | 示例 |
+| 您的Module功能... | 推荐范围 | 示例 |
 |---------------------|-------------------|---------|
 | 报头校验 / 归一化 | 10-19 | 预处理 |
-| VLAN 处理 | 20-29 | `vlan` 位于 20 |
-| 安全 / 过滤 | 30-39 | `acl` 位于 30 |
-| 镜像 / 劫持 (Mirroring / tapping) | 40-49 | `mirror` 位于 40 |
-| 路由 / 转发决策 | 50-69 | `route` 位于 50 |
-| MAC 学习 / ARP | 80-89 | `l2learn` 位于 80, `afxdp_redirect` 位于 85 |
-| 最终转发 | 90-99 | `lastcall` 位于 90 (始终最后) |
-| Egress QoS | 170-179 | `egress_qos` 位于 170 |
-| Egress VLAN 打标 | 180-189 | `egress_vlan` 位于 180 |
-| Egress 最终处理 | 190-199 | `egress_final` 位于 190 (始终最后) |
+| VLAN处理 | 20-29 | `vlan` 位于20 |
+| 安全 / 过滤 | 30-39 | `acl` 位于30 |
+| 镜像 / 劫持 (Mirroring / tapping) | 40-49 | `mirror` 位于40 |
+| 路由 / 转发决策 | 50-69 | `route` 位于50 |
+| MAC学习 / ARP | 80-89 | `l2learn` 位于80, `afxdp_redirect` 位于85 |
+| 最终转发 | 90-99 | `lastcall` 位于90 (始终最后) |
+| Egress QoS | 170-179 | `egress_qos` 位于170 |
+| Egress VLAN打标 | 180-189 | `egress_vlan` 位于180 |
+| Egress最终处理 | 190-199 | `egress_final` 位于190 (始终最后) |
 
 ---
 
-## 使用 Context (Working with Context)
+## 使用Context (Working with Context)
 
-### 读取 Context
+### 读取Context
 
 ```c
 struct rs_ctx *ctx = RS_GET_CTX();
@@ -202,9 +202,9 @@ __u8 priority = ctx->prio;
 __u8 dscp = ctx->dscp;
 ```
 
-### 修改 Context
+### 修改Context
 
-Module 通过更新 context 字段来向下游传递决策：
+Module通过更新context字段来向下游传递决策：
 
 ```c
 // 设置转发决策
@@ -244,9 +244,9 @@ if (!cfg || !cfg->enabled) {
 
 ---
 
-## 自定义 Map (Custom Maps)
+## 自定义Map (Custom Maps)
 
-### 定义 Module 特有的 Map
+### 定义Module特有的Map
 
 ```c
 // Per-CPU 统计信息 (无竞争)
@@ -277,9 +277,9 @@ struct {
 } my_flow_table SEC(".maps");
 ```
 
-### 访问共享 Map
+### 访问共享Map
 
-核心基础设施 map 对所有 module 可见：
+核心基础设施map对所有module可见：
 
 ```c
 // 端口配置
@@ -323,16 +323,16 @@ RS_EMIT_EVENT(&evt, sizeof(evt));
 ```
 
 **最佳实践：**
-- 事件发送是尽力而为的 —— 如果 ring buffer 已满，可能会丢弃
-- 对于高频事件使用采样（例如：每 1000 个包采样一次）
-- 包含时间戳、接口索引和 CPU ID 以便于调试
-- 保持事件结构体精简（< 256 字节）
+- 事件发送是尽力而为的 —— 如果ring buffer已满，可能会丢弃
+- 对于高频事件使用采样（例如：每1000个包采样一次）
+- 包含时间戳、接口索引和CPU ID以便于调试
+- 保持事件结构体精简（< 256字节）
 
 ---
 
-## BPF Verifier 合规性 (BPF Verifier Compliance)
+## BPF Verifier合规性 (BPF Verifier Compliance)
 
-BPF verifier 确保您的程序是安全的。常见陷阱及解决方案：
+BPF verifier确保您的程序是安全的。常见陷阱及解决方案：
 
 ### 边界检查 (Bounds Checking)
 
@@ -347,7 +347,7 @@ if ((void *)(iph + 1) > data_end)
     return XDP_DROP;
 ```
 
-### Map 查找
+### Map查找
 
 ```c
 // 错误 —— 空指针解引用
@@ -378,15 +378,15 @@ for (int i = 0; i < MAX_ENTRIES; i++) {
 
 | 掩码 | 值 | 使用场景 |
 |------|-------|----------|
-| `RS_L3_OFFSET_MASK` | `0x3F` (63) | L2 报头大小 (Ethernet + VLAN 标签) |
-| `RS_L4_OFFSET_MASK` | `0x7F` (127) | L2 + L3 报头大小 |
+| `RS_L3_OFFSET_MASK` | `0x3F` (63) | L2报头大小 (Ethernet + VLAN标签) |
+| `RS_L4_OFFSET_MASK` | `0x7F` (127) | L2 + L3报头大小 |
 | `RS_PAYLOAD_MASK` | `0xFF` (255) | 总报头大小 |
 
 ---
 
 ## 数据包修改 (Packet Modification)
 
-如果您的 module 修改了数据包，请在 module 声明中设置 `RS_FLAG_MODIFIES_PACKET`：
+如果您的module修改了数据包，请在module声明中设置 `RS_FLAG_MODIFIES_PACKET`：
 
 ```c
 RS_DECLARE_MODULE("my_modifier", RS_HOOK_XDP_INGRESS, 45,
@@ -429,7 +429,7 @@ int my_modifier(struct xdp_md *xdp_ctx)
 
 ## Egress Module
 
-Egress module 使用 `RS_HOOK_XDP_EGRESS` 和 100-199 阶段：
+Egress module使用 `RS_HOOK_XDP_EGRESS` 和100-199阶段：
 
 ```c
 RS_DECLARE_MODULE("my_egress", RS_HOOK_XDP_EGRESS, 175,
@@ -450,16 +450,16 @@ int my_egress(struct xdp_md *xdp_ctx)
 }
 ```
 
-与 ingress module 的主要区别：
+与ingress module的主要区别：
 - 使用 `RS_TAIL_CALL_EGRESS()` 而非 `RS_TAIL_CALL_NEXT()`
-- Egress 槽位从 255 开始降序分配
-- 使用 `rs_prog_chain` map 进行下一个 module 的查找
+- Egress槽位从255开始降序分配
+- 使用 `rs_prog_chain` map进行下一个module的查找
 
 ---
 
-## VOQd 集成 (VOQd Integration)
+## VOQd集成 (VOQd Integration)
 
-对于与 VOQd QoS 调度器交互的 module：
+对于与VOQd QoS调度器交互的module：
 
 ```c
 // 在处理前检查 VOQd 状态
@@ -473,13 +473,13 @@ if (state && state->mode == VOQD_MODE_ACTIVE) {
 }
 ```
 
-VOQd 模式：BYPASS (0), SHADOW (1), ACTIVE (2)。
+VOQd模式：BYPASS (0), SHADOW (1), ACTIVE (2)。
 
 ---
 
-## 多阶段 Module (Multi-Stage Modules)
+## 多阶段Module (Multi-Stage Modules)
 
-对于需要多个 pipeline 阶段的 complex 处理：
+对于需要多个pipeline阶段的complex处理：
 
 ```c
 // 文件: bpf/modules/complex_stage1.bpf.c
@@ -489,7 +489,7 @@ RS_DECLARE_MODULE("complex_stage1", RS_HOOK_XDP_INGRESS, 35, ...);
 RS_DECLARE_MODULE("complex_stage2", RS_HOOK_XDP_INGRESS, 36, ...);
 ```
 
-在 YAML profile 中列出两者：
+在YAML profile中列出两者：
 ```yaml
 ingress:
   - vlan
@@ -510,7 +510,7 @@ rs_debug("my_module: processed pkt ifindex=%u proto=0x%x",
          ctx->ifindex, ctx->layers.eth_proto);
 ```
 
-### 检查 Map
+### 检查Map
 
 ```bash
 # 列出所有 rSwitch map
@@ -536,7 +536,7 @@ sudo bpftool prog dump xlated pinned /sys/fs/bpf/rswitch_dispatcher
 sudo bpftool prog show pinned /sys/fs/bpf/rswitch_dispatcher
 ```
 
-### Pipeline 验证
+### Pipeline验证
 
 ```bash
 # 显示当前 pipeline
@@ -555,35 +555,35 @@ sudo ./build/rswitchctl show-events
 
 | 问题 | 可能原因 | 解决方案 |
 |---------|-------------|----------|
-| Verifier 拒绝 | 越界访问、缺少空值检查 | 使用偏移掩码，检查所有 map 查找结果 |
-| Module 未被发现 | 缺少 `RS_DECLARE_MODULE()` | 验证宏是否存在，且 `.bpf.o` 构建成功 |
-| Tail-call 失败 | 阶段编号冲突、rs_progs 已满 | 检查是否有重复阶段，使用 `show-pipeline` 验证 pipeline |
-| Map 未找到 | 未正常关闭导致残留 stale pin | `sudo rm -rf /sys/fs/bpf/rs_*` 并重启 |
-| Context 为 NULL | `rs_ctx_map` 未初始化 | 确保在加载您的 module 之前已加载 dispatcher |
-| 性能低下 | Map 查找过多、非 CO-RE 访问 | 在 context 中缓存结果，使用 per-CPU map，遵循 CO-RE 模式 |
+| Verifier拒绝 | 越界访问、缺少空值检查 | 使用偏移掩码，检查所有map查找结果 |
+| Module未被发现 | 缺少 `RS_DECLARE_MODULE()` | 验证宏是否存在，且 `.bpf.o` 构建成功 |
+| Tail-call失败 | 阶段编号冲突、rs_progs已满 | 检查是否有重复阶段，使用 `show-pipeline` 验证pipeline |
+| Map未找到 | 未正常关闭导致残留stale pin | `sudo rm -rf /sys/fs/bpf/rs_*` 并重启 |
+| Context为NULL | `rs_ctx_map` 未初始化 | 确保在加载您的module之前已加载dispatcher |
+| 性能低下 | Map查找过多、非CO-RE访问 | 在context中缓存结果，使用per-CPU map，遵循CO-RE模式 |
 
 ---
 
-## 参考 Module (Reference Modules)
+## 参考Module (Reference Modules)
 
-学习这些现有 module 作为示例：
+学习这些现有module作为示例：
 
 | Module | 复杂度 | 优秀示例 |
 |--------|-----------|-----------------|
-| `core_example.bpf.c` | 简单 | 基础 module 结构，CO-RE 模式 |
-| `vlan.bpf.c` | 中等 | Context 修改，VLAN 处理，端口配置访问 |
-| `acl.bpf.c` | 复杂 | 多 map 架构，L3/L4 过滤，丢包原因 |
-| `l2learn.bpf.c` | 中等 | MAC 表更新，事件发送，老化 (aging) |
-| `egress_qos.bpf.c` | 复杂 | Egress pipeline，QoS 标记，VOQd 集成 |
+| `core_example.bpf.c` | 简单 | 基础module结构，CO-RE模式 |
+| `vlan.bpf.c` | 中等 | Context修改，VLAN处理，端口配置访问 |
+| `acl.bpf.c` | 复杂 | 多map架构，L3/L4过滤，丢包原因 |
+| `l2learn.bpf.c` | 中等 | MAC表更新，事件发送，老化 (aging) |
+| `egress_qos.bpf.c` | 复杂 | Egress pipeline，QoS标记，VOQd集成 |
 
-所有 module 源文件均位于 `bpf/modules/`。
+所有module源文件均位于 `bpf/modules/`。
 
 ---
 
 ## 另请参阅 (See Also)
 
 - [Architecture.md](./Architecture.md) — 系统架构概览
-- [API_Reference.md](./API_Reference.md) — 完整 API 参考
+- [API_Reference.md](./API_Reference.md) — 完整API参考
 - [CO-RE_Guide.md](./CO-RE_Guide.md) — 跨内核可移植性指南
-- [Configuration](../../deployment/Configuration.md) — YAML profile 格式
+- [Configuration](../../deployment/Configuration.md) — YAML profile格式
 - **技术文档深度解析**: `docs/paperwork/` 目录

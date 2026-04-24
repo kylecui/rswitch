@@ -1,14 +1,14 @@
 # 性能测试 (Performance Testing)
 
-> **受众**：希望检测性能回归 (performance regressions) 的 CI 维护者和模块开发人员。
+> **受众**：希望检测性能回归 (performance regressions) 的CI维护者和模块开发人员。
 
 ---
 
 ## 1. 概述
 
-rSwitch 包含一个性能基线测试，使用 `BPF_PROG_TEST_RUN` 测量每个数据包的处理延迟。该测试在 CI 中运行，以检测提交之间的回归。
+rSwitch包含一个性能基线测试，使用 `BPF_PROG_TEST_RUN` 测量每个数据包的处理延迟。该测试在CI中运行，以检测提交之间的回归。
 
-**关键原则**：绝对数值取决于运行环境（GitHub Actions 虚拟机的性能会有波动）。只有在相同类型的运行环境上进行的运行之间的**相对回归**才有意义。
+**关键原则**：绝对数值取决于运行环境（GitHub Actions虚拟机的性能会有波动）。只有在相同类型的运行环境上进行的运行之间的**相对回归**才有意义。
 
 ---
 
@@ -20,14 +20,14 @@ rSwitch 包含一个性能基线测试，使用 `BPF_PROG_TEST_RUN` 测量每个
 |--------|-------------|
 | **每个数据包的延迟** (ns/pkt) | 每次 `BPF_PROG_TEST_RUN` 调用的实际运行时间 (Wall-clock time) |
 | **最小/平均/最大** | 跨多个测量轮次 |
-| **估计的 PPS** | 每秒数据包数 (10^9 ns / 平均纳秒数) |
+| **估计的PPS** | 每秒数据包数 (10^9 ns / 平均纳秒数) |
 
 ### 测试程序
 
-| 测试 | BPF 程序 | 描述 |
+| 测试 | BPF程序 | 描述 |
 |------|-------------|-------------|
-| `test_perf_dispatcher_bypass` | `rswitch_bypass` | 通过旁路路径的 TCP 数据包（基线） |
-| `test_perf_dispatcher_bypass_udp` | `rswitch_bypass` | 通过旁路路径的 UDP 数据包 |
+| `test_perf_dispatcher_bypass` | `rswitch_bypass` | 通过旁路路径的TCP数据包（基线） |
+| `test_perf_dispatcher_bypass_udp` | `rswitch_bypass` | 通过旁路路径的UDP数据包 |
 
 ---
 
@@ -35,7 +35,7 @@ rSwitch 包含一个性能基线测试，使用 `BPF_PROG_TEST_RUN` 测量每个
 
 ### 默认阈值
 
-默认阈值为 **500 ns/pkt**。这是有意设置得比较宽松，以避免在共享 CI 运行环境上出现误报。
+默认阈值为 **500 ns/pkt**。这是有意设置得比较宽松，以避免在共享CI运行环境上出现误报。
 
 ```c
 #define PERF_THRESHOLD_NS 500    // 覆盖方式：-DPERF_THRESHOLD_NS=300
@@ -57,7 +57,7 @@ rSwitch 包含一个性能基线测试，使用 `BPF_PROG_TEST_RUN` 测量每个
 CFLAGS += -DPERF_THRESHOLD_NS=200
 ```
 
-对于噪声特别大的 CI 环境，请放宽阈值：
+对于噪声特别大的CI环境，请放宽阈值：
 
 ```bash
 CFLAGS += -DPERF_THRESHOLD_NS=1000
@@ -106,9 +106,9 @@ Threshold: 500 ns/pkt
 
 ---
 
-## 5. CI 集成
+## 5. CI集成
 
-性能基线在构建成功后作为一个单独的 CI 作业 (`perf-baseline`) 运行：
+性能基线在构建成功后作为一个单独的CI作业 (`perf-baseline`) 运行：
 
 ```yaml
 perf-baseline:
@@ -120,7 +120,7 @@ perf-baseline:
     - 将结果上传为 CI 产物 (artifact)
 ```
 
-结果存储为 CI 产物，以便进行历史对比。如果任何测试超过阈值，作业将失败。
+结果存储为CI产物，以便进行历史对比。如果任何测试超过阈值，作业将失败。
 
 ---
 
@@ -128,10 +128,10 @@ perf-baseline:
 
 | 局限性 | 详情 |
 |-----------|--------|
-| **无运行时多内核测试** | `BPF_PROG_TEST_RUN` 仅在宿主内核上执行。跨内核测试需要 virtme-ng 或自托管运行环境。 |
-| **共享运行环境的波动性** | GitHub Actions 运行环境是共享虚拟机。运行之间的延迟波动可能达到 ±50%。请设置宽松的阈值。 |
-| **BPF_PROG_TEST_RUN 开销** | 每次调用都有系统调用开销。测得的延迟包含此开销，而不仅仅是 BPF 执行时间。 |
-| **无完整流水线测量** | 目前仅测量 dispatcher 旁路。计划进行完整流水线（dispatcher → VLAN → ACL → route）测量。 |
+| **无运行时多内核测试** | `BPF_PROG_TEST_RUN` 仅在宿主内核上执行。跨内核测试需要virtme-ng或自托管运行环境。 |
+| **共享运行环境的波动性** | GitHub Actions运行环境是共享虚拟机。运行之间的延迟波动可能达到 ±50%。请设置宽松的阈值。 |
+| **BPF_PROG_TEST_RUN开销** | 每次调用都有系统调用开销。测得的延迟包含此开销，而不仅仅是BPF执行时间。 |
+| **无完整流水线测量** | 目前仅测量dispatcher旁路。计划进行完整流水线（dispatcher → VLAN → ACL → route）测量。 |
 
 ---
 
@@ -168,4 +168,4 @@ RS_TEST(test_perf_my_module)
 
 ---
 
-*另请参阅：[贡献指南](Contributing.md) · [CO-RE 指南](CO-RE_Guide.md) · [CI 工作流](../../.github/workflows/ci.yml)*
+*另请参阅：[贡献指南](Contributing.md) · [CO-RE指南](CO-RE_Guide.md) · [CI工作流](../../.github/workflows/ci.yml)*

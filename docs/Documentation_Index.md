@@ -27,7 +27,7 @@ Getting started and day-to-day operation guides.
 | [Quick Start](usage/Quick_Start.md) | [快速开始](zh-CN/usage/Quick_Start.md) | Build, run, and verify rSwitch in under 5 minutes |
 | [How To Use](usage/How_To_Use.md) | [使用指南](zh-CN/usage/How_To_Use.md) | Practical usage examples — L2/L3 switching, QoS, firewall, and common workflows |
 | [Scenario Profiles](usage/Scenario_Profiles.md) | | All 18 YAML profiles explained — purpose, module pipeline, and when to use each |
-| [CLI Reference](usage/CLI_Reference.md) | [CLI 参考](zh-CN/usage/CLI_Reference.md) | Complete reference for `rswitchctl`, `rsvlanctl`, `rsaclctl`, `rsqosctl`, `rsvoqctl` |
+| [CLI Reference](usage/CLI_Reference.md) | [CLI参考](zh-CN/usage/CLI_Reference.md) | Complete reference for `rswitchctl`, `rsvlanctl`, `rsaclctl`, `rsqosctl`, `rsvoqctl` |
 | [Intent Engine](usage/Intent_Engine.md) | | Intent-based networking — translate high-level YAML intents into profiles |
 | [Policy Verification](usage/Policy_Verification.md) | | Policy compliance checking for profiles |
 | [Troubleshooting](usage/Troubleshooting.md) | [故障排除](zh-CN/usage/Troubleshooting.md) | Common issues, diagnostic commands, cleanup procedures, and NIC-specific notes |
@@ -58,18 +58,18 @@ Architecture deep-dives, module development, and API reference.
 | [Platform Architecture](development/Platform_Architecture.md) | | **Comprehensive** platform design — philosophy, data/control plane, module classification, stage map |
 | [Architecture](development/Architecture.md) | [架构设计](zh-CN/development/Architecture.md) | Dual-pipeline architecture, module system, shared context, data structures |
 | [Module Developer Guide](development/Module_Developer_Guide.md) | [模块开发指南](zh-CN/development/Module_Developer_Guide.md) | Step-by-step guide to writing BPF modules — from template to production |
-| [ABI Policy](development/ABI_POLICY.md) | [ABI 稳定性策略](zh-CN/development/ABI_POLICY.md) | ABI versioning contract — stability tiers, breaking change policy, loader enforcement |
+| [ABI Policy](development/ABI_POLICY.md) | [ABI稳定性策略](zh-CN/development/ABI_POLICY.md) | ABI versioning contract — stability tiers, breaking change policy, loader enforcement |
 | [Graceful Degradation](development/DEGRADATION.md) | | How modules should behave when the pipeline is partially available |
 | [Hot-Reload](development/Hot_Reload.md) | | Zero-downtime module updates — atomic prog_array replacement architecture |
-| [ABI Migration v1→v2](development/ABI_Migration_v1_to_v2.md) | [ABI 迁移指南](zh-CN/development/ABI_Migration_v1_to_v2.md) | Step-by-step upgrade guide from ABI v1.0 to v2.0 |
+| [ABI Migration v1→v2](development/ABI_Migration_v1_to_v2.md) | [ABI迁移指南](zh-CN/development/ABI_Migration_v1_to_v2.md) | Step-by-step upgrade guide from ABI v1.0 to v2.0 |
 | [Map Pinning](development/MAP_PINNING.md) | | BPF map pinning conventions — canonical paths, naming, user-space access |
 | [API Reference](development/API_Reference.md) | | Complete API — macros, structs, maps, helpers, flags, error codes |
 | [API Reference (Generated)](development/API_Reference_Generated.md) | | Auto-generated API documentation from source headers |
-| [CO-RE Guide](development/CO-RE_Guide.md) | [CO-RE 指南](zh-CN/development/CO-RE_Guide.md) | CO-RE portability — `BPF_CORE_READ()`, offset masking, cross-kernel testing |
+| [CO-RE Guide](development/CO-RE_Guide.md) | [CO-RE指南](zh-CN/development/CO-RE_Guide.md) | CO-RE portability — `BPF_CORE_READ()`, offset masking, cross-kernel testing |
 | [Distributed State Sync](development/Distributed_State_Sync.md) | | Multi-switch state synchronization design document |
 | [Contributing](development/Contributing.md) | [贡献指南](zh-CN/development/CONTRIBUTING.md) | Contribution workflow, coding standards, PR process, licensing |
-| [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) | [SDK 快速开始](../sdk/docs/zh-CN/SDK_Quick_Start.md) | External module development kit — build, test, package, deploy |
-| [SDK Migration Guide](../sdk/docs/SDK_Migration_Guide.md) | [SDK 迁移指南](zh-CN/sdk/SDK_Migration_Guide.md) | Migrate from legacy headers (uapi.h, map_defs.h, etc.) to SDK v2.0 headers |
+| [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) | [SDK快速开始](../sdk/docs/zh-CN/SDK_Quick_Start.md) | External module development kit — build, test, package, deploy |
+| [SDK Migration Guide](../sdk/docs/SDK_Migration_Guide.md) | [SDK迁移指南](zh-CN/sdk/SDK_Migration_Guide.md) | Migrate from legacy headers (uapi.h, map_defs.h, etc.) to SDK v2.0 headers |
 
 ---
 
@@ -168,11 +168,11 @@ sdk/docs/
 - **What is "reconfigurable"?** → [Reconfigurable Architecture](concepts/Reconfigurable_Architecture.md)
 - **What can I build?** → [Network Device Gallery](concepts/Network_Device_Gallery.md)
 - **How to use the framework?** → [Framework Guide](concepts/Framework_Guide.md)
-- **Building a module?** → [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) / [SDK 快速开始](../sdk/docs/zh-CN/SDK_Quick_Start.md)
+- **Building a module?** → [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) / [SDK快速开始](../sdk/docs/zh-CN/SDK_Quick_Start.md)
 - **Module dev guide?** → [Module Developer Guide](development/Module_Developer_Guide.md)
 - **ABI compatibility?** → [ABI Policy](development/ABI_POLICY.md)
 - **Upgrading from ABI v1?** → [ABI Migration v1→v2](development/ABI_Migration_v1_to_v2.md)
-- **Migrating old headers?** → [SDK Migration Guide](../sdk/docs/SDK_Migration_Guide.md) / [SDK 迁移指南](zh-CN/sdk/SDK_Migration_Guide.md)
+- **Migrating old headers?** → [SDK Migration Guide](../sdk/docs/SDK_Migration_Guide.md) / [SDK迁移指南](zh-CN/sdk/SDK_Migration_Guide.md)
 - **Deploying to production?** → [Systemd Integration](deployment/Systemd_Integration.md)
 - **Management UI?** → [Management Portal](deployment/Management_Portal.md)
 - **Need API details?** → [API Reference](development/API_Reference.md)
