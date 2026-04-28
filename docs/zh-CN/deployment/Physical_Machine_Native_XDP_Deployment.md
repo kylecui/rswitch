@@ -285,7 +285,69 @@ sudo journalctl -u rswitch-mgmt-sshd -n 100 --no-pager
 sudo journalctl -u rswitch-killswitch-watchdog -n 100 --no-pager
 ```
 
-## 12. 常见故障与处理
+## 12. 远程操作安全准则
+
+当你通过 SSH 连接到 rSwitch 管理面（`mgmt0` 的 DHCP IP）进行远程操作时，必须注意以下关键事项：
+
+### 12.1 所有会影响 rswitch 服务的命令必须加 timeout
+
+启动或停止 rswitch 会立即导致 mgmt namespace 消失或重建，你的 SSH 会话会**瞬间断开**。如果命令本身没有超时保护，你的终端（或自动化脚本）会一直挂起等待永远不会到来的返回。
+
+```bash
+# 错误：会永久挂起
+ssh jzzn@10.174.1.248 "sudo systemctl stop rswitch"
+
+# 正确：加 timeout，预期它会因连接断开而返回非零
+timeout 10 ssh jzzn@10.174.1.248 "sudo systemctl stop rswitch" || true
+timeout 10 ssh jzzn@10.174.1.248 "sudo systemctl restart rswitch" || true
+timeout 10 ssh jzzn@10.174.1.248 "sudo reboot" || true
+```
+
+### 12.2 停止 rswitch 后 mgmt IP 会变
+
+rswitch 运行时，管理 IP 是 `mgmt0` 通过 DHCP 获取的地址（例如 `10.174.1.248`）。
+停止 rswitch 后，该 namespace 和 veth 被销毁，宿主机的物理口恢复 IP 栈，原始 IP（例如 `10.174.1.191`）重新可用。
+
+因此：
+- 停止 rswitch **之前**通过 `mgmt0` IP 操作
+- 停止 rswitch **之后**通过宿主机原始 IP 操作
+- 重新启动 rswitch **之后**等待 DHCP 分配，再通过新的 `mgmt0` IP 操作
+
+### 12.3 推荐操作流程：远程更新 rswitch
+
+```bash
+# 1. 先通过 mgmt IP 停止 rswitch（加 timeout，SSH 会断）
+timeout 10 ssh user@<mgmt-ip> "sudo systemctl stop rswitch" || true
+
+# 2. 等几秒让宿主机 IP 恢复
+sleep 5
+
+# 3. 通过宿主机 IP 执行部署操作
+scp new-binary user@<host-ip>:/opt/rswitch/build/
+ssh user@<host-ip> "sudo chmod +x /opt/rswitch/build/new-binary"
+
+# 4. 通过宿主机 IP 启动 rswitch（加 timeout，SSH 会断）
+timeout 10 ssh user@<host-ip> "sudo systemctl start rswitch" || true
+
+# 5. 等待 DHCP + 服务就绪
+sleep 20
+
+# 6. 通过 mgmt IP 验证
+ssh user@<mgmt-ip> "curl -s http://localhost:8080/api/system/health"
+```
+
+### 12.4 自动化脚本中的 SSH 选项
+
+远程操作 rSwitch 节点时，SSH 命令建议带上以下参数：
+
+```bash
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5"
+```
+
+- `StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null`：mgmt0 每次 DHCP 分配的 IP 可能不同，host key 也不同
+- `ConnectTimeout=5`：避免长时间阻塞在不可达的 IP 上
+
+## 13. 常见故障与处理
 
 ### 故障 A：启动后原 IP 消失，SSH 断开
 
@@ -317,15 +379,15 @@ sudo systemctl is-enabled rswitch-mgmtd rswitch-mgmt-sshd rswitch-killswitch-wat
 sudo systemctl cat rswitch.service
 ```
 
-## 13. 人工兜底命令
+## 14. 人工兜底命令
 
-### 13.1 手工申请 DHCP
+### 14.1 手工申请 DHCP
 
 ```bash
 sudo ip netns exec rswitch-mgmt dhcpcd -b mgmt0
 ```
 
-### 13.2 手工起 namespace 内 sshd
+### 14.2 手工起 namespace 内 sshd
 
 ```bash
 sudo mkdir -p /run/sshd   # 必须先确保存在，否则 sshd 报 privilege separation 错误
@@ -334,14 +396,14 @@ sudo ip netns exec rswitch-mgmt /usr/sbin/sshd
 
 > **注意**：`/run/sshd` 是 OpenSSH privilege separation 所需目录。`rswitch-mgmt-sshd.service` 已通过 `ExecStartPre=/bin/mkdir -p /run/sshd` 自动处理，但手工启动时需要自行创建。详见[排错复盘 §7A](../development/Native_XDP_Physical_Debugging_Postmortem.md#7a-补充sshd-报-missing-privilege-separation-directory-runsshd)。
 
-### 13.3 手工给静态 IP（只用于临时抢救）
+### 14.3 手工给静态 IP（只用于临时抢救）
 
 ```bash
 sudo ip netns exec rswitch-mgmt ip addr add 10.174.1.200/24 dev mgmt0
 sudo ip netns exec rswitch-mgmt ip route add default via 10.174.1.254
 ```
 
-## 14. 建议的现场发布流程
+## 15. 建议的现场发布流程
 
 1. 确认依赖齐全，尤其是 `libsystemd-dev`、`dhcpcd`、`ethtool`
 2. 确认 profile 与目标口名一致
@@ -354,7 +416,7 @@ sudo ip netns exec rswitch-mgmt ip route add default via 10.174.1.254
 9. 验证 killswitch
 10. 最后再移除人工临时配置
 
-## 15. 本次物理机验证结论
+## 16. 本次物理机验证结论
 
 这次在 `10.174.1.191` 上已经验证：
 
