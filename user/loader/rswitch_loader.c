@@ -2492,18 +2492,31 @@ static int setup_mgmt_veth(struct loader_ctx *ctx)
     }
 
     /*
-     * IMPORTANT: Attach mgmt-br in SKB/generic mode to match physical ports.
-     * veth supports native XDP, but if physical ports use xdpgeneric (e.g.
-     * VMware NICs), BPF_F_BROADCAST redirect from native→generic silently
-     * fails. All ports in the devmap must use the same XDP mode.
+     * Attach mgmt-br with the SAME XDP mode as physical ports.
+     * Mismatched modes (e.g. native on physical, SKB on mgmt-br) cause
+     * BPF_F_BROADCAST devmap redirect to silently fail.
+     *
+     * Query a physical port to determine the actual attach mode, since
+     * DEFAULT_XDP_FLAGS lets the kernel choose and veth always prefers native.
      */
+    __u32 mgmt_xdp_flags = ctx->xdp_flags;
+    if (ctx->num_interfaces > 0) {
+        struct bpf_xdp_query_opts qopts = { .sz = sizeof(qopts) };
+        if (bpf_xdp_query(ctx->interfaces[0], 0, &qopts) == 0) {
+            if (qopts.skb_prog_id > 0)
+                mgmt_xdp_flags = XDP_FLAGS_SKB_MODE | XDP_FLAGS_UPDATE_IF_NOEXIST;
+            else
+                mgmt_xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST;
+        }
+    }
     err = bpf_xdp_attach(mgmt_ifindex, ctx->dispatcher_fd,
-                          XDP_FLAGS_SKB_MODE, NULL);
+                          mgmt_xdp_flags, NULL);
     if (err) {
         RS_LOG_WARN("Failed to attach XDP dispatcher to mgmt-br: %s",
                     strerror(-err));
     } else {
-        printf("  XDP dispatcher attached to mgmt-br (generic/SKB mode)\n");
+        printf("  XDP dispatcher attached to mgmt-br (%s mode)\n",
+               (mgmt_xdp_flags & XDP_FLAGS_SKB_MODE) ? "generic/SKB" : "native");
     }
 
     ctx->mgmt_ifindex = mgmt_ifindex;
@@ -3132,8 +3145,6 @@ int main(int argc, char **argv)
             ctx.use_profile = 0;
         }
     }
-    
-    ctx.xdp_flags = DEFAULT_XDP_FLAGS;
     
     /* Parse interfaces */
     if (!iface_list) {

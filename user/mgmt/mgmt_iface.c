@@ -14,6 +14,7 @@
 #include <linux/if_link.h>
 #include <sys/ioctl.h>
 #include <net/if_arp.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <sched.h>
 #include <pthread.h>
@@ -305,21 +306,42 @@ static int register_mgmt_br_xdp(const struct rs_mgmt_iface_config *cfg)
 	 * The dispatcher is attached to switch ports by the loader. */
 	int disp_prog_fd = -1;
 	__u32 disp_prog_id = 0;
+	__u32 mgmt_xdp_flags = XDP_FLAGS_SKB_MODE;
 
-	const char *probe_ports[] = {"ens34", "ens35", "ens36", "ens37",
-				     "eth1", "eth2", "eth3", "eth4", NULL};
-	for (int i = 0; probe_ports[i]; i++) {
-		__u32 ifidx = if_nametoindex(probe_ports[i]);
-		if (ifidx == 0)
-			continue;
+	/* Dynamic discovery: scan all network interfaces for XDP programs.
+	 * This avoids hardcoding interface names which differ across machines. */
+	DIR *netdir = opendir("/sys/class/net");
+	if (netdir) {
+		struct dirent *entry;
+		while ((entry = readdir(netdir)) != NULL) {
+			if (entry->d_name[0] == '.')
+				continue;
+			if (strcmp(entry->d_name, "lo") == 0 ||
+			    strcmp(entry->d_name, "mgmt-br") == 0 ||
+			    strncmp(entry->d_name, "veth", 4) == 0)
+				continue;
 
-		struct bpf_xdp_query_opts opts = { .sz = sizeof(opts) };
-		if (bpf_xdp_query(ifidx, 0, &opts) == 0 && opts.prog_id > 0) {
-			disp_prog_id = opts.prog_id;
-			RS_LOG_INFO("Found XDP dispatcher on %s (prog_id=%u)",
-				    probe_ports[i], disp_prog_id);
-			break;
+			__u32 ifidx = if_nametoindex(entry->d_name);
+			if (ifidx == 0)
+				continue;
+
+			struct bpf_xdp_query_opts opts = { .sz = sizeof(opts) };
+			if (bpf_xdp_query(ifidx, 0, &opts) == 0 && opts.prog_id > 0) {
+				disp_prog_id = opts.prog_id;
+				if (opts.skb_prog_id > 0)
+					mgmt_xdp_flags = XDP_FLAGS_SKB_MODE;
+				else
+					mgmt_xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST;
+				RS_LOG_INFO("Found XDP dispatcher on %s (prog_id=%u, %s mode)",
+					    entry->d_name, disp_prog_id,
+					    (opts.skb_prog_id > 0) ? "generic" : "native");
+				break;
+			}
 		}
+		closedir(netdir);
+	} else {
+		RS_LOG_WARN("Cannot open /sys/class/net for XDP probe: %s",
+			    strerror(errno));
 	}
 
 	if (disp_prog_id > 0) {
@@ -330,11 +352,12 @@ static int register_mgmt_br_xdp(const struct rs_mgmt_iface_config *cfg)
 	}
 
 	if (disp_prog_fd >= 0) {
-		err = bpf_xdp_attach(mgmt_ifindex, disp_prog_fd, XDP_FLAGS_SKB_MODE, NULL);
+		err = bpf_xdp_attach(mgmt_ifindex, disp_prog_fd, mgmt_xdp_flags, NULL);
 		if (err)
 			RS_LOG_WARN("Failed to attach XDP to mgmt-br: %s", strerror(-err));
 		else
-			RS_LOG_INFO("XDP dispatcher attached to mgmt-br (generic mode)");
+			RS_LOG_INFO("XDP dispatcher attached to mgmt-br (%s mode)",
+				    (mgmt_xdp_flags == XDP_FLAGS_SKB_MODE) ? "generic" : "native");
 		close(disp_prog_fd);
 	} else {
 		RS_LOG_WARN("No XDP dispatcher found, mgmt-br may not receive traffic");
