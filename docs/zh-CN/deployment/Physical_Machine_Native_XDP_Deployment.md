@@ -328,8 +328,11 @@ sudo ip netns exec rswitch-mgmt dhcpcd -b mgmt0
 ### 13.2 手工起 namespace 内 sshd
 
 ```bash
+sudo mkdir -p /run/sshd   # 必须先确保存在，否则 sshd 报 privilege separation 错误
 sudo ip netns exec rswitch-mgmt /usr/sbin/sshd
 ```
+
+> **注意**：`/run/sshd` 是 OpenSSH privilege separation 所需目录。`rswitch-mgmt-sshd.service` 已通过 `ExecStartPre=/bin/mkdir -p /run/sshd` 自动处理，但手工启动时需要自行创建。详见[排错复盘 §7A](../development/Native_XDP_Physical_Debugging_Postmortem.md#7a-补充sshd-报-missing-privilege-separation-directory-runsshd)。
 
 ### 13.3 手工给静态 IP（只用于临时抢救）
 

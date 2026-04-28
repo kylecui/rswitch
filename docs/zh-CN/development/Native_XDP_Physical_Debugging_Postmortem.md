@@ -200,6 +200,38 @@ Wants=network-online.target rswitch-mgmtd.service rswitch-mgmt-sshd.service rswi
 
 以后看到“主服务起来了，但辅助能力都没起来”，先查 systemd wiring，不要一上来就怀疑代码逻辑。
 
+## 7A. 补充：sshd 报 "Missing privilege separation directory: /run/sshd"
+
+### 7A.1 症状
+
+`rswitch-mgmt-sshd.service` 启动失败或 `ip netns exec rswitch-mgmt /usr/sbin/sshd` 直接报错退出：
+
+```
+Missing privilege separation directory: /run/sshd
+```
+
+### 7A.2 真根因
+
+OpenSSH 需要 `/run/sshd` 目录做 privilege separation。宿主机的 sshd 服务通常会自动创建它，但以下场景中该目录可能不存在：
+
+- 宿主机 sshd 未启动过（例如 rswitch 启动太早，或 sshd 被 disable 了）
+- `/run` 是 tmpfs，重启后丢失
+- systemd 的 RuntimeDirectory 只给宿主 sshd 创建，namespace 内的 sshd 实例不受其管理
+
+### 7A.3 修复
+
+在 `rswitch-mgmt-sshd.service` 的 `ExecStartPre` 中提前创建：
+
+```ini
+ExecStartPre=/bin/mkdir -p /run/sshd
+```
+
+这一行必须排在 namespace 等待逻辑之前。当前 service 模板（`etc/systemd/rswitch-mgmt-sshd.service`）已包含此修复。
+
+### 7A.4 经验
+
+namespace 内的 sshd 共享宿主机 `/run`，但不共享宿主机 sshd 的 systemd RuntimeDirectory 保障。任何在 namespace 中独立启动的 daemon，都需要自行确保其运行时目录存在。
+
 ## 8. 第六阶段：killswitch watchdog 一直重启
 
 ### 8.1 症状
