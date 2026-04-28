@@ -531,6 +531,48 @@ int rs_mgmt_iface_ns_probe(const char *ns_name)
 	return ret;
 }
 
+/* Build an unsolicited mDNS A-record response (announcement or query reply).
+ * |tid| is the DNS transaction ID (0 for announcements).
+ * Returns the packet length, or 0 on failure. */
+static size_t mdns_build_a_record(uint8_t *out, size_t outsz, uint16_t tid,
+				   const struct in_addr *ip)
+{
+	if (outsz < 45)
+		return 0;
+
+	size_t off = 0;
+	/* Header: tid, flags=0x8400 (authoritative response), ancount=1 */
+	out[off++] = (tid >> 8) & 0xff;
+	out[off++] = tid & 0xff;
+	out[off++] = 0x84; out[off++] = 0x00;  /* QR=1, AA=1 */
+	out[off++] = 0x00; out[off++] = 0x00;  /* qdcount=0 */
+	out[off++] = 0x00; out[off++] = 0x01;  /* ancount=1 */
+	out[off++] = 0x00; out[off++] = 0x00;  /* nscount=0 */
+	out[off++] = 0x00; out[off++] = 0x00;  /* arcount=0 */
+
+	/* Name: rswitch.local */
+	out[off++] = 7;
+	memcpy(out + off, "rswitch", 7); off += 7;
+	out[off++] = 5;
+	memcpy(out + off, "local", 5); off += 5;
+	out[off++] = 0;
+
+	/* Type A, class IN + cache-flush bit */
+	out[off++] = 0x00; out[off++] = 0x01;
+	out[off++] = 0x80; out[off++] = 0x01;
+	/* TTL: 120s */
+	out[off++] = 0x00; out[off++] = 0x00;
+	out[off++] = 0x00; out[off++] = 0x78;
+	/* RDLENGTH=4, RDATA=IPv4 */
+	out[off++] = 0x00; out[off++] = 0x04;
+	memcpy(out + off, ip, 4); off += 4;
+
+	return off;
+}
+
+#define MDNS_ANNOUNCE_INTERVAL  60   /* periodic re-announce interval (seconds) */
+#define MDNS_STARTUP_ANNOUNCES  3    /* RFC 6762 §8.3: send 3 at startup */
+
 static void *mdns_responder_thread(void *arg)
 {
 	(void)arg;
@@ -602,16 +644,49 @@ static void *mdns_responder_thread(void *arg)
 
 	RS_LOG_INFO("mDNS responder started in namespace %s", g_mdns_cfg.mgmt_ns);
 
+	/* Startup announcements — RFC 6762 §8.3 */
+	for (int i = 0; i < MDNS_STARTUP_ANNOUNCES && g_mdns_running; i++) {
+		if (rs_mgmt_iface_get_ip(&g_mdns_cfg, mgmt_ip, sizeof(mgmt_ip)) == 0 &&
+		    inet_pton(AF_INET, mgmt_ip, &ip_addr) == 1) {
+			size_t plen = mdns_build_a_record(resp, sizeof(resp), 0, &ip_addr);
+			if (plen > 0) {
+				sendto(sock, resp, plen, 0,
+				       (struct sockaddr *)&mcast, sizeof(mcast));
+				RS_LOG_INFO("mDNS: announce rswitch.local -> %s (%d/%d)",
+					    mgmt_ip, i + 1, MDNS_STARTUP_ANNOUNCES);
+			}
+		}
+		if (i < MDNS_STARTUP_ANNOUNCES - 1)
+			sleep(1);
+	}
+
 	struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+	unsigned int idle_ticks = 0;
 
 	while (g_mdns_running) {
 		struct sockaddr_in from;
 		socklen_t fromlen = sizeof(from);
 		ssize_t n = recvfrom(sock, buf, sizeof(buf), 0,
 				     (struct sockaddr *)&from, &fromlen);
-		if (n <= 0)
+
+		if (n <= 0) {
+			idle_ticks++;
+			if (idle_ticks >= MDNS_ANNOUNCE_INTERVAL) {
+				idle_ticks = 0;
+				if (rs_mgmt_iface_get_ip(&g_mdns_cfg, mgmt_ip, sizeof(mgmt_ip)) == 0 &&
+				    inet_pton(AF_INET, mgmt_ip, &ip_addr) == 1) {
+					size_t plen = mdns_build_a_record(resp, sizeof(resp), 0, &ip_addr);
+					if (plen > 0) {
+						sendto(sock, resp, plen, 0,
+						       (struct sockaddr *)&mcast, sizeof(mcast));
+						RS_LOG_DEBUG("mDNS: periodic announce rswitch.local -> %s", mgmt_ip);
+					}
+				}
+			}
 			continue;
+		}
 
 		if (n < 12)
 			continue;
@@ -653,29 +728,12 @@ static void *mdns_responder_thread(void *arg)
 		if (inet_pton(AF_INET, mgmt_ip, &ip_addr) != 1)
 			continue;
 
-		size_t roff = 0;
-		resp[roff++] = buf[0]; resp[roff++] = buf[1];
-		resp[roff++] = 0x84; resp[roff++] = 0x00;
-		resp[roff++] = 0x00; resp[roff++] = 0x00;
-		resp[roff++] = 0x00; resp[roff++] = 0x01;
-		resp[roff++] = 0x00; resp[roff++] = 0x00;
-		resp[roff++] = 0x00; resp[roff++] = 0x00;
-
-		resp[roff++] = 7;
-		memcpy(resp + roff, "rswitch", 7); roff += 7;
-		resp[roff++] = 5;
-		memcpy(resp + roff, "local", 5); roff += 5;
-		resp[roff++] = 0;
-
-		resp[roff++] = 0x00; resp[roff++] = 0x01;
-		resp[roff++] = 0x80; resp[roff++] = 0x01;
-		resp[roff++] = 0x00; resp[roff++] = 0x00;
-		resp[roff++] = 0x00; resp[roff++] = 0x78;
-		resp[roff++] = 0x00; resp[roff++] = 0x04;
-		memcpy(resp + roff, &ip_addr, 4); roff += 4;
-
-		sendto(sock, resp, roff, 0, (struct sockaddr *)&mcast, sizeof(mcast));
-		RS_LOG_DEBUG("mDNS: responded rswitch.local -> %s", mgmt_ip);
+		uint16_t tid = ((uint16_t)buf[0] << 8) | buf[1];
+		size_t roff = mdns_build_a_record(resp, sizeof(resp), tid, &ip_addr);
+		if (roff > 0) {
+			sendto(sock, resp, roff, 0, (struct sockaddr *)&mcast, sizeof(mcast));
+			RS_LOG_DEBUG("mDNS: responded rswitch.local -> %s", mgmt_ip);
+		}
 	}
 
 	close(sock);
