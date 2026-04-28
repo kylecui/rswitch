@@ -331,6 +331,7 @@ enum rs_drop_reason {
     /* QoS / scheduling (64-79) */
     RS_DROP_QUEUE_FULL          = 64,
     RS_DROP_RATE_EXCEEDED       = 65,
+    RS_DROP_RATE_LIMIT          = 65, /* alias for RATE_EXCEEDED */
     RS_DROP_CONGESTION          = 66,
     RS_DROP_WRED                = 67,
 
