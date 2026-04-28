@@ -1726,7 +1726,7 @@ static void cleanup_stale_port_configs(void)
 			for (int bit_pos = 0; bit_pos < 64; bit_pos++) {
 				__u64 mask = 1ULL << bit_pos;
 				if ((vm.tagged_members[arr_idx] & mask) || (vm.untagged_members[arr_idx] & mask)) {
-					unsigned int ifidx = (unsigned int)(arr_idx * 64 + bit_pos);
+					unsigned int ifidx = (unsigned int)(arr_idx * 64 + bit_pos + 1);
 					if (ifidx == 0)
 						continue;
 					if (!ifindex_exists(ifidx)) {
@@ -2953,7 +2953,7 @@ static void handle_vlans_list(struct mg_connection *c, struct mg_http_message *h
 					for (i = 0; i < 4; i++) {
 						for (j = 0; j < 64; j++) {
 							if (v.tagged_members[i] & (1ULL << j)) {
-								int ifidx = i * 64 + j;
+								int ifidx = i * 64 + j + 1;
 								if (ifidx == 0) continue;
 							off += (size_t) snprintf(out + off, out_sz - off,
 									 "%s%d", tp_first ? "" : ",", ifidx);
@@ -2971,7 +2971,7 @@ static void handle_vlans_list(struct mg_connection *c, struct mg_http_message *h
 					for (i = 0; i < 4; i++) {
 						for (j = 0; j < 64; j++) {
 							if (v.untagged_members[i] & (1ULL << j)) {
-								int ifidx = i * 64 + j;
+								int ifidx = i * 64 + j + 1;
 								if (ifidx == 0) continue;
 							off += (size_t) snprintf(out + off, out_sz - off,
 									 "%s%d", up_first ? "" : ",", ifidx);
@@ -2990,7 +2990,7 @@ static void handle_vlans_list(struct mg_connection *c, struct mg_http_message *h
 						for (j = 0; j < 64; j++) {
 							__u64 mask = 1ULL << j;
 							if ((v.tagged_members[i] & mask) || (v.untagged_members[i] & mask)) {
-								int ifidx = i * 64 + j;
+								int ifidx = i * 64 + j + 1;
 								if (ifidx == 0) continue;
 								char name[IF_NAMESIZE] = "";
 								if_indextoname((unsigned int)ifidx, name);
@@ -3073,7 +3073,7 @@ static void sync_port_vlan_config(void)
 
 		for (i = 0; i < 4; i++) {
 			for (j = 0; j < 64; j++) {
-				port_idx = i * 64 + j;  /* H-8: match BPF ifindex/64 indexing */
+				port_idx = i * 64 + j + 1;  /* +1: bitmap uses (ifindex-1) convention */
 				if (port_idx <= 0 || port_idx >= SYNC_MAX_PORTS)
 					continue;
 
