@@ -774,7 +774,8 @@ static int validate_dependencies(struct loader_ctx *ctx)
         }
 
         if (!has_incoming && !has_outgoing) {
-            RS_LOG_WARN("Module %s is not connected in dependency graph", ctx->modules[i].name);
+            if (ctx->verbose)
+                RS_LOG_INFO("Module %s has no declared dependencies (stage-ordered)", ctx->modules[i].name);
         }
     }
 

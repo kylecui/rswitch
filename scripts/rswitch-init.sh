@@ -149,14 +149,26 @@ do_start() {
         exit 1
     fi
     
-    log "Starting rswitch_loader (foreground, sd_notify)..."
+    log "Starting rswitch_loader..."
     log "  Profile: $RSWITCH_PROFILE"
     log "  Interfaces: $RSWITCH_INTERFACES"
 
-    exec "${RSWITCH_HOME}/build/rswitch_loader" \
+    "${RSWITCH_HOME}/build/rswitch_loader" \
         --profile "$profile_path" \
         --ifaces "$RSWITCH_INTERFACES" \
-        >> "$LOG_FILE" 2>&1
+        >> "$LOG_FILE" 2>&1 &
+
+    local loader_pid=$!
+    echo "$loader_pid" > "$PID_FILE"
+
+    sleep 2
+    if kill -0 "$loader_pid" 2>/dev/null; then
+        log "rswitch_loader started (PID: $loader_pid)"
+    else
+        error "rswitch_loader failed to start"
+        rm -f "$PID_FILE"
+        exit 1
+    fi
 }
 
 do_stop() {
