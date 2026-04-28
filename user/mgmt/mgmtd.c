@@ -6001,14 +6001,14 @@ static void ws_timer_fn(void *arg)
 
 		if (rs_watchdog_check_health(&hs) == 0) {
 			if (g_prev_health >= 0 && hs.overall != g_prev_health) {
-				const char *label_old = g_prev_health >= 4 ? "healthy" :
-							g_prev_health >= 2 ? "degraded" : "critical";
-				const char *label_new = hs.overall >= 4 ? "healthy" :
-							hs.overall >= 2 ? "degraded" : "critical";
-				int sev = hs.overall < g_prev_health ?
-					  AUDIT_SEV_WARNING : AUDIT_SEV_INFO;
+			const char *label_old = g_prev_health == 0 ? "healthy" :
+						g_prev_health == 1 ? "degraded" : "critical";
+			const char *label_new = hs.overall == 0 ? "healthy" :
+						hs.overall == 1 ? "degraded" : "critical";
+			int sev = hs.overall > g_prev_health ?
+				  AUDIT_SEV_WARNING : AUDIT_SEV_INFO;
 
-				if (hs.overall <= 1)
+			if (hs.overall >= 2)
 					sev = AUDIT_SEV_CRITICAL;
 
 				snprintf(payload, sizeof(payload),

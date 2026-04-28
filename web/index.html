@@ -154,8 +154,8 @@ function dashboard() {
         const d = await (await apiFetch('/api/system/health')).json();
         if (d.status) { this.health = d.status; }
         else if (typeof d.overall === 'number') {
-          const scores = ['critical', 'degraded', 'degraded', 'healthy', 'healthy', 'healthy'];
-          this.health = scores[d.overall] || 'unknown';
+          const scores = ['healthy', 'degraded', 'critical'];
+          this.health = scores[d.overall] || 'critical';
         } else { this.health = d.health || '—'; }
       } catch {}
     },

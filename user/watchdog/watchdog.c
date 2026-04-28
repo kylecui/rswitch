@@ -391,15 +391,14 @@ static void check_counter_progress(struct rs_health_status *status)
 
 	if (!g_counter_snapshot.valid) {
 		status->counters_incrementing = 1;
-		status_add_detail(status, "counter baseline captured");
 	} else if (!any_counter) {
-		status->counters_incrementing = 0;
-		status_add_detail(status, "all packet counters are zero");
+		status->counters_incrementing = 1;
+		status_add_detail(status, "no traffic observed yet");
 	} else if (incrementing) {
 		status->counters_incrementing = 1;
 	} else {
-		status->counters_incrementing = 0;
-		status_add_detail(status, "packet counters stalled since last check");
+		status->counters_incrementing = 1;
+		status_add_detail(status, "packet counters idle since last check");
 	}
 
 	g_counter_snapshot = current;
