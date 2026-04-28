@@ -282,7 +282,6 @@ struct {
     __uint(max_entries, 1);
     __type(key, __u32);
     __type(value, struct rs_obs_cfg);
-    __uint(map_flags, BPF_F_MMAPABLE);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_obs_cfg_map SEC(".maps");
 
