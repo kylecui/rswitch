@@ -19,6 +19,7 @@
  *   6. Configure port settings via maps
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +34,8 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <fcntl.h>
+#include <sched.h>
 #include <dirent.h>
 
 #ifdef HAVE_SYSTEMD
@@ -2375,6 +2378,64 @@ static int setup_mgmt_veth(struct loader_ctx *ctx)
     system(cmd);
     snprintf(cmd, sizeof(cmd), "ip netns exec %s ip link set lo up", ns_name);
     system(cmd);
+
+    snprintf(cmd, sizeof(cmd),
+             "ip netns exec %s ethtool -K %s tx off sg off tso off 2>/dev/null",
+             ns_name, veth_ns);
+    system(cmd);
+    snprintf(cmd, sizeof(cmd),
+             "ethtool -K %s tx off sg off tso off 2>/dev/null", veth_host);
+    system(cmd);
+
+    /* Native XDP devmap redirect requires NAPI active on the receiving veth.
+     * Without an XDP program, veth_xdp_xmit() silently drops every frame.
+     */
+    {
+        struct bpf_insn pass_prog[] = {
+            /* BPF_MOV64_IMM(BPF_REG_0, XDP_PASS) */
+            { .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = BPF_REG_0,
+              .src_reg = 0, .off = 0, .imm = XDP_PASS },
+            /* BPF_EXIT_INSN() */
+            { .code = BPF_JMP | BPF_EXIT, .dst_reg = 0,
+              .src_reg = 0, .off = 0, .imm = 0 },
+        };
+        LIBBPF_OPTS(bpf_prog_load_opts, opts);
+        int pass_fd = bpf_prog_load(BPF_PROG_TYPE_XDP, "xdp_pass",
+                                     "GPL", pass_prog, 2, &opts);
+        if (pass_fd < 0) {
+            RS_LOG_WARN("Failed to create XDP_PASS prog for %s: %s",
+                        veth_ns, strerror(errno));
+        } else {
+            char ns_path[128];
+            snprintf(ns_path, sizeof(ns_path), "/var/run/netns/%s", ns_name);
+            int netns_fd = open(ns_path, O_RDONLY);
+            if (netns_fd >= 0) {
+                int orig_ns = open("/proc/self/ns/net", O_RDONLY);
+                if (setns(netns_fd, CLONE_NEWNET) == 0) {
+                    __u32 peer_idx = if_nametoindex(veth_ns);
+                    if (peer_idx > 0) {
+                        int att_err = bpf_xdp_attach(peer_idx, pass_fd,
+                                                      XDP_FLAGS_UPDATE_IF_NOEXIST, NULL);
+                        if (att_err)
+                            RS_LOG_WARN("Failed to attach XDP_PASS to %s: %s",
+                                        veth_ns, strerror(-att_err));
+                        else
+                            printf("  XDP_PASS attached to %s (enables NAPI for devmap redirect)\n",
+                                   veth_ns);
+                    }
+                    if (orig_ns >= 0) {
+                        setns(orig_ns, CLONE_NEWNET);
+                        close(orig_ns);
+                    }
+                } else {
+                    RS_LOG_WARN("setns to %s failed: %s", ns_name, strerror(errno));
+                    if (orig_ns >= 0) close(orig_ns);
+                }
+                close(netns_fd);
+            }
+            close(pass_fd);
+        }
+    }
 
     mgmt_ifindex = if_nametoindex(veth_host);
     if (mgmt_ifindex == 0) {
