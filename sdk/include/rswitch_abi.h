@@ -278,6 +278,23 @@ struct rs_ctx {
  *   96-111:  Internal / framework errors
  *   128-255: User-defined (external modules)
  */
+/* Undefine legacy macros from uapi.h so the enum can use the same names */
+#ifdef RS_DROP_NONE
+#undef RS_DROP_NONE
+#undef RS_DROP_PARSE_ETH
+#undef RS_DROP_PARSE_VLAN_TAG
+#undef RS_DROP_PARSE_IP
+#undef RS_DROP_VLAN_FILTER
+#undef RS_DROP_ACL_DENY
+#undef RS_DROP_NO_FWD_ENTRY
+#undef RS_DROP_TTL_EXCEEDED
+#undef RS_DROP_RATE_EXCEEDED
+#undef RS_DROP_CONGESTION
+#undef RS_DROP_MAP_ERROR
+#undef RS_DROP_TAILCALL_FAIL
+#undef RS_DROP_INTERNAL
+#endif
+
 enum rs_drop_reason {
     /* No drop */
     RS_DROP_NONE                = 0,
@@ -302,6 +319,7 @@ enum rs_drop_reason {
     RS_DROP_ACL_RATE_LIMIT      = 33,
     RS_DROP_ACL_PORT_SECURITY   = 34,
     RS_DROP_ACL_MAC_LIMIT       = 35,
+    RS_DROP_ACL_BLOCK           = 36,
 
     /* Routing / forwarding (48-63) */
     RS_DROP_NO_ROUTE            = 48,

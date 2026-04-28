@@ -347,6 +347,18 @@ rs_module_stats_error(__u32 module_idx)
 
 /* ── Observability helpers (L0) ────────────────────────────────── */
 
+/*
+ * RS_THIS_STAGE_ID and RS_THIS_MODULE_ID must be defined by each BPF module
+ * as anonymous enum constants BEFORE including this header (via rswitch_common.h).
+ * Provide fallback defaults (0) so the header compiles even if not yet defined —
+ * modules that use obs helpers MUST define them for meaningful telemetry.
+ */
+#ifndef RS_THIS_STAGE_ID
+#define RS_THIS_STAGE_ID  0
+#define RS_THIS_MODULE_ID 0
+#define _RS_OBS_IDS_DEFAULTED 1
+#endif
+
 static __always_inline struct rs_obs_cfg *rs_obs_get_cfg(void)
 {
     __u32 key = 0;
@@ -563,7 +575,7 @@ static __always_inline bool rs_obs_should_sample(struct rs_obs_cfg *cfg,
     if (evt->flags & (RS_OBS_F_DROP | RS_OBS_F_EXCEPTION | RS_OBS_F_REDIRECT_ERR))
         ppm = 1000000;
 
-    return (bpf_get_prng_u32() % 1000000U) < ppm;
+    return (bpf_ktime_get_ns() % 1000000U) < ppm;
 }
 
 static __always_inline void rs_obs_build_event(struct xdp_md *ctx,
