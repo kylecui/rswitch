@@ -477,7 +477,7 @@ configure() {
 [Unit]
 Description=rSwitch XDP-based Software Switch
 After=network.target network-online.target
-Wants=network-online.target
+Wants=network-online.target rswitch-mgmtd.service rswitch-mgmt-sshd.service rswitch-killswitch.service
 Documentation=https://github.com/kylecui/rswitch
 OnFailure=rswitch-failsafe.service
 StartLimitBurst=3
@@ -563,6 +563,59 @@ Environment=RSWITCH_WATCHDOG_IFACES=${ifaces}
 WantedBy=multi-user.target
 EOF
 
+    # rswitch-mgmt-sshd.service — sshd in management namespace
+    cat > /etc/systemd/system/rswitch-mgmt-sshd.service <<EOF
+[Unit]
+Description=SSHd in rSwitch management namespace
+BindsTo=rswitch.service
+After=rswitch-mgmtd.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/bash -c 'for i in \$(seq 1 30); do ip netns list 2>/dev/null | grep -qw rswitch-mgmt && exit 0; sleep 1; done; exit 1'
+ExecStart=/usr/bin/ip netns exec rswitch-mgmt /usr/sbin/sshd -D
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # rswitch-killswitch.service — killswitch watchdog
+    cat > /etc/systemd/system/rswitch-killswitch.service <<EOF
+[Unit]
+Description=rSwitch Killswitch Watchdog Daemon
+After=rswitch.service
+Requires=rswitch.service
+
+[Service]
+Type=simple
+ExecStart=${INSTALL_PREFIX}/build/rs-killswitch-watchdog --key-file /etc/rswitch/killswitch.key
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Generate killswitch key file if not present
+    mkdir -p /etc/rswitch
+    if [ ! -f /etc/rswitch/killswitch.key ]; then
+        info "Generating killswitch key pair..."
+        local stop_key
+        local reboot_key
+        stop_key=$(head -c 32 /dev/urandom | xxd -p -c 64)
+        reboot_key=$(head -c 32 /dev/urandom | xxd -p -c 64)
+        printf '%s\n%s\n' "$stop_key" "$reboot_key" > /etc/rswitch/killswitch.key
+        chmod 600 /etc/rswitch/killswitch.key
+        info "Killswitch keys generated: /etc/rswitch/killswitch.key ✓"
+        info "  Stop key:   ${stop_key}"
+        info "  Reboot key: ${reboot_key}"
+        info "  ⚠ SAVE THESE KEYS — needed to trigger emergency stop/reboot"
+    else
+        info "Killswitch key file already exists ✓"
+    fi
+
     # Suppress DHCP / link-local IPs on switch ports
     # Switch ports must carry only bridged traffic — no IP stack
     info "Configuring IP suppression on switch ports..."
@@ -616,13 +669,15 @@ NETEOF
     # Enable services (but don't start yet)
     systemctl enable rswitch.service >> "$LOG_FILE" 2>&1 || true
     systemctl enable rswitch-mgmtd.service >> "$LOG_FILE" 2>&1 || true
+    systemctl enable rswitch-mgmt-sshd.service >> "$LOG_FILE" 2>&1 || true
+    systemctl enable rswitch-killswitch.service >> "$LOG_FILE" 2>&1 || true
     info "Services enabled for boot ✓"
 
     # Add CLI tools to PATH via symlinks
     mkdir -p /usr/local/bin
     for tool in rswitchctl rsportctl rsvlanctl rsaclctl rsroutectl rsqosctl \
                 rsflowctl rsnatctl rsvoqctl rstunnelctl rswitch-events \
-                rs_packet_trace rswitch-telemetry rswitch-sflow; do
+                rs_packet_trace rswitch-telemetry rswitch-sflow rs-killswitch-watchdog; do
         if [ -f "${INSTALL_PREFIX}/build/${tool}" ]; then
             ln -sf "${INSTALL_PREFIX}/build/${tool}" "/usr/local/bin/${tool}"
         fi
@@ -664,9 +719,11 @@ systemctl stop rswitch-mgmtd 2>/dev/null || true
 systemctl stop rswitch 2>/dev/null || true
 systemctl stop rswitch-failsafe 2>/dev/null || true
 systemctl stop rswitch-watchdog 2>/dev/null || true
+systemctl stop rswitch-mgmt-sshd 2>/dev/null || true
+systemctl stop rswitch-killswitch 2>/dev/null || true
 
 info "Disabling services..."
-systemctl disable rswitch-mgmtd rswitch rswitch-failsafe rswitch-watchdog 2>/dev/null || true
+systemctl disable rswitch-mgmtd rswitch rswitch-failsafe rswitch-watchdog rswitch-mgmt-sshd rswitch-killswitch 2>/dev/null || true
 
 info "Removing XDP programs from interfaces..."
 for iface in /sys/class/net/*/; do
@@ -696,6 +753,8 @@ rm -f /etc/systemd/system/rswitch.service
 rm -f /etc/systemd/system/rswitch-mgmtd.service
 rm -f /etc/systemd/system/rswitch-failsafe.service
 rm -f /etc/systemd/system/rswitch-watchdog.service
+rm -f /etc/systemd/system/rswitch-mgmt-sshd.service
+rm -f /etc/systemd/system/rswitch-killswitch.service
 systemctl daemon-reload 2>/dev/null || true
 
 info "Removing CLI symlinks..."

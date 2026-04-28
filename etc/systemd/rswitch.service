@@ -1,7 +1,7 @@
 [Unit]
 Description=rSwitch XDP-based Software Switch
 After=network.target network-online.target
-Wants=network-online.target
+Wants=network-online.target rswitch-mgmtd.service rswitch-mgmt-sshd.service rswitch-killswitch.service
 Documentation=https://github.com/rswitch
 OnFailure=rswitch-failsafe.service
 StartLimitBurst=3
