@@ -157,7 +157,19 @@ a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
 ./scripts/rswitch-killswitch-trigger.sh 10.174.1.191 reboot /path/to/key
 ```
 
-Uses `socat` or python to send the UDP magic packet.
+Uses `socat`, `nc`, or python to send the UDP magic packet.
+
+**Important**: The target IP must be a **unicast** address reachable through the rswitch's XDP-attached interfaces (e.g., the default gateway IP on that segment). Broadcast addresses (`x.x.x.255`) do **not** reliably reach XDP in generic mode.
+
+**Quick manual trigger** (without the script):
+```bash
+# Using nc (simplest)
+echo -ne '\xDE\xAD\xBE\xEF...' | nc -u -w1 <target-ip> 19999
+
+# The hex key must be the raw 32 bytes from your killswitch.key
+# Convert hex string to raw bytes:
+echo -n "<64-char-hex-key>" | xxd -r -p | nc -u -w1 <target-ip> 19999
+```
 
 ## Security Considerations
 
@@ -170,7 +182,7 @@ Uses `socat` or python to send the UDP magic packet.
 
 | File | Type | Purpose |
 |------|------|---------|
-| `bpf/modules/killswitch.bpf.c` | BPF module | XDP killswitch (stage 5) |
+| `bpf/modules/killswitch.bpf.c` | BPF module | XDP killswitch (stage 10) |
 | `sdk/include/rswitch_killswitch.h` | Header | Shared constants & structs |
 | `user/killswitch/rs_killswitch_watchdog.c` | Userspace | Map polling + action execution |
 | `scripts/rswitch-dev-deploy.sh` | Script | Boot grace period + auto-deploy |

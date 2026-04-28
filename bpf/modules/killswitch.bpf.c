@@ -2,7 +2,7 @@
 /*
  * rSwitch Killswitch Module — Emergency stop via magic UDP packet
  *
- * Stage 5: Runs before ALL other modules in the ingress pipeline.
+ * Stage 10: Runs before ALL other modules in the ingress pipeline.
  * Checks every UDP packet against a configured port + 32-byte secret.
  * On match, latches an action into rs_killswitch_map for userspace.
  *
@@ -14,8 +14,8 @@
 #include "../../sdk/include/rswitch_killswitch.h"
 
 enum {
-    RS_THIS_STAGE_ID  = 5,
-    RS_THIS_MODULE_ID = 5,
+    RS_THIS_STAGE_ID  = 10,
+    RS_THIS_MODULE_ID = 10,
 };
 
 char _license[] SEC("license") = "GPL";
@@ -91,7 +91,7 @@ int killswitch_ingress(struct xdp_md *ctx)
     __u16 payload_off = rctx->layers.payload_offset & RS_PAYLOAD_MASK;
 
     __u8 *payload = data + payload_off;
-    if ((void *)(payload + RS_KILLSWITCH_KEY_LEN + 1) > data_end)
+    if ((void *)(payload + RS_KILLSWITCH_KEY_LEN) > data_end)
         goto pass;
 
     /* Check STOP key */

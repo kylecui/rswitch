@@ -70,8 +70,11 @@ if command -v socat >/dev/null 2>&1; then
         log "ERROR: socat send failed"
         exit 1
     }
+elif command -v nc >/dev/null 2>&1; then
+    log "Using nc to send UDP payload"
+    echo -n "$KEY" | xxd -r -p | nc -u -w1 "$TARGET_IP" "$PORT" 2>/dev/null || true
 else
-    log "socat not available, falling back to python"
+    log "socat/nc not available, falling back to python"
     if ! command -v python3 >/dev/null 2>&1; then
         log "ERROR: Neither socat nor python3 found"
         exit 1
