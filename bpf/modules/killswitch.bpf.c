@@ -23,7 +23,7 @@ char _license[] SEC("license") = "GPL";
 RS_DECLARE_MODULE(
     "killswitch",
     RS_HOOK_XDP_INGRESS,
-    5,
+    RS_STAGE_KILLSWITCH,
     RS_FLAG_NEED_L2L3_PARSE,
     "Killswitch - Emergency stop via magic UDP packet"
 );

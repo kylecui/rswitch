@@ -647,7 +647,7 @@ install: all
 	@for f in $(BUILD_DIR)/rswitch-voqd $(BUILD_DIR)/rswitch-stpd $(BUILD_DIR)/rswitch-lldpd \
 	          $(BUILD_DIR)/rswitch-lacpd $(BUILD_DIR)/rswitch-prometheus \
 	          $(BUILD_DIR)/rswitch-controller $(BUILD_DIR)/rswitch-agent $(BUILD_DIR)/rswitch-snmpagent \
-	          $(BUILD_DIR)/rsdiag; do \
+	          $(BUILD_DIR)/rsdiag $(BUILD_DIR)/rs-killswitch-watchdog; do \
 	    [ -f "$$f" ] && cp -f "$$f" $(INSTALL_PREFIX)/build/ || true; \
 	done
 	@# BPF objects
@@ -659,11 +659,13 @@ install: all
 	@for f in scripts/setup_nic_queues.sh scripts/cleanup_nic_queues.sh \
 	          scripts/unload.sh scripts/hot-reload.sh scripts/setup_veth_egress.sh \
 	          scripts/rswitch-detect-ports.sh scripts/rswitch-gen-profile.sh \
-	          scripts/install.sh scripts/uninstall.sh; do \
+	          scripts/install.sh scripts/uninstall.sh \
+	          scripts/rswitch-dev-deploy.sh scripts/rswitch-killswitch-trigger.sh; do \
 	    [ -f "$$f" ] && cp -f "$$f" $(INSTALL_PREFIX)/scripts/ || true; \
 	done
 	@chmod +x $(INSTALL_PREFIX)/scripts/*.sh
 	@# Config, profiles, systemd templates, web
+	@mkdir -p $(INSTALL_PREFIX)/etc/rswitch
 	@cp -f etc/profiles/*.yaml $(INSTALL_PREFIX)/etc/profiles/
 	@cp -f etc/systemd/*.service $(INSTALL_PREFIX)/etc/systemd/
 	@cp -rf web/* $(INSTALL_PREFIX)/web/

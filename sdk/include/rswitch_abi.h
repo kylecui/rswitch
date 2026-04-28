@@ -151,7 +151,7 @@ RS_API_EXPERIMENTAL struct rs_module_deps {
 /* ── Stage numbers ─────────────────────────────────────────────── */
 
 /* Core module stages (ingress 10-99, egress 100-199) */
-#define RS_STAGE_KILLSWITCH     5
+#define RS_STAGE_KILLSWITCH     10
 #define RS_STAGE_PREPROCESS     10
 #define RS_STAGE_VLAN           20
 #define RS_STAGE_ACL            30
