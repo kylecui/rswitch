@@ -146,6 +146,72 @@ static int create_veth_pair(const struct rs_mgmt_iface_config *cfg)
 		 cfg->mgmt_ns);
 	run_cmd(cmd);
 
+	/* Disable TX checksum / SG / TSO offload on veth pair.
+	 * XDP redirect bypasses NIC TX offload so the kernel leaves
+	 * checksums partially computed — resulting in bad checksums
+	 * on outbound packets (SYN-ACK, DHCP, etc.).               */
+	snprintf(cmd, sizeof(cmd),
+		 "ip netns exec %s ethtool -K %s tx off sg off tso off 2>/dev/null",
+		 cfg->mgmt_ns, cfg->veth_ns);
+	run_cmd(cmd);
+	snprintf(cmd, sizeof(cmd),
+		 "ethtool -K %s tx off sg off tso off 2>/dev/null",
+		 cfg->veth_host);
+	run_cmd(cmd);
+
+	/* Native XDP devmap redirect requires NAPI active on the
+	 * receiving veth peer.  Without an XDP program attached,
+	 * veth_xdp_xmit() silently drops every frame.  Attach a
+	 * minimal XDP_PASS program to mgmt0 inside the namespace. */
+	{
+		struct bpf_insn pass_prog[] = {
+			/* BPF_MOV64_IMM(BPF_REG_0, XDP_PASS) */
+			{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = BPF_REG_0,
+			  .src_reg = 0, .off = 0, .imm = 2 /* XDP_PASS */ },
+			/* BPF_EXIT_INSN() */
+			{ .code = BPF_JMP | BPF_EXIT, .dst_reg = 0,
+			  .src_reg = 0, .off = 0, .imm = 0 },
+		};
+		LIBBPF_OPTS(bpf_prog_load_opts, opts);
+		int pass_fd = bpf_prog_load(BPF_PROG_TYPE_XDP, "xdp_pass",
+					     "GPL", pass_prog, 2, &opts);
+		if (pass_fd < 0) {
+			RS_LOG_WARN("Failed to create XDP_PASS prog for %s: %s",
+				    cfg->veth_ns, strerror(errno));
+		} else {
+			char ns_path[128];
+			snprintf(ns_path, sizeof(ns_path),
+				 "/var/run/netns/%s", cfg->mgmt_ns);
+			int netns_fd = open(ns_path, O_RDONLY);
+			if (netns_fd >= 0) {
+				int orig_ns = open("/proc/self/ns/net", O_RDONLY);
+				if (setns(netns_fd, CLONE_NEWNET) == 0) {
+					__u32 peer_idx = if_nametoindex(cfg->veth_ns);
+					if (peer_idx > 0) {
+						int att = bpf_xdp_attach(peer_idx, pass_fd,
+									 XDP_FLAGS_UPDATE_IF_NOEXIST, NULL);
+						if (att)
+							RS_LOG_WARN("Failed to attach XDP_PASS to %s: %s",
+								    cfg->veth_ns, strerror(-att));
+						else
+							RS_LOG_INFO("XDP_PASS attached to %s (NAPI for devmap redirect)",
+								    cfg->veth_ns);
+					}
+					if (orig_ns >= 0) {
+						setns(orig_ns, CLONE_NEWNET);
+						close(orig_ns);
+					}
+				} else {
+					RS_LOG_WARN("setns to %s failed: %s",
+						    cfg->mgmt_ns, strerror(errno));
+					if (orig_ns >= 0) close(orig_ns);
+				}
+				close(netns_fd);
+			}
+			close(pass_fd);
+		}
+	}
+
 	RS_LOG_INFO("Created veth pair: %s (host) <-> %s (ns:%s)",
 		    cfg->veth_host, cfg->veth_ns, cfg->mgmt_ns);
 	return 0;
