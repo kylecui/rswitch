@@ -3,6 +3,10 @@
 > **rSwitch** — A high-performance, modular XDP/eBPF network switch platform with CO-RE compatibility.
 >
 > 📖 [中文文档](zh-CN/README.md) (Chinese translations available)
+>
+> **Read these first for physical-machine native-XDP rollout:**
+> - [物理机 Native XDP 部署与运维手册](zh-CN/deployment/Physical_Machine_Native_XDP_Deployment.md)
+> - [Native XDP 物理机场景排错复盘](zh-CN/development/Native_XDP_Physical_Debugging_Postmortem.md)
 
 ---
 
@@ -46,6 +50,7 @@ Installation, system configuration, and production deployment.
 | [NIC Configuration](deployment/NIC_Configuration.md) | | NIC-specific setup — Intel X710/i40e, Mellanox CX-5/mlx5, Hyper-V hv_netvsc |
 | [Systemd Integration](deployment/Systemd_Integration.md) | | Service units, auto-start, watchdog, and production deployment patterns |
 | [Management Portal](deployment/Management_Portal.md) | [管理门户](zh-CN/deployment/Management_Portal.md) | Web management UI — namespace isolation, DHCP, REST API, real-time monitoring |
+| [Physical-machine Native XDP Deployment](zh-CN/deployment/Physical_Machine_Native_XDP_Deployment.md) | | **Chinese first-read runbook** — validated physical-machine deployment, DHCP/SSH/Web/mDNS workflow, offload caveats, rescue steps |
 
 ---
 
@@ -68,6 +73,7 @@ Architecture deep-dives, module development, and API reference.
 | [CO-RE Guide](development/CO-RE_Guide.md) | [CO-RE指南](zh-CN/development/CO-RE_Guide.md) | CO-RE portability — `BPF_CORE_READ()`, offset masking, cross-kernel testing |
 | [Distributed State Sync](development/Distributed_State_Sync.md) | | Multi-switch state synchronization design document |
 | [Contributing](development/Contributing.md) | [贡献指南](zh-CN/development/CONTRIBUTING.md) | Contribution workflow, coding standards, PR process, licensing |
+| [Native XDP Physical Debugging Postmortem](zh-CN/development/Native_XDP_Physical_Debugging_Postmortem.md) | | **Chinese first-read postmortem** — root causes, debugging sequence, and lessons from the 191 native-XDP bring-up |
 | [SDK Quick Start](../sdk/docs/SDK_Quick_Start.md) | [SDK快速开始](../sdk/docs/zh-CN/SDK_Quick_Start.md) | External module development kit — build, test, package, deploy |
 | [SDK Migration Guide](../sdk/docs/SDK_Migration_Guide.md) | [SDK迁移指南](zh-CN/sdk/SDK_Migration_Guide.md) | Migrate from legacy headers (uapi.h, map_defs.h, etc.) to SDK v2.0 headers |
 
@@ -174,7 +180,9 @@ sdk/docs/
 - **Upgrading from ABI v1?** → [ABI Migration v1→v2](development/ABI_Migration_v1_to_v2.md)
 - **Migrating old headers?** → [SDK Migration Guide](../sdk/docs/SDK_Migration_Guide.md) / [SDK迁移指南](zh-CN/sdk/SDK_Migration_Guide.md)
 - **Deploying to production?** → [Systemd Integration](deployment/Systemd_Integration.md)
+- **Deploying to a physical machine with all ports in native XDP?** → [物理机 Native XDP 部署与运维手册](zh-CN/deployment/Physical_Machine_Native_XDP_Deployment.md)
 - **Management UI?** → [Management Portal](deployment/Management_Portal.md)
+- **Need the full debugging lessons before changing mgmt/native-XDP code?** → [Native XDP 物理机场景排错复盘](zh-CN/development/Native_XDP_Physical_Debugging_Postmortem.md)
 - **Need API details?** → [API Reference](development/API_Reference.md)
 - **Intent-based config?** → [Intent Engine](usage/Intent_Engine.md)
 - **What's coming next?** → [Product Backlog](backlog/product-backlog.md)

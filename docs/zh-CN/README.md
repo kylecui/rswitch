@@ -8,6 +8,10 @@
 
 本目录包含rSwitch核心文档的中文翻译，覆盖用户使用、部署运维和二次开发所需的全部关键文档。
 
+> **首次阅读建议（强制优先）：**
+> - [物理机 Native XDP 部署与运维手册](deployment/Physical_Machine_Native_XDP_Deployment.md)
+> - [Native XDP 物理机场景排错复盘](development/Native_XDP_Physical_Debugging_Postmortem.md)
+
 ---
 
 ## 💡 概念指南（双语文档）
@@ -40,6 +44,7 @@
 | [安装指南](deployment/Installation.md) | [Installation](../deployment/Installation.md) | 从源码构建、依赖项、内核要求和验证 |
 | [配置参考](deployment/Configuration.md) | [Configuration](../deployment/Configuration.md) | YAML profile结构 — `ingress`、`egress`、`settings`、`ports`、`voqd_config` |
 | [管理门户](deployment/Management_Portal.md) | [Management Portal](../deployment/Management_Portal.md) | Web管理界面 — 命名空间隔离、DHCP、REST API、实时监控 |
+| [物理机 Native XDP 部署与运维手册](deployment/Physical_Machine_Native_XDP_Deployment.md) | | **必读**：实体设备上线手册，覆盖 DHCP / SSH / Web / mDNS / checksum offload / killswitch / 现场救援 |
 
 > 其他部署文档暂未翻译，请参阅英文原文：[VOQd Setup](../deployment/VOQd_Setup.md)、[NIC Configuration](../deployment/NIC_Configuration.md)、[Systemd Integration](../deployment/Systemd_Integration.md)
 
@@ -54,6 +59,7 @@
 | [ABI稳定性策略](development/ABI_POLICY.md) | [ABI Policy](../development/ABI_POLICY.md) | ABI版本契约 — 稳定性层级、破坏性变更策略、loader强制检查 |
 | [CO-RE指南](development/CO-RE_Guide.md) | [CO-RE Guide](../development/CO-RE_Guide.md) | CO-RE可移植性 — `BPF_CORE_READ()`、offset masking、跨内核测试 |
 | [贡献指南](development/CONTRIBUTING.md) | [Contributing](../../CONTRIBUTING.md) | 贡献工作流、代码规范、PR流程、许可协议 |
+| [Native XDP 物理机场景排错复盘](development/Native_XDP_Physical_Debugging_Postmortem.md) | | **必读**：完整排错过程、根因与二次开发注意事项 |
 
 > 其他开发文档暂未翻译，请参阅英文原文：[Platform Architecture](../development/Platform_Architecture.md)、[API Reference](../development/API_Reference.md)、[Graceful Degradation](../development/DEGRADATION.md)、[Map Pinning](../development/MAP_PINNING.md)
 
@@ -83,6 +89,8 @@
 ## 🔗 快速链接
 
 - **只想运行？** → [快速开始](usage/Quick_Start.md)
+- **实体设备上线前先看？** → [物理机 Native XDP 部署与运维手册](deployment/Physical_Machine_Native_XDP_Deployment.md)
+- **准备修改 mgmt / native XDP 逻辑？** → [Native XDP 物理机场景排错复盘](development/Native_XDP_Physical_Debugging_Postmortem.md)
 - **了解平台？** → [可重构架构](../concepts/Reconfigurable_Architecture.md)（双语）
 - **构建什么设备？** → [网络设备类型库](../concepts/Network_Device_Gallery.md)（双语）
 - **如何使用框架？** → [框架使用指南](../concepts/Framework_Guide.md)（双语）
