@@ -201,12 +201,11 @@ static int handle_action(int action_map_fd, uint32_t action, bool dry_run)
 		}
 	}
 
-	if (!dry_run) {
-		ret = bpf_map_update_elem(action_map_fd, &key, &zero, 0);
-		if (ret != 0) {
-			log_msg("ERROR", "failed to reset action: %s", strerror(errno));
-			return -errno;
-		}
+	/* Always reset the map to prevent re-triggering */
+	ret = bpf_map_update_elem(action_map_fd, &key, &zero, 0);
+	if (ret != 0) {
+		log_msg("ERROR", "failed to reset action: %s", strerror(errno));
+		return -errno;
 	}
 
 	return 0;
