@@ -922,10 +922,10 @@ static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
         }
         
         /* Parse VOQd configuration fields */
-        if (strcmp(key, "enable") == 0 || strcmp(key, "enabled") == 0 || 
-            strcmp(key, "enable_afxdp") == 0) {
+        if (strcmp(key, "enable") == 0 || strcmp(key, "enabled") == 0) {
             voqd->enabled = parse_bool(value);
-            voqd->enable_afxdp = voqd->enabled;  // enable_afxdp implies enabled
+        } else if (strcmp(key, "enable_afxdp") == 0) {
+            voqd->enable_afxdp = parse_bool(value);
         } else if (strcmp(key, "mode") == 0) {
             if (strcmp(value, "bypass") == 0) voqd->mode = 0;
             else if (strcmp(value, "shadow") == 0) voqd->mode = 1;
