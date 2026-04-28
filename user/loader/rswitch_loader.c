@@ -2608,16 +2608,25 @@ static int start_voqd(struct loader_ctx *ctx)
     RS_LOG_DEBUG("start_voqd() voqd->mode=%d, voqd->enabled=%d, voqd->prio_mask=0x%x",
                  voqd->mode, voqd->enabled, voqd->prio_mask);
     
+    char sw_queue_opts[64] = "";
+    if (voqd->enable_sw_queues) {
+        if (voqd->sw_queue_depth > 0 && voqd->sw_queue_depth != 1024)
+            snprintf(sw_queue_opts, sizeof(sw_queue_opts), "-q -Q %d ", voqd->sw_queue_depth);
+        else
+            snprintf(sw_queue_opts, sizeof(sw_queue_opts), "-q ");
+    }
+
     snprintf(cmd, sizeof(cmd),
-             "%s/rswitch-voqd -i %s -p %d -m %s -P 0x%x %s%s%s",
+             "%s/rswitch-voqd -i %s -p %d -m %s -P 0x%x %s%s%s%s",
              g_build_root,
              iface_list,
              voqd->num_ports > 0 ? voqd->num_ports : ctx->num_interfaces,
              voqd->mode == 2 ? "active" : (voqd->mode == 1 ? "shadow" : "bypass"),
              voqd->prio_mask,
-             voqd->enable_scheduler ? "-s " : "",     /* Enable scheduler thread */
-             voqd->enable_scheduler ? "-S 10 " : "",  /* Stats interval 10s */
-             voqd->zero_copy ? "-z" : "");            /* Zero-copy mode */
+             voqd->enable_scheduler ? "-s " : "",
+             voqd->enable_scheduler ? "-S 10 " : "",
+             voqd->zero_copy ? "-z " : "",
+             sw_queue_opts);
     
     printf("  Command: %s (forked)\n", cmd);
     printf("  Mode: %s\n", voqd->mode == 2 ? "ACTIVE" : (voqd->mode == 1 ? "SHADOW" : "BYPASS"));

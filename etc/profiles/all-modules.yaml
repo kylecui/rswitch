@@ -53,6 +53,8 @@ voqd_config:
   num_ports: 4
   prio_mask: 0x0C
   enable_afxdp: true
+  enable_sw_queues: false
+  sw_queue_depth: 2048
   zero_copy: false
   rx_ring_size: 2048
   tx_ring_size: 2048
