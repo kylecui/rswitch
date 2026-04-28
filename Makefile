@@ -84,7 +84,7 @@ WATCHDOG_OBJ = $(BUILD_DIR)/watchdog.o
 CORE_OBJS = $(patsubst $(CORE_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(CORE_DIR)/*.bpf.c))
 MODULE_OBJS = $(patsubst $(MODULES_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(MODULES_DIR)/*.bpf.c))
 DIAG_OBJS = $(patsubst $(DIAG_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(DIAG_DIR)/*.bpf.c))
-ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS) $(DIAG_OBJS)
+ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS)
 
 .PHONY: all clean dirs vmlinux help test test-bpf test-ci fuzz integration-test benchmark gen-docs
 
