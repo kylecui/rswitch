@@ -355,6 +355,8 @@ rs_module_stats_error(__u32 module_idx)
 #define RS_RECORD_DROP(ctx, rctx, reason) do { (rctx)->drop_reason = (reason); (rctx)->action = XDP_DROP; } while(0)
 #define RS_EMIT_SAMPLED_EVENT(rctx, evt, size) ((void)0)
 
+#define rs_obs_build_event(...) ((void)0)
+
 /*
  * Endianness Conversion Macros
  * (Already provided by bpf_endian.h, but listed for reference)
