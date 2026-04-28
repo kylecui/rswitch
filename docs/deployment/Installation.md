@@ -48,6 +48,14 @@ sudo apt install -y \
     libxdp-dev \
     libbpf-dev
 
+# Systemd integration (required for rswitch_loader service management)
+sudo apt install -y \
+    libsystemd-dev
+
+# OpenSSL (required for mgmt daemon authentication)
+sudo apt install -y \
+    libssl-dev
+
 # Kernel headers (for vmlinux.h generation)
 sudo apt install -y \
     linux-headers-$(uname -r) \
@@ -69,6 +77,7 @@ sudo dnf install -y \
     pkg-config \
     libxdp-devel \
     libbpf-devel \
+    systemd-devel \
     kernel-devel \
     bpftool \
     ethtool

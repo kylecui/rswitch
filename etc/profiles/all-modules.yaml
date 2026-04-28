@@ -16,6 +16,7 @@ description: "Comprehensive profile with ALL available modules"
 version: "1.0"
 
 ingress:
+  - killswitch
   - vlan
   - dhcp_snoop
   - arp_learn

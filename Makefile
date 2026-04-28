@@ -77,6 +77,7 @@ CONTROLLER = $(BUILD_DIR)/rswitch-controller
 AGENT = $(BUILD_DIR)/rswitch-agent
 SNMPAGENT = $(BUILD_DIR)/rswitch-snmpagent
 MGMTD = $(BUILD_DIR)/rswitch-mgmtd
+KILLSWITCH_WATCHDOG = $(BUILD_DIR)/rs-killswitch-watchdog
 MONGOOSE_OBJ = $(BUILD_DIR)/mongoose.o
 MGMT_IFACE_OBJ = $(BUILD_DIR)/mgmt_iface.o
 WATCHDOG_OBJ = $(BUILD_DIR)/watchdog.o
@@ -88,7 +89,7 @@ ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS)
 
 .PHONY: all clean dirs vmlinux help test test-bpf test-ci fuzz integration-test benchmark gen-docs
 
-all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSFLOWCTL) $(RSNATCTL) $(RSVOQCTL) $(RSTUNNELCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(SFLOW_EXPORT) $(PROMETHEUS_EXPORTER) $(RSDIAG) $(WATCHDOG) $(CONTROLLER) $(AGENT) $(SNMPAGENT) $(MGMTD) $(ALL_BPF_OBJS)
+all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSFLOWCTL) $(RSNATCTL) $(RSVOQCTL) $(RSTUNNELCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(SFLOW_EXPORT) $(PROMETHEUS_EXPORTER) $(RSDIAG) $(WATCHDOG) $(CONTROLLER) $(AGENT) $(SNMPAGENT) $(MGMTD) $(KILLSWITCH_WATCHDOG) $(ALL_BPF_OBJS)
 	@echo "✓ Build complete"
 	@echo "  Loader: $(LOADER)"
 	@echo "  Reload: $(HOT_RELOAD)"
@@ -251,6 +252,13 @@ $(WATCHDOG): $(USER_DIR)/watchdog/watchdog.c $(USER_DIR)/watchdog/watchdog.h $(R
 		-o $@ $(USER_DIR)/watchdog/watchdog.c \
 		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
 
+$(KILLSWITCH_WATCHDOG): $(USER_DIR)/killswitch/rs_killswitch_watchdog.c
+	@echo "  CC [USER] $@"
+	@mkdir -p $(USER_DIR)/killswitch
+	@$(CLANG) -g -O2 -I$(SDK_INCLUDE_DIR) \
+		-o $@ $(USER_DIR)/killswitch/rs_killswitch_watchdog.c \
+		$(LIBBPF_LIBS) -lelf -lz
+
 $(CONTROLLER): $(USER_DIR)/controller/controller.c $(USER_DIR)/controller/controller.h $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
@@ -299,7 +307,7 @@ $(MGMTD): $(USER_DIR)/mgmt/mgmtd.c $(USER_DIR)/mgmt/mgmtd.h $(USER_DIR)/mgmt/mgm
 		-o $@ $(USER_DIR)/mgmt/mgmtd.c $(USER_DIR)/loader/profile_parser.c \
 		$(MONGOOSE_OBJ) $(MGMT_IFACE_OBJ) $(WATCHDOG_OBJ) $(EVENT_DB_OBJ) \
 		$(LIFECYCLE_OBJ) $(AUDIT_OBJ) $(ROLLBACK_OBJ) $(TOPOLOGY_OBJ) $(RS_LOG_OBJ) \
-		$(LIBBPF_LIBS) -lelf -lz -lpthread -lsqlite3
+		$(LIBBPF_LIBS) -lelf -lz -lpthread -lsqlite3 -lcrypto
 
 # Build rswitchctl
 $(RSWITCHCTL): $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_dev.c $(USER_DIR)/ctl/rswitchctl_extended.c $(USER_DIR)/ctl/rswitchctl_acl.c $(USER_DIR)/ctl/rswitchctl_mirror.c $(USER_DIR)/loader/profile_parser.c $(USER_DIR)/watchdog/watchdog.c $(USER_DIR)/watchdog/watchdog.h $(USER_DIR)/lifecycle/lifecycle.h $(USER_DIR)/registry/registry.c $(USER_DIR)/rollback/rollback.h $(USER_DIR)/audit/audit.h $(USER_DIR)/topology/topology.h $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(REGISTRY_OBJ) $(ROLLBACK_OBJ) $(AUDIT_OBJ) $(TOPOLOGY_OBJ)

@@ -53,7 +53,7 @@ Get rSwitch running in under 5 minutes:
 # Debian/Ubuntu
 sudo apt update
 sudo apt install -y build-essential cmake clang llvm pkg-config \
-                     libxdp-dev libbpf-dev linux-headers-$(uname -r)
+                     libxdp-dev libbpf-dev libsystemd-dev linux-headers-$(uname -r)
 
 # Or install libbpf from source (recommended)
 git submodule update --init --recursive
@@ -190,7 +190,7 @@ make vmlinux && make
 ### System Requirements
 - **Kernel**: 5.8+ (for AF_XDP and CO-RE support)
 - **NIC**: XDP-native drivers (i40e, mlx5) or generic mode
-- **Libraries**: libbpf, libxdp, clang/LLVM
+- **Libraries**: libbpf, libxdp, libsystemd, clang/LLVM
 - **Permissions**: Root access for XDP program loading
 
 ## 💡 Usage

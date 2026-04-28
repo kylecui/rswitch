@@ -1,0 +1,16 @@
+[Unit]
+Description=rSwitch Killswitch Watchdog Daemon
+Documentation=man:rswitch-killswitch(8)
+After=rswitch.service
+Requires=rswitch.service
+
+[Service]
+Type=simple
+ExecStart=/opt/rswitch/build/rs-killswitch-watchdog --key-file /etc/rswitch/killswitch.key
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

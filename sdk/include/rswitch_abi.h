@@ -151,6 +151,7 @@ RS_API_EXPERIMENTAL struct rs_module_deps {
 /* ── Stage numbers ─────────────────────────────────────────────── */
 
 /* Core module stages (ingress 10-99, egress 100-199) */
+#define RS_STAGE_KILLSWITCH     5
 #define RS_STAGE_PREPROCESS     10
 #define RS_STAGE_VLAN           20
 #define RS_STAGE_ACL            30
@@ -377,6 +378,7 @@ enum rs_obs_level {
 enum rs_obs_module_id {
     RS_MOD_UNKNOWN = 0,
     RS_MOD_DISPATCHER = 1,
+    RS_MOD_KILLSWITCH = 5,
     RS_MOD_VLAN = 20,
     RS_MOD_QOS_CLASSIFY = 25,
     RS_MOD_ACL = 30,
