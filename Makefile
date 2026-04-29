@@ -480,6 +480,7 @@ TEST_ARP_LEARN = $(BUILD_DIR)/test_arp_learn
 TEST_L2LEARN = $(BUILD_DIR)/test_l2learn
 TEST_ROUTE = $(BUILD_DIR)/test_route
 TEST_MIRROR = $(BUILD_DIR)/test_mirror
+TEST_PROFILE_PARSER = $(BUILD_DIR)/test_profile_parser
 FUZZ_MODULES = $(BUILD_DIR)/fuzz_modules
 
 $(TEST_DISPATCHER): $(TEST_DIR)/test_dispatcher.c $(RS_LOG_OBJ)
@@ -578,7 +579,14 @@ $(TEST_MIRROR): $(TEST_DIR)/test_mirror.c $(RS_LOG_OBJ)
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $< $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
 
-test: $(TEST_DISPATCHER) $(TEST_ACL) $(TEST_VLAN) $(TEST_STP) $(TEST_RATE_LIMITER) $(TEST_SOURCE_GUARD) $(TEST_CONNTRACK) $(TEST_ARP_LEARN) $(TEST_L2LEARN) $(TEST_ROUTE) $(TEST_MIRROR)
+$(TEST_PROFILE_PARSER): $(TEST_DIR)/test_profile_parser.c $(USER_DIR)/loader/profile_parser.c $(RS_LOG_OBJ)
+	@echo "  CC [TEST] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) -I$(USER_DIR)/loader \
+		-o $@ $(TEST_DIR)/test_profile_parser.c $(USER_DIR)/loader/profile_parser.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+
+test: $(TEST_DISPATCHER) $(TEST_ACL) $(TEST_VLAN) $(TEST_STP) $(TEST_RATE_LIMITER) $(TEST_SOURCE_GUARD) $(TEST_CONNTRACK) $(TEST_ARP_LEARN) $(TEST_L2LEARN) $(TEST_ROUTE) $(TEST_MIRROR) $(TEST_PROFILE_PARSER)
 	@echo "✓ Test binaries built"
 	@echo "  Run: sudo ./test/unit/run_tests.sh"
 

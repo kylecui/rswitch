@@ -755,6 +755,70 @@ static int parse_port_item(FILE *fp, struct rs_profile_port *port)
     return 0;
 }
 
+static int parse_port_defaults(FILE *fp, struct rs_profile *profile)
+{
+    char line[MAX_LINE_LEN];
+    char key[256], value[256];
+    struct rs_profile_port port_defaults;
+
+    memset(&port_defaults, 0, sizeof(port_defaults));
+    port_defaults.enabled = 1;
+    port_defaults.management = 1;
+    port_defaults.mac_learning = 1;
+
+    while (fgets(line, sizeof(line), fp)) {
+        char line_copy[MAX_LINE_LEN];
+        strncpy(line_copy, line, sizeof(line_copy) - 1);
+        line_copy[sizeof(line_copy) - 1] = '\0';
+
+        remove_comment(line);
+        char *trimmed = trim(line);
+
+        if (strlen(trimmed) == 0) continue;
+
+        if (line_copy[0] != ' ' && line_copy[0] != '\t' && strchr(trimmed, ':')) {
+            fseek(fp, -(long)strlen(line_copy), SEEK_CUR);
+            break;
+        }
+
+        if (parse_key_value(trimmed, key, value, sizeof(key)) == 0) {
+            if (strcmp(key, "interface") == 0) {
+                strncpy(port_defaults.interface, value, sizeof(port_defaults.interface) - 1);
+            } else if (strcmp(key, "enabled") == 0) {
+                port_defaults.enabled = parse_bool(value);
+            } else if (strcmp(key, "management") == 0) {
+                if (strcmp(value, "managed") == 0) port_defaults.management = 1;
+                else if (strcmp(value, "unmanaged") == 0) port_defaults.management = 0;
+            } else if (strcmp(key, "vlan_mode") == 0) {
+                if (strcmp(value, "off") == 0) port_defaults.vlan_mode = 0;
+                else if (strcmp(value, "access") == 0) port_defaults.vlan_mode = 1;
+                else if (strcmp(value, "trunk") == 0) port_defaults.vlan_mode = 2;
+                else if (strcmp(value, "hybrid") == 0) port_defaults.vlan_mode = 3;
+            } else if (strcmp(key, "access_vlan") == 0) {
+                port_defaults.access_vlan = atoi(value);
+            } else if (strcmp(key, "native_vlan") == 0) {
+                port_defaults.native_vlan = atoi(value);
+            } else if (strcmp(key, "pvid") == 0) {
+                port_defaults.pvid = atoi(value);
+            } else if (strcmp(key, "allowed_vlans") == 0) {
+                char *val = value;
+                if (val[0] == '[') val++;
+                char *end = strchr(val, ']');
+                if (end) *end = '\0';
+                port_defaults.allowed_vlan_count = parse_vlan_list(val, port_defaults.allowed_vlans, 128);
+            } else if (strcmp(key, "mac_learning") == 0) {
+                port_defaults.mac_learning = parse_bool(value);
+            } else if (strcmp(key, "default_priority") == 0) {
+                port_defaults.default_priority = atoi(value);
+            }
+        }
+    }
+
+    profile->port_defaults = port_defaults;
+    profile->has_port_defaults = 1;
+    return 0;
+}
+
 /* Parse ports section */
 static int parse_ports(FILE *fp, struct rs_profile *profile)
 {
@@ -1198,6 +1262,9 @@ int profile_load(const char *filename, struct rs_profile *profile)
             if (ret < 0) goto error;
         } else if (strcmp(key, "ports") == 0) {
             ret = parse_ports(fp, profile);
+            if (ret < 0) goto error;
+        } else if (strcmp(key, "port_defaults") == 0) {
+            ret = parse_port_defaults(fp, profile);
             if (ret < 0) goto error;
         } else if (strcmp(key, "vlans") == 0) {
             ret = parse_vlans(fp, profile);

@@ -1535,6 +1535,60 @@ static int configure_ports(struct loader_ctx *ctx)
         
         return 0;
     }
+
+    /* If profile has port_defaults, apply them to all --ifaces interfaces */
+    if (ctx->use_profile && ctx->profile.has_port_defaults) {
+        struct rs_profile_port *pd = &ctx->profile.port_defaults;
+        printf("  Applying port_defaults to %d interfaces\n", ctx->num_interfaces);
+
+        for (i = 0; i < ctx->num_interfaces; i++) {
+            __u32 ifindex = ctx->interfaces[i];
+            __u32 port_idx = i;
+
+            err = bpf_map_update_elem(ctx->rs_ifindex_to_port_map_fd, &ifindex, &port_idx, BPF_ANY);
+            if (err) {
+                RS_LOG_WARN("Failed to create ifindex->port_idx mapping for ifindex %u: %s",
+                            ifindex, strerror(errno));
+            }
+
+            struct rs_port_config cfg = {
+                .ifindex = ifindex,
+                .enabled = pd->enabled,
+                .mgmt_type = pd->management,
+                .vlan_mode = pd->vlan_mode,
+                .learning = pd->mac_learning,
+                .pvid = pd->pvid ? pd->pvid : pd->access_vlan,
+                .native_vlan = pd->native_vlan,
+                .access_vlan = pd->access_vlan,
+                .default_prio = pd->default_priority,
+                .trust_dscp = 0,
+                .allowed_vlan_count = pd->allowed_vlan_count,
+            };
+
+            for (int j = 0; j < pd->allowed_vlan_count && j < 128; j++) {
+                cfg.allowed_vlans[j] = pd->allowed_vlans[j];
+            }
+
+            err = bpf_map_update_elem(ctx->rs_port_config_map_fd, &ifindex, &cfg, BPF_ANY);
+            if (err) {
+                RS_LOG_ERROR("Failed to configure port ifindex %u with defaults: %s",
+                             ifindex, strerror(errno));
+                continue;
+            }
+
+            const char *mode_str[] = {"OFF", "ACCESS", "TRUNK", "HYBRID"};
+            printf("  Port %u -> port_idx %u: mode=%s (from port_defaults)", ifindex, port_idx,
+                   mode_str[pd->vlan_mode < 4 ? pd->vlan_mode : 0]);
+            if (pd->vlan_mode == RS_VLAN_MODE_ACCESS) {
+                printf(", access_vlan=%d", pd->access_vlan);
+            } else if (pd->vlan_mode == RS_VLAN_MODE_TRUNK) {
+                printf(", native=%d, allowed=%d VLANs", pd->native_vlan, pd->allowed_vlan_count);
+            }
+            printf(", learning=%s\n", pd->mac_learning ? "on" : "off");
+        }
+
+        return 0;
+    }
     
     /* Otherwise use default configuration based on global settings */
     __u8 vlan_mode = RS_VLAN_MODE_OFF;

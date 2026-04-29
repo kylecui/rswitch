@@ -156,6 +156,9 @@ struct rs_profile {
     /* Port configurations */
     struct rs_profile_port *ports;
     int port_count;
+    /* Port defaults (applied to all interfaces without explicit port config) */
+    struct rs_profile_port port_defaults;
+    int has_port_defaults;
     
     /* VLAN configurations */
     struct rs_profile_vlan *vlans;

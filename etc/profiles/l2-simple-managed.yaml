@@ -1,0 +1,78 @@
+# rSwitch Profile: L2 Simple Managed Switch
+#
+# Managed L2 switch with VLAN support:
+# - 802.1Q VLAN processing (ACCESS/TRUNK/HYBRID modes)
+# - MAC address learning and forwarding
+# - DHCP snooping for security
+# - Web management portal with namespace isolation
+#
+# Pipeline: dispatcher → vlan → dhcp_snoop → l2learn → lastcall → egress_vlan → egress_final
+# Use case: Standard enterprise managed switch, VLAN segmentation
+#
+# All ports default to trunk mode on VLAN 1. Override individual ports
+# in the 'ports:' section for access mode, specific VLANs, etc.
+
+name: l2-simple-managed
+description: "L2 managed switch with VLAN and DHCP snooping"
+version: "2.0"
+
+ingress:
+  - vlan
+  - dhcp_snoop
+  - l2learn
+  - lastcall
+
+egress:
+  - egress_vlan
+  - egress_final
+
+settings:
+  mac_learning: true
+  mac_aging_time: 300
+  vlan_enforcement: true
+  default_vlan: 1
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  stats_enabled: true
+  ringbuf_enabled: true
+  notify_mac_learned: true
+  notify_mac_moved: true
+  debug: false
+
+port_defaults:
+  vlan_mode: trunk
+  allowed_vlans: [1]
+  native_vlan: 1
+  mac_learning: true
+  default_priority: 1
+
+management:
+  enabled: true
+  port: 8080
+  use_namespace: true
+  namespace_name: rswitch-mgmt
+  iface_mode: dhcp
+  mgmt_vlan: 1
+  auth_enabled: true
+  auth_user: admin
+  auth_password: rswitch
+
+dhcp_snooping:
+  enabled: true
+  drop_rogue_server: true
+  # trusted_ports: auto-populated from all interfaces at runtime
+
+# Per-port overrides (optional, persists across upgrades):
+# ports:
+#   - interface: eth2
+#     vlan_mode: access
+#     access_vlan: 10
+#     mac_learning: true
+
+# VLAN definitions (optional, configure via web portal or here):
+# vlans:
+#   - vlan_id: 1
+#     name: "default"
+#   - vlan_id: 10
+#     name: "client"

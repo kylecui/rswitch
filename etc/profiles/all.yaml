@@ -1,0 +1,104 @@
+# rSwitch Profile: All Features (Dev/Test)
+#
+# All available modules enabled for development and testing.
+# Identical to l3-full but adds killswitch, afxdp_redirect, and
+# other auxiliary modules for comprehensive testing.
+#
+# Pipeline:
+#   Ingress: dispatcher → killswitch → vlan → dhcp_snoop → acl → mirror → route → l2learn → afxdp_redirect → lastcall
+#   Egress:  egress_qos → egress_vlan → egress_final
+#
+# Use case: Dev/test environments, module integration testing, full feature validation
+
+name: all
+description: "All modules enabled — for development and testing only"
+version: "2.0"
+
+ingress:
+  - killswitch
+  - vlan
+  - dhcp_snoop
+  - arp_learn
+  - acl
+  - mirror
+  - route
+  - l2learn
+  - afxdp_redirect
+  - lastcall
+
+egress:
+  - egress_qos
+  - egress_vlan
+  - egress_final
+
+settings:
+  mac_learning: true
+  mac_aging_time: 300
+  vlan_enforcement: true
+  default_vlan: 1
+  ip_routing: true
+  route_table_size: 1024
+  acl_enabled: true
+  acl_default_action: "permit"
+  qos_enabled: true
+  qos_default_prio: 1
+  afxdp_redirect_enabled: true
+  afxdp_prio_mask: 0x0C
+  mirror_enabled: true
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  stats_enabled: true
+  ringbuf_enabled: true
+  debug: false
+
+port_defaults:
+  vlan_mode: trunk
+  allowed_vlans: [1]
+  native_vlan: 1
+  mac_learning: true
+  default_priority: 1
+  qos_config:
+    enable_afxdp: true
+    prio_mask: 0x0C
+
+voqd_config:
+  enabled: true
+  mode: active
+  num_ports: 4
+  prio_mask: 0x0C
+  enable_afxdp: true
+  enable_sw_queues: false
+  sw_queue_depth: 2048
+  zero_copy: false
+  rx_ring_size: 2048
+  tx_ring_size: 2048
+  frame_size: 2048
+  batch_size: 256
+  poll_timeout_ms: 100
+  busy_poll: false
+  cpu_affinity: -1
+  enable_scheduler: true
+  use_veth_egress: true
+  veth_in_ifname: veth_voq_in
+
+management:
+  enabled: true
+  port: 8080
+  use_namespace: true
+  namespace_name: rswitch-mgmt
+  iface_mode: dhcp
+  mgmt_vlan: 1
+  auth_enabled: true
+  auth_user: admin
+  auth_password: rswitch
+
+dhcp_snooping:
+  enabled: true
+  drop_rogue_server: true
+
+# Per-port overrides (optional):
+# ports:
+#   - interface: eth1
+#     vlan_mode: access
+#     access_vlan: 10

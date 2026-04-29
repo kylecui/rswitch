@@ -1,40 +1,32 @@
-# rSwitch Profile: Dumb Switch
-# 
-# A minimal L2 switch with no intelligence:
-# - No VLAN processing (pass all traffic through)
+# rSwitch Profile: Dumb Switch (Hub)
+#
+# Minimal L2 hub with no intelligence:
+# - No VLAN processing
 # - No MAC learning (flood everything)
+# - No management plane
 # - Pure forwarding based on ingress port
 #
 # Pipeline: dispatcher → lastcall → egress
 # Use case: Simple hub-like behavior, basic connectivity testing
 
 name: dumb
-description: "Dumb switch - floods all traffic without learning"
-version: "1.0"
+description: "Dumb switch — floods all traffic without learning"
+version: "2.0"
 
-# Ingress pipeline (sorted by stage number)
 ingress:
-  - lastcall   # Stage 90: Always flood to all ports
+  - lastcall
 
-# Egress pipeline
 egress:
-  - egress     # Devmap egress hook (always loaded)
+  - egress_final
 
-# Global settings
 settings:
-  # No MAC learning
   mac_learning: false
-  
-  # No VLAN enforcement
   vlan_enforcement: false
-  
-  # Default forwarding behavior
   unknown_unicast_flood: true
   broadcast_flood: true
   multicast_flood: true
-  
-  # Statistics collection
   stats_enabled: true
-  
-  # Debug mode
   debug: false
+
+# No port_defaults — dumb switch needs no per-port configuration
+# No management — this is an unmanaged hub

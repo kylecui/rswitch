@@ -1,0 +1,40 @@
+# rSwitch Profile: L2 Unmanaged Switch
+#
+# Traditional L2 learning switch without management:
+# - MAC address learning and forwarding
+# - No VLAN processing (flat network)
+# - No management plane
+# - Intelligent unicast forwarding, selective flooding
+#
+# Pipeline: dispatcher → l2learn → lastcall → egress
+# Use case: Simple unmanaged switch, plug-and-play L2 bridging
+
+name: l2-unmanaged
+description: "L2 learning switch — no VLAN, no management"
+version: "2.0"
+
+ingress:
+  - l2learn
+  - lastcall
+
+egress:
+  - egress_final
+
+settings:
+  mac_learning: true
+  mac_aging_time: 300
+  vlan_enforcement: false
+  unknown_unicast_flood: true
+  broadcast_flood: true
+  multicast_flood: true
+  stats_enabled: true
+  ringbuf_enabled: true
+  notify_mac_learned: true
+  notify_mac_moved: true
+  debug: false
+
+port_defaults:
+  mac_learning: true
+  default_priority: 0
+
+# No management — this is an unmanaged switch

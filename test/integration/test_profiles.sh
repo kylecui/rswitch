@@ -70,8 +70,14 @@ for profile in "$PROFILE_DIR"/*.yaml; do
         else
             fail "$name ports interface format invalid"
         fi
+    elif grep -Eq '^port_defaults:' "$profile"; then
+        if grep -Eq '^[[:space:]]*vlan_mode:[[:space:]]*(off|access|trunk|hybrid)' "$profile"; then
+            pass "$name port_defaults vlan_mode valid"
+        else
+            fail "$name port_defaults missing or invalid vlan_mode"
+        fi
     else
-        skip "$name has no ports section"
+        skip "$name has no ports or port_defaults section"
     fi
 
     validated=$((validated + 1))

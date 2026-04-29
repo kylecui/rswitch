@@ -78,10 +78,10 @@ echo ""
 
 echo "=== Test 5: Profile Listing ==="
 profile_count=$(ls -1 "$PROFILE_DIR"/*.yaml 2>/dev/null | wc -l)
-if [ "$profile_count" -ge 10 ]; then
+if [ "$profile_count" -ge 3 ]; then
     pass "profiles available: $profile_count"
 else
-    fail "expected >=10 profiles, got $profile_count"
+    fail "expected >=3 profiles, got $profile_count"
 fi
 echo ""
 

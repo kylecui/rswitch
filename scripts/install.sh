@@ -8,6 +8,7 @@
 #   RSWITCH_MGMT_NIC=eth0        — management NIC (auto-detected)
 #   RSWITCH_INTERFACES=e1,e2,e3  — switch ports (auto-detected)
 #   INSTALL_PREFIX=/opt/rswitch  — installation path (default)
+#   RSWITCH_PROFILE=l2-simple-managed  — switch profile (interactive)
 #   RSWITCH_REPO=https://...     — git clone URL
 #   RSWITCH_BRANCH=dev           — branch to build
 #   RSWITCH_SRC=/path/to/src     — use local source (skip clone)
@@ -32,6 +33,7 @@ RSWITCH_BRANCH="${RSWITCH_BRANCH:-dev}"
 BUILD_DIR="${RSWITCH_SRC:-}"     # empty = clone from repo
 VERSION="1.0.0"
 LOG_FILE="/var/log/rswitch/install.log"
+RSWITCH_PROFILE="${RSWITCH_PROFILE:-}"  # Profile selection (interactive if empty)
 
 # ── Colors ───────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -461,10 +463,29 @@ configure() {
     local ifaces="$DETECTED_SWITCH_PORTS"
     local mgmt_nic="$DETECTED_MGMT_NIC"
 
-    # Generate default profile
-    info "Generating default profile..."
-    "${INSTALL_PREFIX}/scripts/rswitch-gen-profile.sh" "$ifaces" "${INSTALL_PREFIX}/etc/profiles/default.yaml"
-    info "Profile written: ${INSTALL_PREFIX}/etc/profiles/default.yaml ✓"
+    # Select switch profile
+    local profile="${RSWITCH_PROFILE:-}"
+    if [ -z "$profile" ]; then
+        echo ""
+        echo -e "  ${BOLD}Available profiles:${NC}"
+        echo -e "    1) ${GREEN}dumb${NC}            — Hub mode, floods all traffic"
+        echo -e "    2) ${GREEN}l2-unmanaged${NC}    — L2 switch, MAC learning, no management"
+        echo -e "    3) ${GREEN}l2-simple-managed${NC} — L2 managed switch with VLAN and DHCP snooping ${YELLOW}(recommended)${NC}"
+        echo -e "    4) ${GREEN}l3-full${NC}          — Full L3 managed switch with routing, ACL, QoS"
+        echo -e "    5) ${GREEN}all${NC}              — All modules enabled (dev/test only)"
+        echo ""
+        read -rp "  Select profile [3]: " choice
+        case "${choice:-3}" in
+            1) profile="dumb" ;;
+            2) profile="l2-unmanaged" ;;
+            3) profile="l2-simple-managed" ;;
+            4) profile="l3-full" ;;
+            5) profile="all" ;;
+            *) profile="l2-simple-managed" ;;
+        esac
+    fi
+    info "Using profile: ${profile}.yaml"
+    export SELECTED_PROFILE="${profile}.yaml"
 
     # ── Install systemd units ────────────────────────────────────
     # We use the production templates from etc/systemd/ and substitute
@@ -496,7 +517,7 @@ RestartSec=5
 LimitMEMLOCK=infinity
 LimitNOFILE=65535
 Environment=RSWITCH_HOME=${INSTALL_PREFIX}
-Environment=RSWITCH_PROFILE=default.yaml
+Environment=RSWITCH_PROFILE=${profile}.yaml
 Environment=RSWITCH_INTERFACES=${ifaces}
 
 [Install]
@@ -514,7 +535,7 @@ After=rswitch.service
 [Service]
 Type=simple
 Environment=RSWITCH_HOME=${INSTALL_PREFIX}
-Environment=RSWITCH_PROFILE=default.yaml
+Environment=RSWITCH_PROFILE=${profile}.yaml
 Environment=MGMT_NAMESPACE=rswitch-mgmt
 Environment=MGMT_NS_TIMEOUT=10
 ExecStart=${INSTALL_PREFIX}/scripts/rswitch-mgmtd-start.sh
@@ -868,7 +889,7 @@ print_summary() {
     echo -e "  ${BOLD}Install path${NC}:    ${INSTALL_PREFIX}"
     echo -e "  ${BOLD}Switch ports${NC}:    ${DETECTED_SWITCH_PORTS}"
     echo -e "  ${BOLD}Management NIC${NC}:  ${DETECTED_MGMT_NIC}"
-    echo -e "  ${BOLD}Profile${NC}:         ${INSTALL_PREFIX}/etc/profiles/default.yaml"
+    echo -e "  ${BOLD}Profile${NC}:         ${INSTALL_PREFIX}/etc/profiles/${SELECTED_PROFILE}"
     if [ -n "${MGMT_IP:-}" ]; then
         echo -e "  ${BOLD}Portal${NC}:          http://${MGMT_IP}:8080"
         echo -e "  ${BOLD}Credentials${NC}:     admin / rswitch"
