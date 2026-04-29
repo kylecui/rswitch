@@ -14,6 +14,7 @@
 #include <linux/if_link.h>
 #include <sys/ioctl.h>
 #include <net/if_arp.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <sched.h>
 #include <pthread.h>
@@ -144,6 +145,72 @@ static int create_veth_pair(const struct rs_mgmt_iface_config *cfg)
 		 "ip netns exec %s ip link set lo up",
 		 cfg->mgmt_ns);
 	run_cmd(cmd);
+
+	/* Disable TX checksum / SG / TSO offload on veth pair.
+	 * XDP redirect bypasses NIC TX offload so the kernel leaves
+	 * checksums partially computed — resulting in bad checksums
+	 * on outbound packets (SYN-ACK, DHCP, etc.).               */
+	snprintf(cmd, sizeof(cmd),
+		 "ip netns exec %s ethtool -K %s tx off sg off tso off 2>/dev/null",
+		 cfg->mgmt_ns, cfg->veth_ns);
+	run_cmd(cmd);
+	snprintf(cmd, sizeof(cmd),
+		 "ethtool -K %s tx off sg off tso off 2>/dev/null",
+		 cfg->veth_host);
+	run_cmd(cmd);
+
+	/* Native XDP devmap redirect requires NAPI active on the
+	 * receiving veth peer.  Without an XDP program attached,
+	 * veth_xdp_xmit() silently drops every frame.  Attach a
+	 * minimal XDP_PASS program to mgmt0 inside the namespace. */
+	{
+		struct bpf_insn pass_prog[] = {
+			/* BPF_MOV64_IMM(BPF_REG_0, XDP_PASS) */
+			{ .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = BPF_REG_0,
+			  .src_reg = 0, .off = 0, .imm = 2 /* XDP_PASS */ },
+			/* BPF_EXIT_INSN() */
+			{ .code = BPF_JMP | BPF_EXIT, .dst_reg = 0,
+			  .src_reg = 0, .off = 0, .imm = 0 },
+		};
+		LIBBPF_OPTS(bpf_prog_load_opts, opts);
+		int pass_fd = bpf_prog_load(BPF_PROG_TYPE_XDP, "xdp_pass",
+					     "GPL", pass_prog, 2, &opts);
+		if (pass_fd < 0) {
+			RS_LOG_WARN("Failed to create XDP_PASS prog for %s: %s",
+				    cfg->veth_ns, strerror(errno));
+		} else {
+			char ns_path[128];
+			snprintf(ns_path, sizeof(ns_path),
+				 "/var/run/netns/%s", cfg->mgmt_ns);
+			int netns_fd = open(ns_path, O_RDONLY);
+			if (netns_fd >= 0) {
+				int orig_ns = open("/proc/self/ns/net", O_RDONLY);
+				if (setns(netns_fd, CLONE_NEWNET) == 0) {
+					__u32 peer_idx = if_nametoindex(cfg->veth_ns);
+					if (peer_idx > 0) {
+						int att = bpf_xdp_attach(peer_idx, pass_fd,
+									 XDP_FLAGS_UPDATE_IF_NOEXIST, NULL);
+						if (att)
+							RS_LOG_WARN("Failed to attach XDP_PASS to %s: %s",
+								    cfg->veth_ns, strerror(-att));
+						else
+							RS_LOG_INFO("XDP_PASS attached to %s (NAPI for devmap redirect)",
+								    cfg->veth_ns);
+					}
+					if (orig_ns >= 0) {
+						setns(orig_ns, CLONE_NEWNET);
+						close(orig_ns);
+					}
+				} else {
+					RS_LOG_WARN("setns to %s failed: %s",
+						    cfg->mgmt_ns, strerror(errno));
+					if (orig_ns >= 0) close(orig_ns);
+				}
+				close(netns_fd);
+			}
+			close(pass_fd);
+		}
+	}
 
 	RS_LOG_INFO("Created veth pair: %s (host) <-> %s (ns:%s)",
 		    cfg->veth_host, cfg->veth_ns, cfg->mgmt_ns);
@@ -305,21 +372,42 @@ static int register_mgmt_br_xdp(const struct rs_mgmt_iface_config *cfg)
 	 * The dispatcher is attached to switch ports by the loader. */
 	int disp_prog_fd = -1;
 	__u32 disp_prog_id = 0;
+	__u32 mgmt_xdp_flags = XDP_FLAGS_SKB_MODE;
 
-	const char *probe_ports[] = {"ens34", "ens35", "ens36", "ens37",
-				     "eth1", "eth2", "eth3", "eth4", NULL};
-	for (int i = 0; probe_ports[i]; i++) {
-		__u32 ifidx = if_nametoindex(probe_ports[i]);
-		if (ifidx == 0)
-			continue;
+	/* Dynamic discovery: scan all network interfaces for XDP programs.
+	 * This avoids hardcoding interface names which differ across machines. */
+	DIR *netdir = opendir("/sys/class/net");
+	if (netdir) {
+		struct dirent *entry;
+		while ((entry = readdir(netdir)) != NULL) {
+			if (entry->d_name[0] == '.')
+				continue;
+			if (strcmp(entry->d_name, "lo") == 0 ||
+			    strcmp(entry->d_name, "mgmt-br") == 0 ||
+			    strncmp(entry->d_name, "veth", 4) == 0)
+				continue;
 
-		struct bpf_xdp_query_opts opts = { .sz = sizeof(opts) };
-		if (bpf_xdp_query(ifidx, 0, &opts) == 0 && opts.prog_id > 0) {
-			disp_prog_id = opts.prog_id;
-			RS_LOG_INFO("Found XDP dispatcher on %s (prog_id=%u)",
-				    probe_ports[i], disp_prog_id);
-			break;
+			__u32 ifidx = if_nametoindex(entry->d_name);
+			if (ifidx == 0)
+				continue;
+
+			struct bpf_xdp_query_opts opts = { .sz = sizeof(opts) };
+			if (bpf_xdp_query(ifidx, 0, &opts) == 0 && opts.prog_id > 0) {
+				disp_prog_id = opts.prog_id;
+				if (opts.skb_prog_id > 0)
+					mgmt_xdp_flags = XDP_FLAGS_SKB_MODE;
+				else
+					mgmt_xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST;
+				RS_LOG_INFO("Found XDP dispatcher on %s (prog_id=%u, %s mode)",
+					    entry->d_name, disp_prog_id,
+					    (opts.skb_prog_id > 0) ? "generic" : "native");
+				break;
+			}
 		}
+		closedir(netdir);
+	} else {
+		RS_LOG_WARN("Cannot open /sys/class/net for XDP probe: %s",
+			    strerror(errno));
 	}
 
 	if (disp_prog_id > 0) {
@@ -330,11 +418,12 @@ static int register_mgmt_br_xdp(const struct rs_mgmt_iface_config *cfg)
 	}
 
 	if (disp_prog_fd >= 0) {
-		err = bpf_xdp_attach(mgmt_ifindex, disp_prog_fd, XDP_FLAGS_SKB_MODE, NULL);
+		err = bpf_xdp_attach(mgmt_ifindex, disp_prog_fd, mgmt_xdp_flags, NULL);
 		if (err)
 			RS_LOG_WARN("Failed to attach XDP to mgmt-br: %s", strerror(-err));
 		else
-			RS_LOG_INFO("XDP dispatcher attached to mgmt-br (generic mode)");
+			RS_LOG_INFO("XDP dispatcher attached to mgmt-br (%s mode)",
+				    (mgmt_xdp_flags == XDP_FLAGS_SKB_MODE) ? "generic" : "native");
 		close(disp_prog_fd);
 	} else {
 		RS_LOG_WARN("No XDP dispatcher found, mgmt-br may not receive traffic");
@@ -531,6 +620,48 @@ int rs_mgmt_iface_ns_probe(const char *ns_name)
 	return ret;
 }
 
+/* Build an unsolicited mDNS A-record response (announcement or query reply).
+ * |tid| is the DNS transaction ID (0 for announcements).
+ * Returns the packet length, or 0 on failure. */
+static size_t mdns_build_a_record(uint8_t *out, size_t outsz, uint16_t tid,
+				   const struct in_addr *ip)
+{
+	if (outsz < 45)
+		return 0;
+
+	size_t off = 0;
+	/* Header: tid, flags=0x8400 (authoritative response), ancount=1 */
+	out[off++] = (tid >> 8) & 0xff;
+	out[off++] = tid & 0xff;
+	out[off++] = 0x84; out[off++] = 0x00;  /* QR=1, AA=1 */
+	out[off++] = 0x00; out[off++] = 0x00;  /* qdcount=0 */
+	out[off++] = 0x00; out[off++] = 0x01;  /* ancount=1 */
+	out[off++] = 0x00; out[off++] = 0x00;  /* nscount=0 */
+	out[off++] = 0x00; out[off++] = 0x00;  /* arcount=0 */
+
+	/* Name: rswitch.local */
+	out[off++] = 7;
+	memcpy(out + off, "rswitch", 7); off += 7;
+	out[off++] = 5;
+	memcpy(out + off, "local", 5); off += 5;
+	out[off++] = 0;
+
+	/* Type A, class IN + cache-flush bit */
+	out[off++] = 0x00; out[off++] = 0x01;
+	out[off++] = 0x80; out[off++] = 0x01;
+	/* TTL: 120s */
+	out[off++] = 0x00; out[off++] = 0x00;
+	out[off++] = 0x00; out[off++] = 0x78;
+	/* RDLENGTH=4, RDATA=IPv4 */
+	out[off++] = 0x00; out[off++] = 0x04;
+	memcpy(out + off, ip, 4); off += 4;
+
+	return off;
+}
+
+#define MDNS_ANNOUNCE_INTERVAL  60   /* periodic re-announce interval (seconds) */
+#define MDNS_STARTUP_ANNOUNCES  3    /* RFC 6762 §8.3: send 3 at startup */
+
 static void *mdns_responder_thread(void *arg)
 {
 	(void)arg;
@@ -602,16 +733,49 @@ static void *mdns_responder_thread(void *arg)
 
 	RS_LOG_INFO("mDNS responder started in namespace %s", g_mdns_cfg.mgmt_ns);
 
+	/* Startup announcements — RFC 6762 §8.3 */
+	for (int i = 0; i < MDNS_STARTUP_ANNOUNCES && g_mdns_running; i++) {
+		if (rs_mgmt_iface_get_ip(&g_mdns_cfg, mgmt_ip, sizeof(mgmt_ip)) == 0 &&
+		    inet_pton(AF_INET, mgmt_ip, &ip_addr) == 1) {
+			size_t plen = mdns_build_a_record(resp, sizeof(resp), 0, &ip_addr);
+			if (plen > 0) {
+				sendto(sock, resp, plen, 0,
+				       (struct sockaddr *)&mcast, sizeof(mcast));
+				RS_LOG_INFO("mDNS: announce rswitch.local -> %s (%d/%d)",
+					    mgmt_ip, i + 1, MDNS_STARTUP_ANNOUNCES);
+			}
+		}
+		if (i < MDNS_STARTUP_ANNOUNCES - 1)
+			sleep(1);
+	}
+
 	struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+	unsigned int idle_ticks = 0;
 
 	while (g_mdns_running) {
 		struct sockaddr_in from;
 		socklen_t fromlen = sizeof(from);
 		ssize_t n = recvfrom(sock, buf, sizeof(buf), 0,
 				     (struct sockaddr *)&from, &fromlen);
-		if (n <= 0)
+
+		if (n <= 0) {
+			idle_ticks++;
+			if (idle_ticks >= MDNS_ANNOUNCE_INTERVAL) {
+				idle_ticks = 0;
+				if (rs_mgmt_iface_get_ip(&g_mdns_cfg, mgmt_ip, sizeof(mgmt_ip)) == 0 &&
+				    inet_pton(AF_INET, mgmt_ip, &ip_addr) == 1) {
+					size_t plen = mdns_build_a_record(resp, sizeof(resp), 0, &ip_addr);
+					if (plen > 0) {
+						sendto(sock, resp, plen, 0,
+						       (struct sockaddr *)&mcast, sizeof(mcast));
+						RS_LOG_DEBUG("mDNS: periodic announce rswitch.local -> %s", mgmt_ip);
+					}
+				}
+			}
 			continue;
+		}
 
 		if (n < 12)
 			continue;
@@ -653,29 +817,12 @@ static void *mdns_responder_thread(void *arg)
 		if (inet_pton(AF_INET, mgmt_ip, &ip_addr) != 1)
 			continue;
 
-		size_t roff = 0;
-		resp[roff++] = buf[0]; resp[roff++] = buf[1];
-		resp[roff++] = 0x84; resp[roff++] = 0x00;
-		resp[roff++] = 0x00; resp[roff++] = 0x00;
-		resp[roff++] = 0x00; resp[roff++] = 0x01;
-		resp[roff++] = 0x00; resp[roff++] = 0x00;
-		resp[roff++] = 0x00; resp[roff++] = 0x00;
-
-		resp[roff++] = 7;
-		memcpy(resp + roff, "rswitch", 7); roff += 7;
-		resp[roff++] = 5;
-		memcpy(resp + roff, "local", 5); roff += 5;
-		resp[roff++] = 0;
-
-		resp[roff++] = 0x00; resp[roff++] = 0x01;
-		resp[roff++] = 0x80; resp[roff++] = 0x01;
-		resp[roff++] = 0x00; resp[roff++] = 0x00;
-		resp[roff++] = 0x00; resp[roff++] = 0x78;
-		resp[roff++] = 0x00; resp[roff++] = 0x04;
-		memcpy(resp + roff, &ip_addr, 4); roff += 4;
-
-		sendto(sock, resp, roff, 0, (struct sockaddr *)&mcast, sizeof(mcast));
-		RS_LOG_DEBUG("mDNS: responded rswitch.local -> %s", mgmt_ip);
+		uint16_t tid = ((uint16_t)buf[0] << 8) | buf[1];
+		size_t roff = mdns_build_a_record(resp, sizeof(resp), tid, &ip_addr);
+		if (roff > 0) {
+			sendto(sock, resp, roff, 0, (struct sockaddr *)&mcast, sizeof(mcast));
+			RS_LOG_DEBUG("mDNS: responded rswitch.local -> %s", mgmt_ip);
+		}
 	}
 
 	close(sock);

@@ -34,6 +34,18 @@
 #include <arpa/inet.h>
 #include <sys/utsname.h>
 #include <pthread.h>
+#include <sys/wait.h>
+
+#if defined(__has_include)
+#if __has_include(<openssl/sha.h>)
+#include <openssl/sha.h>
+#define HAVE_OPENSSL_SHA 1
+#else
+#define HAVE_OPENSSL_SHA 0
+#endif
+#else
+#define HAVE_OPENSSL_SHA 0
+#endif
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
@@ -44,10 +56,17 @@
 #include "../audit/audit.h"
 #include "../rollback/rollback.h"
 #include "../lifecycle/lifecycle.h"
-#include "../../bpf/core/module_abi.h"
+#include "../../bpf/core/map_defs.h"
+
+#ifndef RS_ABI_VERSION_MAJOR
+#define RS_ABI_VERSION_MAJOR 0
+#endif
+#ifndef RS_ABI_VERSION_MINOR
+#define RS_ABI_VERSION_MINOR 0
+#endif
 
 #ifndef RS_MAX_INTERFACES
-#define RS_MAX_INTERFACES 64
+#define RS_MAX_INTERFACES 256
 #endif
 
 #define RS_STATS_MAP_PATH "/sys/fs/bpf/rs_stats_map"
@@ -105,6 +124,7 @@ struct acl_result {
 	__u8 log_event;
 	__u16 redirect_ifindex;
 	__u32 stats_id;
+	__u32 rule_id;
 	__u8  priority;
 	__u8  pad[3];
 } __attribute__((packed));
@@ -148,6 +168,7 @@ struct acl_lpm_value {
 	__u8 log_event;
 	__u16 redirect_ifindex;
 	__u32 stats_id;
+	__u32 rule_id;
 	__u8  priority;
 	__u8  proto;
 	__u16 sport;
@@ -169,76 +190,9 @@ struct route_entry {
 #define AUDIT_READ_MAX 256
 #define SNAPSHOT_READ_MAX 256
 
-#define RS_MODULE_CONFIG_KEY_LEN 32
-#define RS_MODULE_CONFIG_VAL_LEN 64
-
-struct rs_stats {
-	__u64 rx_packets;
-	__u64 rx_bytes;
-	__u64 tx_packets;
-	__u64 tx_bytes;
-	__u64 rx_drops;
-	__u64 tx_drops;
-	__u64 rx_errors;
-	__u64 tx_errors;
-};
-
-struct rs_module_stats {
-	__u64 packets_processed;
-	__u64 packets_forwarded;
-	__u64 packets_dropped;
-	__u64 packets_error;
-	__u64 bytes_processed;
-	__u64 last_seen_ns;
-	__u32 module_id;
-	char name[32];
-};
-
-struct rs_port_config {
-	__u32 ifindex;
-	__u8 enabled;
-	__u8 mgmt_type;
-	__u8 vlan_mode;
-	__u8 learning;
-	__u16 pvid;
-	__u16 native_vlan;
-	__u16 access_vlan;
-	__u16 allowed_vlan_count;
-	__u16 allowed_vlans[128];
-	__u16 tagged_vlan_count;
-	__u16 tagged_vlans[64];
-	__u16 untagged_vlan_count;
-	__u16 untagged_vlans[64];
-	__u8 default_prio;
-	__u8 trust_dscp;
-	__u16 rate_limit_kbps;
-	__u8 port_security;
-	__u8 max_macs;
-	__u16 reserved;
-	__u32 reserved2[4];
-};
-
-struct rs_vlan_members {
-	__u16 vlan_id;
-	__u16 member_count;
-	__u64 tagged_members[4];
-	__u64 untagged_members[4];
-	__u32 reserved[4];
-};
-
-struct rs_module_config_key {
-	char module_name[RS_MODULE_CONFIG_KEY_LEN];
-	char param_name[RS_MODULE_CONFIG_KEY_LEN];
-};
-
-struct rs_module_config_value {
-	__u32 type;
-	union {
-		__s64 int_val;
-		__u32 bool_val;
-		char str_val[56];
-	};
-};
+/* rs_stats, rs_module_stats, rs_port_config, rs_vlan_members,
+ * rs_module_config_key, rs_module_config_value, RS_MODULE_CONFIG_KEY_LEN,
+ * RS_MODULE_CONFIG_VAL_LEN — now provided by bpf/core/map_defs.h (L-17) */
 
 struct profile_module_info {
 	char name[64];
@@ -312,10 +266,13 @@ static struct ring_buffer *g_event_rb;
 static pthread_t g_event_thread;
 static volatile int g_event_thread_running;
 static int g_stats_event_counter;
+static __u32 g_acl_next_rule_id = 1;
+static int g_acl_rule_ids_seeded;
 
 #define STATS_EVENT_INTERVAL 15
 
 static struct mg_str extract_name_from_uri(struct mg_http_message *hm, const char *prefix);
+static __u32 acl_next_rule_id(void);
 
 static int profile_name_valid(const char *name)
 {
@@ -333,6 +290,238 @@ static int profile_name_valid(const char *name)
 	}
 
 	return 1;
+}
+
+static int timing_safe_compare(const void *a, const void *b, size_t len)
+{
+	const volatile unsigned char *pa = a;
+	const volatile unsigned char *pb = b;
+	unsigned char result = 0;
+	size_t i;
+
+	for (i = 0; i < len; i++)
+		result |= pa[i] ^ pb[i];
+
+	return result != 0;
+}
+
+static int is_hex_sha256(const char *s)
+{
+	int i;
+
+	if (!s || strlen(s) != 64)
+		return 0;
+
+	for (i = 0; i < 64; i++) {
+		if (!isxdigit((unsigned char) s[i]))
+			return 0;
+	}
+
+	return 1;
+}
+
+static void bytes_to_hex(const unsigned char *in, size_t in_len, char *out, size_t out_len)
+{
+	static const char hex[] = "0123456789abcdef";
+	size_t i;
+
+	if (!in || !out || out_len < (in_len * 2 + 1)) {
+		if (out && out_len > 0)
+			out[0] = '\0';
+		return;
+	}
+
+	for (i = 0; i < in_len; i++) {
+		out[i * 2] = hex[(in[i] >> 4) & 0x0f];
+		out[i * 2 + 1] = hex[in[i] & 0x0f];
+	}
+	out[in_len * 2] = '\0';
+}
+
+static int fill_random_bytes(unsigned char *buf, size_t len)
+{
+	FILE *fp;
+	size_t nread;
+
+	if (!buf || len == 0)
+		return -1;
+
+	fp = fopen("/dev/urandom", "rb");
+	if (!fp)
+		return -1;
+	nread = fread(buf, 1, len, fp);
+	fclose(fp);
+
+	if (nread != len)
+		return -1;
+
+	return 0;
+}
+
+static int generate_salt(char *out, size_t out_len)
+{
+	unsigned char salt_bytes[16];
+
+	if (!out || out_len < 33)
+		return -1;
+
+	if (fill_random_bytes(salt_bytes, sizeof(salt_bytes)) != 0)
+		return -1;
+
+	bytes_to_hex(salt_bytes, sizeof(salt_bytes), out, out_len);
+	return out[0] != '\0' ? 0 : -1;
+}
+
+static int hash_password(const char *password, const char *salt, char *out, size_t out_len)
+{
+	unsigned char digest[32];
+	const char *pw;
+	const char *sa;
+
+	if (!out || out_len < 65)
+		return -1;
+
+	pw = password ? password : "";
+	sa = salt ? salt : "";
+
+#if HAVE_OPENSSL_SHA
+	{
+		unsigned char k0[64];
+		unsigned char ipad[64];
+		unsigned char opad[64];
+		unsigned char inner[32];
+		unsigned char key_hash[32];
+		size_t i;
+		size_t key_len = strlen(sa);
+		SHA256_CTX ctx;
+
+		memset(k0, 0, sizeof(k0));
+		if (key_len > 64) {
+			if (SHA256((const unsigned char *) sa, key_len, key_hash) == NULL)
+				return -1;
+			memcpy(k0, key_hash, sizeof(key_hash));
+		} else {
+			memcpy(k0, sa, key_len);
+		}
+
+		for (i = 0; i < sizeof(k0); i++) {
+			ipad[i] = (unsigned char) (k0[i] ^ 0x36);
+			opad[i] = (unsigned char) (k0[i] ^ 0x5c);
+		}
+
+		if (SHA256_Init(&ctx) != 1)
+			return -1;
+		if (SHA256_Update(&ctx, ipad, sizeof(ipad)) != 1)
+			return -1;
+		if (SHA256_Update(&ctx, pw, strlen(pw)) != 1)
+			return -1;
+		if (SHA256_Final(inner, &ctx) != 1)
+			return -1;
+
+		if (SHA256_Init(&ctx) != 1)
+			return -1;
+		if (SHA256_Update(&ctx, opad, sizeof(opad)) != 1)
+			return -1;
+		if (SHA256_Update(&ctx, inner, sizeof(inner)) != 1)
+			return -1;
+		if (SHA256_Final(digest, &ctx) != 1)
+			return -1;
+	}
+#else
+	{
+		size_t i;
+		size_t pw_len = strlen(pw);
+		size_t salt_len = strlen(sa);
+
+		for (i = 0; i < sizeof(digest); i++)
+			digest[i] = (unsigned char) (0xA5u ^ (unsigned char) (i * 17u));
+
+		for (int round = 0; round < 2048; round++) {
+			for (i = 0; i < pw_len; i++) {
+				size_t j = (i + (size_t) round) % sizeof(digest);
+				digest[j] = (unsigned char) ((digest[j] + (unsigned char) pw[i] + (unsigned char) (round & 0xff)) ^
+						      (unsigned char) ((digest[(j + 7) % sizeof(digest)] << 1) |
+						      (digest[(j + 7) % sizeof(digest)] >> 7)));
+			}
+			for (i = 0; i < salt_len; i++) {
+				size_t j = (i * 3 + (size_t) round) % sizeof(digest);
+				digest[j] ^= (unsigned char) (sa[i] + (unsigned char) i + (unsigned char) (round & 0xff));
+				digest[(j + 13) % sizeof(digest)] = (unsigned char)
+					((digest[(j + 13) % sizeof(digest)] << 3) |
+					 (digest[(j + 13) % sizeof(digest)] >> 5));
+			}
+		}
+	}
+#endif
+
+	bytes_to_hex(digest, sizeof(digest), out, out_len);
+	return out[0] != '\0' ? 0 : -1;
+}
+
+static void normalize_auth_config(struct mgmtd_config *cfg)
+{
+	char hashed[65];
+
+	if (!cfg)
+		return;
+
+	if (cfg->auth_password[0] && !is_hex_sha256(cfg->auth_password)) {
+		if (cfg->auth_salt[0] == '\0' &&
+		    generate_salt(cfg->auth_salt, sizeof(cfg->auth_salt)) != 0)
+			strncpy(cfg->auth_salt, "00000000000000000000000000000000",
+				sizeof(cfg->auth_salt) - 1);
+		if (hash_password(cfg->auth_password, cfg->auth_salt, hashed, sizeof(hashed)) == 0)
+			strncpy(cfg->auth_password, hashed, sizeof(cfg->auth_password) - 1);
+	}
+}
+
+static int shell_safe_token_valid(const char *s)
+{
+	const unsigned char *p;
+
+	if (!s || s[0] == '\0')
+		return 0;
+
+	for (p = (const unsigned char *) s; *p != '\0'; p++) {
+		if (isalnum(*p) || *p == '.' || *p == '_' || *p == '-')
+			continue;
+		return 0;
+	}
+
+	return 1;
+}
+
+static int has_shell_metachar(const char *s)
+{
+	const char *p;
+
+	if (!s)
+		return 0;
+
+	for (p = s; *p != '\0'; p++) {
+		switch (*p) {
+		case ';':
+		case '|':
+		case '&':
+		case '$':
+		case '\\':
+		case '`':
+		case '(':
+		case ')':
+		case '{':
+		case '}':
+		case '<':
+		case '>':
+		case '!':
+		case '#':
+		case '~':
+			return 1;
+		default:
+			break;
+		}
+	}
+
+	return 0;
 }
 
 /*
@@ -556,6 +745,7 @@ static struct {
 static bool method_is(struct mg_str method, const char *s);
 static void json_printf(struct mg_connection *c, int status, const char *fmt, ...);
 static int ifindex_to_name_sysfs(__u32 ifindex, char *out, size_t out_sz);
+static const char *cors_origin_header(char *buf, size_t buf_len);
 
 static struct mg_str mg_http_body(const struct mg_http_message *hm)
 {
@@ -776,12 +966,15 @@ static int check_auth(struct mg_connection *c, struct mg_http_message *hm)
 	/* No valid session cookie — return 401 (no WWW-Authenticate header
 	 * so the browser won't show a native Basic Auth popup).
 	 * The JS login form handles credential input via /api/auth/login. */
-	mg_http_reply(c, 401,
-		      "Content-Type: application/json\r\n"
-		      "Access-Control-Allow-Origin: *\r\n"
-		      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-		      "Access-Control-Allow-Headers: Content-Type, Authorization\r\n",
-		      "{\"error\":\"authentication required\"}");
+	{
+		char cors[512];
+		char hdrs[1024];
+		snprintf(hdrs, sizeof(hdrs),
+			 "Content-Type: application/json\r\n%s",
+			 cors_origin_header(cors, sizeof(cors)));
+		mg_http_reply(c, 401, hdrs,
+			      "{\"error\":\"authentication required\"}");
+	}
 	return 0;
 }
 
@@ -808,6 +1001,10 @@ static void handle_auth_login(struct mg_connection *c, struct mg_http_message *h
 {
 	char user[64];
 	char pass[128];
+	char user_in[64];
+	char user_cfg[64];
+	char pass_hash[65];
+	char stored_hash[65];
 	char remote_ip[64];
 	struct auth_session *session;
 	struct mg_str body;
@@ -835,7 +1032,27 @@ static void handle_auth_login(struct mg_connection *c, struct mg_http_message *h
 		return;
 	}
 
-	if (strcmp(user, g_ctx.cfg.auth_user) == 0 && strcmp(pass, g_ctx.cfg.auth_password) == 0) {
+	if (g_ctx.cfg.auth_password[0] == '\0') {
+		json_printf(c, 401, "{\"error\":\"no password configured\"}");
+		return;
+	}
+
+	if (hash_password(pass, g_ctx.cfg.auth_salt, pass_hash, sizeof(pass_hash)) != 0) {
+		json_printf(c, 500, "{\"error\":\"auth hash failed\"}");
+		return;
+	}
+
+	memset(user_in, 0, sizeof(user_in));
+	memset(user_cfg, 0, sizeof(user_cfg));
+	strncpy(user_in, user, sizeof(user_in) - 1);
+	strncpy(user_cfg, g_ctx.cfg.auth_user, sizeof(user_cfg) - 1);
+
+	memset(stored_hash, 0, sizeof(stored_hash));
+	if (is_hex_sha256(g_ctx.cfg.auth_password))
+		memcpy(stored_hash, g_ctx.cfg.auth_password, 64);
+
+	if (timing_safe_compare(user_in, user_cfg, sizeof(user_in)) == 0 &&
+	    timing_safe_compare(pass_hash, stored_hash, 64) == 0) {
 		session = NULL;
 		memset(remote_ip, 0, sizeof(remote_ip));
 		mg_snprintf(remote_ip, sizeof(remote_ip), "%M", mg_print_ip, &c->rem);
@@ -897,19 +1114,36 @@ static void handle_auth_logout(struct mg_connection *c, struct mg_http_message *
 
 	remove_session_by_token(token);
 
-	mg_http_reply(c, 200,
-		      "Content-Type: application/json\r\n"
-		      "Access-Control-Allow-Origin: *\r\n"
-		      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-		      "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
-		      "Set-Cookie: rs_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax\r\n",
-		      "{\"ok\":true}");
+	{
+		char cors[512];
+		char hdrs[1024];
+		snprintf(hdrs, sizeof(hdrs),
+			 "Content-Type: application/json\r\n%s"
+			 "Set-Cookie: rs_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax\r\n",
+			 cors_origin_header(cors, sizeof(cors)));
+		mg_http_reply(c, 200, hdrs, "{\"ok\":true}");
+	}
+}
+
+static const char *cors_origin_header(char *buf, size_t buf_len)
+{
+	if (g_ctx.cfg.cors_origin[0] == '\0') {
+		buf[0] = '\0';
+		return buf;
+	}
+	snprintf(buf, buf_len,
+		 "Access-Control-Allow-Origin: %s\r\n"
+		 "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
+		 "Access-Control-Allow-Headers: Content-Type, Authorization\r\n",
+		 g_ctx.cfg.cors_origin);
+	return buf;
 }
 
 static void json_printf(struct mg_connection *c, int status, const char *fmt, ...)
 {
 	char body[65536];
 	char headers[1024];
+	char cors[512];
 	char cookie_token[SESSION_TOKEN_LEN * 2 + 1];
 	va_list ap;
 	int n;
@@ -928,10 +1162,8 @@ static void json_printf(struct mg_connection *c, int status, const char *fmt, ..
 	body[n] = '\0';
 
 	snprintf(headers, sizeof(headers),
-		 "Content-Type: application/json\r\n"
-		 "Access-Control-Allow-Origin: *\r\n"
-		 "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-		 "Access-Control-Allow-Headers: Content-Type, Authorization\r\n");
+		 "Content-Type: application/json\r\n%s",
+		 cors_origin_header(cors, sizeof(cors)));
 
 	if (auth_take_pending_cookie(c->id, cookie_token, sizeof(cookie_token))) {
 		size_t off = strlen(headers);
@@ -1062,65 +1294,236 @@ static void json_escape(const char *src, char *dst, size_t dst_len)
 	dst[di] = '\0';
 }
 
-static int build_cmd(char *out, size_t out_len, const char *cmd)
+static int tokenize_cmd_simple(const char *cmd, char *storage, size_t storage_len,
+			       char *argv[], size_t argv_len)
 {
-	if (!out || out_len == 0 || !cmd)
+	char *saveptr;
+	char *tok;
+	size_t argc = 0;
+	size_t cmd_len;
+
+	if (!cmd || !storage || storage_len == 0 || !argv || argv_len < 2)
+		return -EINVAL;
+
+	while (*cmd && isspace((unsigned char) *cmd))
+		cmd++;
+	if (*cmd == '\0')
+		return -EINVAL;
+
+	cmd_len = strlen(cmd);
+	if (cmd_len + 1 > storage_len)
+		return -ENAMETOOLONG;
+
+	memcpy(storage, cmd, cmd_len + 1);
+	tok = strtok_r(storage, " \t\r\n", &saveptr);
+	while (tok) {
+		if (argc + 1 >= argv_len)
+			return -E2BIG;
+		argv[argc++] = tok;
+		tok = strtok_r(NULL, " \t\r\n", &saveptr);
+	}
+	if (argc == 0)
+		return -EINVAL;
+	argv[argc] = NULL;
+	return 0;
+}
+
+static int safe_exec(const char *path, char *const argv[])
+{
+	char *ns_argv[96];
+	char *const *exec_argv = argv;
+	const char *exec_path = path;
+	int status;
+	pid_t pid;
+
+	if (!path || !argv || !argv[0])
 		return -EINVAL;
 
 	if (g_ctx.cfg.use_namespace) {
-		if (snprintf(out, out_len, "nsenter --net=/proc/1/ns/net -- /bin/sh -c '%s'", cmd)
-		    >= (int) out_len)
-			return -ENAMETOOLONG;
-	} else {
-		if (snprintf(out, out_len, "%s", cmd) >= (int) out_len)
-			return -ENAMETOOLONG;
+		size_t i = 0;
+		ns_argv[i++] = "nsenter";
+		ns_argv[i++] = "--net=/proc/1/ns/net";
+		ns_argv[i++] = "--";
+		while (argv[i - 3] && i + 1 < (sizeof(ns_argv) / sizeof(ns_argv[0]))) {
+			ns_argv[i] = argv[i - 3];
+			i++;
+		}
+		if (argv[i - 3])
+			return -E2BIG;
+		ns_argv[i] = NULL;
+		exec_path = "nsenter";
+		exec_argv = ns_argv;
 	}
 
+	pid = fork();
+	if (pid < 0)
+		return -errno;
+
+	if (pid == 0) {
+		execvp(exec_path, exec_argv);
+		_exit(127);
+	}
+
+	for (;;) {
+		if (waitpid(pid, &status, 0) < 0) {
+			if (errno == EINTR)
+				continue;
+			return -errno;
+		}
+		break;
+	}
+
+	if (WIFEXITED(status))
+		return WEXITSTATUS(status);
+	if (WIFSIGNALED(status))
+		return 128 + WTERMSIG(status);
+	return -ECHILD;
+}
+
+static int safe_exec_output(const char *path, char *const argv[], char *buf, size_t buf_len)
+{
+	char *ns_argv[96];
+	char *const *exec_argv = argv;
+	const char *exec_path = path;
+	int status;
+	int pipefd[2];
+	pid_t pid;
+	size_t off = 0;
+
+	if (!path || !argv || !argv[0] || !buf || buf_len == 0)
+		return -EINVAL;
+
+	if (g_ctx.cfg.use_namespace) {
+		size_t i = 0;
+		ns_argv[i++] = "nsenter";
+		ns_argv[i++] = "--net=/proc/1/ns/net";
+		ns_argv[i++] = "--";
+		while (argv[i - 3] && i + 1 < (sizeof(ns_argv) / sizeof(ns_argv[0]))) {
+			ns_argv[i] = argv[i - 3];
+			i++;
+		}
+		if (argv[i - 3])
+			return -E2BIG;
+		ns_argv[i] = NULL;
+		exec_path = "nsenter";
+		exec_argv = ns_argv;
+	}
+
+	if (pipe(pipefd) != 0)
+		return -errno;
+
+	pid = fork();
+	if (pid < 0) {
+		int e = errno;
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return -e;
+	}
+
+	if (pid == 0) {
+		close(pipefd[0]);
+		if (dup2(pipefd[1], STDOUT_FILENO) < 0)
+			_exit(127);
+		close(pipefd[1]);
+		execvp(exec_path, exec_argv);
+		_exit(127);
+	}
+
+	close(pipefd[1]);
+	buf[0] = '\0';
+	while (off + 1 < buf_len) {
+		ssize_t n = read(pipefd[0], buf + off, buf_len - off - 1);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			close(pipefd[0]);
+			return -errno;
+		}
+		if (n == 0)
+			break;
+		off += (size_t) n;
+	}
+	buf[off] = '\0';
+	close(pipefd[0]);
+
+	for (;;) {
+		if (waitpid(pid, &status, 0) < 0) {
+			if (errno == EINTR)
+				continue;
+			return -errno;
+		}
+		break;
+	}
+
+	if (WIFEXITED(status))
+		return WEXITSTATUS(status);
+	if (WIFSIGNALED(status))
+		return 128 + WTERMSIG(status);
+	return -ECHILD;
+}
+
+static int build_cmd(char *out, size_t out_len, const char *cmd)
+{
+	const char *start;
+	size_t len;
+
+	if (!out || out_len == 0 || !cmd)
+		return -EINVAL;
+
+	start = cmd;
+	while (*start && isspace((unsigned char) *start))
+		start++;
+	if (*start == '\0')
+		return -EINVAL;
+
+	len = strlen(start);
+	if (len + 1 > out_len)
+		return -ENAMETOOLONG;
+
+	memcpy(out, start, len + 1);
 	return 0;
 }
 
 static int run_cmd_json(const char *cmd, char *buf, size_t buf_len)
 {
 	char actual[1024];
-	FILE *fp;
-	size_t off = 0;
+	char storage[1024];
+	char *argv[64];
+	int rc;
 
 	if (!cmd || !buf || buf_len == 0)
 		return -EINVAL;
 
-	if (build_cmd(actual, sizeof(actual), cmd) != 0)
-		return -EINVAL;
+	rc = build_cmd(actual, sizeof(actual), cmd);
+	if (rc != 0)
+		return rc;
 
-	fp = popen(actual, "r");
-	if (!fp)
-		return -errno;
+	rc = tokenize_cmd_simple(actual, storage, sizeof(storage), argv, sizeof(argv) / sizeof(argv[0]));
+	if (rc != 0)
+		return rc;
 
-	buf[0] = '\0';
-	while (!feof(fp) && off + 1 < buf_len) {
-		size_t n = fread(buf + off, 1, buf_len - off - 1, fp);
-		off += n;
-		if (n == 0)
-			break;
-	}
-	buf[off] = '\0';
-
-	if (pclose(fp) < 0)
-		return -errno;
-	return 0;
+	return safe_exec_output(argv[0], argv, buf, buf_len);
 }
 
 static int cmd_system(const char *cmd)
 {
 	char actual[1024];
-	int ret;
+	char storage[1024];
+	char *argv[64];
+	int rc;
 
-	if (build_cmd(actual, sizeof(actual), cmd) != 0)
+	if (!cmd)
 		return -EINVAL;
 
-	ret = system(actual);
-	if (ret < 0)
-		return -errno;
-	return ret;
+	rc = build_cmd(actual, sizeof(actual), cmd);
+	if (rc != 0)
+		return rc;
+
+	rc = tokenize_cmd_simple(actual, storage, sizeof(storage), argv, sizeof(argv) / sizeof(argv[0]));
+	if (rc != 0)
+		return rc;
+
+	return safe_exec(argv[0], argv);
 }
 
 void mgmtd_default_config(struct mgmtd_config *cfg)
@@ -1136,10 +1539,15 @@ void mgmtd_default_config(struct mgmtd_config *cfg)
 	cfg->ws_poll_ms = MGMTD_WS_POLL_MS;
 	cfg->auth_enabled = 0;
 	strncpy(cfg->auth_user, "admin", sizeof(cfg->auth_user) - 1);
-	strncpy(cfg->auth_password, "rswitch", sizeof(cfg->auth_password) - 1);
+	/* No default password — must be configured */
+	strncpy(cfg->auth_password, "", sizeof(cfg->auth_password) - 1);
+	if (generate_salt(cfg->auth_salt, sizeof(cfg->auth_salt)) != 0)
+		strncpy(cfg->auth_salt, "00000000000000000000000000000000",
+			sizeof(cfg->auth_salt) - 1);
 	cfg->session_timeout = 3600;
 	cfg->rate_limit_max_fails = 5;
 	cfg->rate_limit_lockout_sec = 300;
+	cfg->cors_origin[0] = '\0';
 }
 
 void api_system_register(void)
@@ -1319,6 +1727,8 @@ static void cleanup_stale_port_configs(void)
 				__u64 mask = 1ULL << bit_pos;
 				if ((vm.tagged_members[arr_idx] & mask) || (vm.untagged_members[arr_idx] & mask)) {
 					unsigned int ifidx = (unsigned int)(arr_idx * 64 + bit_pos + 1);
+					if (ifidx == 0)
+						continue;
 					if (!ifindex_exists(ifidx)) {
 						vm.tagged_members[arr_idx] &= ~mask;
 						vm.untagged_members[arr_idx] &= ~mask;
@@ -1832,7 +2242,7 @@ static void handle_system_reboot(struct mg_connection *c, struct mg_http_message
 	json_printf(c, 200, "{\"status\":\"rebooting\"}");
 	c->is_draining = 1;
 	sync();
-	system("reboot");
+	safe_exec("/sbin/reboot", (char *const[]) {"reboot", NULL});
 }
 
 static void handle_system_shutdown(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -1845,7 +2255,7 @@ static void handle_system_shutdown(struct mg_connection *c, struct mg_http_messa
 	json_printf(c, 200, "{\"status\":\"shutting_down\"}");
 	c->is_draining = 1;
 	sync();
-	system("shutdown -h now");
+	safe_exec("/sbin/shutdown", (char *const[]) {"/sbin/shutdown", "-h", "now", NULL});
 }
 
 static void handle_network_get(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -1853,24 +2263,41 @@ static void handle_network_get(struct mg_connection *c, struct mg_http_message *
 	struct mgmtd_ctx *ctx = userdata;
 	char current_ip[64] = "";
 	char gw_buf[128] = "";
-	char cmd[512];
-	FILE *fp;
+	char route_buf[1024];
+	char *argv[10];
+	char *via;
+	char *end;
 
 	(void) hm;
 	if (!ctx) ctx = &g_ctx;
 
 	rs_mgmt_iface_get_ip(&ctx->mgmt_cfg, current_ip, sizeof(current_ip));
 
-	snprintf(cmd, sizeof(cmd),
-		 "ip netns exec %s ip -4 route show default 2>/dev/null | grep -oP 'via \\K[^ ]+'",
-		 ctx->mgmt_cfg.mgmt_ns);
-	fp = popen(cmd, "r");
-	if (fp) {
-		if (fgets(gw_buf, sizeof(gw_buf), fp)) {
-			char *nl = strchr(gw_buf, '\n');
-			if (nl) *nl = '\0';
+	argv[0] = "ip";
+	argv[1] = "netns";
+	argv[2] = "exec";
+	argv[3] = ctx->mgmt_cfg.mgmt_ns;
+	argv[4] = "ip";
+	argv[5] = "-4";
+	argv[6] = "route";
+	argv[7] = "show";
+	argv[8] = "default";
+	argv[9] = NULL;
+	if (safe_exec_output("ip", argv, route_buf, sizeof(route_buf)) == 0) {
+		via = strstr(route_buf, "via ");
+		if (via) {
+			via += 4;
+			end = via;
+			while (*end && !isspace((unsigned char) *end))
+				end++;
+			if (end > via) {
+				size_t n = (size_t) (end - via);
+				if (n >= sizeof(gw_buf))
+					n = sizeof(gw_buf) - 1;
+				memcpy(gw_buf, via, n);
+				gw_buf[n] = '\0';
+			}
 		}
-		pclose(fp);
 	}
 
 	json_printf(c, 200,
@@ -1983,7 +2410,8 @@ static int ifindex_to_name_sysfs(__u32 ifindex, char *out, size_t out_sz)
 static void handle_ports_list(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
 	__u32 key, next;
-	char out[65536];
+	char *out = malloc(65536);
+	size_t out_sz = 65536;
 	size_t off = 0;
 	int first = 1;
 	int port_id = 0;
@@ -1991,12 +2419,18 @@ static void handle_ports_list(struct mg_connection *c, struct mg_http_message *h
 	(void) hm;
 	(void) userdata;
 
-	if (mgmtd_maps_ensure() != 0 || g_maps.port_config_fd < 0) {
-		json_printf(c, 503, "{\"ports\":[]}");
+	if (!out) {
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
 		return;
 	}
 
-	off += (size_t) snprintf(out + off, sizeof(out) - off, "{\"ports\":[");
+	if (mgmtd_maps_ensure() != 0 || g_maps.port_config_fd < 0) {
+		json_printf(c, 503, "{\"ports\":[]}");
+		free(out);
+		return;
+	}
+
+	off += (size_t) snprintf(out + off, out_sz - off, "{\"ports\":[");
 	if (bpf_map_get_next_key(g_maps.port_config_fd, NULL, &next) == 0) {
 		while (1) {
 			struct rs_port_config p;
@@ -2046,7 +2480,7 @@ static void handle_ports_list(struct mg_connection *c, struct mg_http_message *h
 					tx_pkt = st.tx_packets;
 				}
 
-				off += (size_t) snprintf(out + off, sizeof(out) - off,
+				off += (size_t) snprintf(out + off, out_sz - off,
 						 "%s{\"port_id\":%d,\"ifindex\":%u,\"name\":\"%s\"," 
 						 "\"enabled\":%u,\"admin_state\":\"%s\"," 
 						 "\"link_up\":%s,\"speed\":%d," 
@@ -2066,13 +2500,14 @@ next_port:
 			key = next;
 			if (bpf_map_get_next_key(g_maps.port_config_fd, &key, &next) != 0)
 				break;
-			if (off + 512 >= sizeof(out))
+			if (off + 512 >= out_sz)
 				break;
 		}
 	}
 
-	snprintf(out + off, sizeof(out) - off, "]}");
+	snprintf(out + off, out_sz - off, "]}");
 	json_printf(c, 200, "%s", out);
+	free(out);
 }
 
 static void handle_port_stats(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -2245,7 +2680,8 @@ static void handle_port_config_update(struct mg_connection *c, struct mg_http_me
 
 static void handle_modules_list(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
-	char out[65536];
+	char *out = malloc(65536);
+	size_t out_sz = 65536;
 	size_t off = 0;
 	int first = 1;
 	int i;
@@ -2253,9 +2689,14 @@ static void handle_modules_list(struct mg_connection *c, struct mg_http_message 
 	(void) hm;
 	(void) userdata;
 
+	if (!out) {
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
+		return;
+	}
+
 	mgmtd_maps_ensure();
 
-	off += (size_t) snprintf(out + off, sizeof(out) - off, "{\"modules\":[");
+	off += (size_t) snprintf(out + off, out_sz - off, "{\"modules\":[");
 
 	for (i = 0; i < g_ctx.profile_module_count; i++) {
 		struct rs_module_stats st;
@@ -2279,7 +2720,7 @@ static void handle_modules_list(struct mg_connection *c, struct mg_http_message 
 			}
 		}
 
-		off += (size_t) snprintf(out + off, sizeof(out) - off,
+		off += (size_t) snprintf(out + off, out_sz - off,
 					 "%s{\"name\":\"%s\",\"module_id\":%d,"
 					 "\"type\":\"%s\",\"state\":\"loaded\",\"loaded\":true,"
 					 "\"packets\":%llu,\"drops\":%llu,"
@@ -2296,12 +2737,13 @@ static void handle_modules_list(struct mg_connection *c, struct mg_http_message 
 					 (unsigned long long) drops,
 					 (unsigned long long) bytes);
 		first = 0;
-		if (off + 512 >= sizeof(out))
+		if (off + 512 >= out_sz)
 			break;
 	}
 
-	snprintf(out + off, sizeof(out) - off, "]}");
+	snprintf(out + off, out_sz - off, "]}");
 	json_printf(c, 200, "%s", out);
+	free(out);
 }
 
 static int resolve_module_by_name(struct mg_http_message *hm, const char *prefix,
@@ -2475,26 +2917,33 @@ static void handle_module_config_update(struct mg_connection *c, struct mg_http_
 static void handle_vlans_list(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
 	__u16 key, next;
-	char out[65536];
+	char *out = malloc(65536);
+	size_t out_sz = 65536;
 	size_t off = 0;
 	int first = 1;
 
 	(void) hm;
 	(void) userdata;
 
-	if (mgmtd_maps_ensure() != 0 || g_maps.vlan_fd < 0) {
-		json_printf(c, 503, "{\"vlans\":[]}");
+	if (!out) {
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
 		return;
 	}
 
-	off += (size_t) snprintf(out + off, sizeof(out) - off, "{\"vlans\":[");
+	if (mgmtd_maps_ensure() != 0 || g_maps.vlan_fd < 0) {
+		json_printf(c, 503, "{\"vlans\":[]}");
+		free(out);
+		return;
+	}
+
+	off += (size_t) snprintf(out + off, out_sz - off, "{\"vlans\":[");
 	if (bpf_map_get_next_key(g_maps.vlan_fd, NULL, &next) == 0) {
 		while (1) {
 			struct rs_vlan_members v;
 			if (bpf_map_lookup_elem(g_maps.vlan_fd, &next, &v) == 0) {
 				int i, j;
-				off += (size_t) snprintf(out + off, sizeof(out) - off,
-						 "%s{\"id\":%u,\"vlan_id\":%u,\"name\":\"VLAN %u\","
+				off += (size_t) snprintf(out + off, out_sz - off,
+						 "%s{\"id\":%u,\"vlan_id\":%u,\"name\":\"VLAN %u\"," 
 						 "\"member_count\":%u,\"tagged_ports\":[",
 						 first ? "" : ",", v.vlan_id, v.vlan_id, v.vlan_id,
 						 v.member_count);
@@ -2505,15 +2954,16 @@ static void handle_vlans_list(struct mg_connection *c, struct mg_http_message *h
 						for (j = 0; j < 64; j++) {
 							if (v.tagged_members[i] & (1ULL << j)) {
 								int ifidx = i * 64 + j + 1;
-								off += (size_t) snprintf(out + off, sizeof(out) - off,
-										 "%s%d", tp_first ? "" : ",", ifidx);
+								if (ifidx == 0) continue;
+							off += (size_t) snprintf(out + off, out_sz - off,
+									 "%s%d", tp_first ? "" : ",", ifidx);
 								tp_first = 0;
 							}
 						}
 					}
 				}
 
-				off += (size_t) snprintf(out + off, sizeof(out) - off,
+				off += (size_t) snprintf(out + off, out_sz - off,
 						 "],\"untagged_ports\":[");
 
 				{
@@ -2522,8 +2972,9 @@ static void handle_vlans_list(struct mg_connection *c, struct mg_http_message *h
 						for (j = 0; j < 64; j++) {
 							if (v.untagged_members[i] & (1ULL << j)) {
 								int ifidx = i * 64 + j + 1;
-								off += (size_t) snprintf(out + off, sizeof(out) - off,
-										 "%s%d", up_first ? "" : ",", ifidx);
+								if (ifidx == 0) continue;
+							off += (size_t) snprintf(out + off, out_sz - off,
+									 "%s%d", up_first ? "" : ",", ifidx);
 								up_first = 0;
 							}
 						}
@@ -2531,7 +2982,7 @@ static void handle_vlans_list(struct mg_connection *c, struct mg_http_message *h
 				}
 
 				/* Add port_names object: maps ifindex -> interface name */
-				off += (size_t) snprintf(out + off, sizeof(out) - off,
+				off += (size_t) snprintf(out + off, out_sz - off,
 						 "],\"port_names\":{");
 				{
 					int pn_first = 1;
@@ -2540,12 +2991,13 @@ static void handle_vlans_list(struct mg_connection *c, struct mg_http_message *h
 							__u64 mask = 1ULL << j;
 							if ((v.tagged_members[i] & mask) || (v.untagged_members[i] & mask)) {
 								int ifidx = i * 64 + j + 1;
+								if (ifidx == 0) continue;
 								char name[IF_NAMESIZE] = "";
 								if_indextoname((unsigned int)ifidx, name);
 								if (name[0] == '\0')
 									ifindex_to_name_sysfs(ifidx, name, sizeof(name));
 								if (name[0] != '\0') {
-									off += (size_t) snprintf(out + off, sizeof(out) - off,
+									off += (size_t) snprintf(out + off, out_sz - off,
 											 "%s\"%d\":\"%s\"",
 											 pn_first ? "" : ",", ifidx, name);
 									pn_first = 0;
@@ -2555,20 +3007,21 @@ static void handle_vlans_list(struct mg_connection *c, struct mg_http_message *h
 					}
 				}
 
-				off += (size_t) snprintf(out + off, sizeof(out) - off, "}}");
+				off += (size_t) snprintf(out + off, out_sz - off, "}}");
 				first = 0;
 			}
 
 			key = next;
 			if (bpf_map_get_next_key(g_maps.vlan_fd, &key, &next) != 0)
 				break;
-			if (off + 512 >= sizeof(out))
+			if (off + 512 >= out_sz)
 				break;
 		}
 	}
 
-	snprintf(out + off, sizeof(out) - off, "]}");
+	snprintf(out + off, out_sz - off, "]}");
 	json_printf(c, 200, "%s", out);
+	free(out);
 }
 
 /*
@@ -2597,7 +3050,7 @@ struct port_vlan_info {
 
 static void sync_port_vlan_config(void)
 {
-	struct port_vlan_info pinfo[SYNC_MAX_PORTS];
+	struct port_vlan_info *pinfo;
 	__u16 vlan_key, vlan_next;
 	struct rs_vlan_members vm;
 	int i, j, port_idx;
@@ -2605,7 +3058,9 @@ static void sync_port_vlan_config(void)
 	if (g_maps.vlan_fd < 0 || g_maps.port_config_fd < 0)
 		return;
 
-	memset(pinfo, 0, sizeof(pinfo));
+	pinfo = calloc(SYNC_MAX_PORTS, sizeof(*pinfo));
+	if (!pinfo)
+		return;
 
 	/* Pass 1: scan all VLANs, accumulate per-port tagged/untagged lists */
 	if (bpf_map_get_next_key(g_maps.vlan_fd, NULL, &vlan_next) != 0)
@@ -2618,7 +3073,7 @@ static void sync_port_vlan_config(void)
 
 		for (i = 0; i < 4; i++) {
 			for (j = 0; j < 64; j++) {
-				port_idx = i * 64 + j + 1;  /* ifindex is 1-based */
+				port_idx = i * 64 + j + 1;  /* +1: bitmap uses (ifindex-1) convention */
 				if (port_idx <= 0 || port_idx >= SYNC_MAX_PORTS)
 					continue;
 
@@ -2712,6 +3167,8 @@ apply:
 				    cfg.pvid, pi->tagged_count, pi->untagged_count);
 		}
 	}
+
+	free(pinfo);
 }
 
 static void handle_vlan_create(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -2746,8 +3203,8 @@ static void handle_vlan_create(struct mg_connection *c, struct mg_http_message *
 		if (port < 0)
 			break;
 		if (port > 0 && port <= 256) {
-			int word = (port - 1) / 64;
-			int bit = (port - 1) % 64;
+			int word = port / 64;  /* H-8: match BPF ifindex/64 indexing */
+			int bit = port % 64;
 			v.tagged_members[word] |= (1ULL << bit);
 			member_count++;
 		}
@@ -2759,8 +3216,8 @@ static void handle_vlan_create(struct mg_connection *c, struct mg_http_message *
 		if (port < 0)
 			break;
 		if (port > 0 && port <= 256) {
-			int word = (port - 1) / 64;
-			int bit = (port - 1) % 64;
+			int word = port / 64;  /* H-8: match BPF ifindex/64 indexing */
+			int bit = port % 64;
 			v.untagged_members[word] |= (1ULL << bit);
 			member_count++;
 		}
@@ -2819,8 +3276,8 @@ static void handle_vlan_update(struct mg_connection *c, struct mg_http_message *
 		if (port < 0)
 			break;
 		if (port > 0 && port <= 256) {
-			int word = (port - 1) / 64;
-			int bit = (port - 1) % 64;
+			int word = port / 64;  /* H-8: match BPF ifindex/64 indexing */
+			int bit = port % 64;
 			v.tagged_members[word] |= (1ULL << bit);
 			member_count++;
 		}
@@ -2832,8 +3289,8 @@ static void handle_vlan_update(struct mg_connection *c, struct mg_http_message *
 		if (port < 0)
 			break;
 		if (port > 0 && port <= 256) {
-			int word = (port - 1) / 64;
-			int bit = (port - 1) % 64;
+			int word = port / 64;  /* H-8: match BPF ifindex/64 indexing */
+			int bit = port % 64;
 			v.untagged_members[word] |= (1ULL << bit);
 			member_count++;
 		}
@@ -2885,20 +3342,26 @@ static void handle_vlan_delete(struct mg_connection *c, struct mg_http_message *
 
 static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
-	char out[65536];
+	char *out = malloc(65536);
+	size_t out_sz = 65536;
 	size_t off = 0;
 	int first = 1;
-	int acl_idx = 0;
 
 	(void) hm;
 	(void) userdata;
 
-	if (mgmtd_maps_ensure() != 0) {
-		json_printf(c, 200, "{\"acls\":[]}");
+	if (!out) {
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
 		return;
 	}
 
-	off += (size_t) snprintf(out + off, sizeof(out) - off, "{\"acls\":[");
+	if (mgmtd_maps_ensure() != 0) {
+		json_printf(c, 200, "{\"acls\":[]}");
+		free(out);
+		return;
+	}
+
+	off += (size_t) snprintf(out + off, out_sz - off, "{\"acls\":[");
 
 	if (g_maps.acl_5tuple_fd >= 0) {
 		struct acl_5tuple_key k, nk;
@@ -2915,22 +3378,25 @@ static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm
 				inet_ntop(AF_INET, &sa, src, sizeof(src));
 				inet_ntop(AF_INET, &da, dst, sizeof(dst));
 
-				off += (size_t) snprintf(out + off, sizeof(out) - off,
+				if (res.rule_id == 0) {
+					res.rule_id = acl_next_rule_id();
+					bpf_map_update_elem(g_maps.acl_5tuple_fd, &nk, &res, BPF_ANY);
+				}
+				off += (size_t) snprintf(out + off, out_sz - off,
 						 "%s{\"id\":%d,\"type\":\"5tuple\","
 						 "\"priority\":%u,\"action\":\"%s\","
 						 "\"protocol\":%u,\"src_ip\":\"%s\",\"src_port\":%u,"
 						 "\"dst_ip\":\"%s\",\"dst_port\":%u,\"hits\":0}",
 						 first ? "" : ",",
-						 acl_idx, res.priority,
+						 res.rule_id, res.priority,
 						 res.action == 0 ? "permit" : (res.action == 1 ? "deny" : "redirect"),
 						 nk.proto, src, ntohs(nk.sport),
 						 dst, ntohs(nk.dport));
 				first = 0;
-				acl_idx++;
 			}
 			k = nk;
 			has_prev = 1;
-			if (off + 512 >= sizeof(out))
+			if (off + 512 >= out_sz)
 				break;
 		}
 	}
@@ -2948,21 +3414,24 @@ static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm
 				da.s_addr = nk.dst_ip;
 				inet_ntop(AF_INET, &da, dst, sizeof(dst));
 
-				off += (size_t) snprintf(out + off, sizeof(out) - off,
+				if (res.rule_id == 0) {
+					res.rule_id = acl_next_rule_id();
+					bpf_map_update_elem(g_maps.acl_pdp_fd, &nk, &res, BPF_ANY);
+				}
+				off += (size_t) snprintf(out + off, out_sz - off,
 						 "%s{\"id\":%d,\"type\":\"proto_dst\","
 						 "\"priority\":%u,\"action\":\"%s\","
 						 "\"protocol\":%u,\"src_ip\":\"any\",\"src_port\":0,"
 						 "\"dst_ip\":\"%s\",\"dst_port\":%u,\"hits\":0}",
 						 first ? "" : ",",
-						 acl_idx, res.priority,
+						 res.rule_id, res.priority,
 						 res.action == 0 ? "permit" : (res.action == 1 ? "deny" : "redirect"),
 						 nk.proto, dst, ntohs(nk.dst_port));
 				first = 0;
-				acl_idx++;
 			}
 			k = nk;
 			has_prev = 1;
-			if (off + 512 >= sizeof(out))
+			if (off + 512 >= out_sz)
 				break;
 		}
 	}
@@ -2980,21 +3449,24 @@ static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm
 				sa.s_addr = nk.src_ip;
 				inet_ntop(AF_INET, &sa, src, sizeof(src));
 
-				off += (size_t) snprintf(out + off, sizeof(out) - off,
+				if (res.rule_id == 0) {
+					res.rule_id = acl_next_rule_id();
+					bpf_map_update_elem(g_maps.acl_psp_fd, &nk, &res, BPF_ANY);
+				}
+				off += (size_t) snprintf(out + off, out_sz - off,
 						 "%s{\"id\":%d,\"type\":\"proto_src\","
 						 "\"priority\":%u,\"action\":\"%s\","
 						 "\"protocol\":%u,\"src_ip\":\"%s\",\"src_port\":0,"
 						 "\"dst_ip\":\"any\",\"dst_port\":%u,\"hits\":0}",
 						 first ? "" : ",",
-						 acl_idx, res.priority,
+						 res.rule_id, res.priority,
 						 res.action == 0 ? "permit" : (res.action == 1 ? "deny" : "redirect"),
 						 nk.proto, src, ntohs(nk.dst_port));
 				first = 0;
-				acl_idx++;
 			}
 			k = nk;
 			has_prev = 1;
-			if (off + 512 >= sizeof(out))
+			if (off + 512 >= out_sz)
 				break;
 		}
 	}
@@ -3007,21 +3479,24 @@ static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm
 		memset(&k, 0, sizeof(k));
 		while (bpf_map_get_next_key(g_maps.acl_pp_fd, has_prev ? &k : NULL, &nk) == 0) {
 			if (bpf_map_lookup_elem(g_maps.acl_pp_fd, &nk, &res) == 0) {
-				off += (size_t) snprintf(out + off, sizeof(out) - off,
+				if (res.rule_id == 0) {
+					res.rule_id = acl_next_rule_id();
+					bpf_map_update_elem(g_maps.acl_pp_fd, &nk, &res, BPF_ANY);
+				}
+				off += (size_t) snprintf(out + off, out_sz - off,
 						 "%s{\"id\":%d,\"type\":\"proto_port\","
 						 "\"priority\":%u,\"action\":\"%s\","
 						 "\"protocol\":%u,\"src_ip\":\"any\",\"src_port\":0,"
 						 "\"dst_ip\":\"any\",\"dst_port\":%u,\"hits\":0}",
 						 first ? "" : ",",
-						 acl_idx, res.priority,
+						 res.rule_id, res.priority,
 						 res.action == 0 ? "permit" : (res.action == 1 ? "deny" : "redirect"),
 						 nk.proto, ntohs(nk.dst_port));
 				first = 0;
-				acl_idx++;
 			}
 			k = nk;
 			has_prev = 1;
-			if (off + 512 >= sizeof(out))
+			if (off + 512 >= out_sz)
 				break;
 		}
 	}
@@ -3051,22 +3526,25 @@ static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm
 					strcpy(dst, "any");
 				}
 
-				off += (size_t) snprintf(out + off, sizeof(out) - off,
+				if (val.rule_id == 0) {
+					val.rule_id = acl_next_rule_id();
+					bpf_map_update_elem(g_maps.acl_lpm_src_fd, &nk, &val, BPF_ANY);
+				}
+				off += (size_t) snprintf(out + off, out_sz - off,
 						 "%s{\"id\":%d,\"type\":\"lpm_src\","
 						 "\"priority\":%u,\"action\":\"%s\","
 						 "\"protocol\":%u,\"src_ip\":\"%s\",\"src_port\":%u,"
 						 "\"dst_ip\":\"%s\",\"dst_port\":%u,\"hits\":0}",
 						 first ? "" : ",",
-						 acl_idx, val.priority,
+						 val.rule_id, val.priority,
 						 val.action == 0 ? "permit" : (val.action == 1 ? "deny" : "redirect"),
 						 val.proto, src, ntohs(val.sport),
 						 dst, ntohs(val.dport));
 				first = 0;
-				acl_idx++;
 			}
 			k = nk;
 			has_prev = 1;
-			if (off + 512 >= sizeof(out))
+			if (off + 512 >= out_sz)
 				break;
 		}
 	}
@@ -3096,28 +3574,32 @@ static void handle_acls_list(struct mg_connection *c, struct mg_http_message *hm
 					strcpy(src, "any");
 				}
 
-				off += (size_t) snprintf(out + off, sizeof(out) - off,
+				if (val.rule_id == 0) {
+					val.rule_id = acl_next_rule_id();
+					bpf_map_update_elem(g_maps.acl_lpm_dst_fd, &nk, &val, BPF_ANY);
+				}
+				off += (size_t) snprintf(out + off, out_sz - off,
 						 "%s{\"id\":%d,\"type\":\"lpm_dst\","
 						 "\"priority\":%u,\"action\":\"%s\","
 						 "\"protocol\":%u,\"src_ip\":\"%s\",\"src_port\":%u,"
 						 "\"dst_ip\":\"%s\",\"dst_port\":%u,\"hits\":0}",
 						 first ? "" : ",",
-						 acl_idx, val.priority,
+						 val.rule_id, val.priority,
 						 val.action == 0 ? "permit" : (val.action == 1 ? "deny" : "redirect"),
 						 val.proto, src, ntohs(val.sport),
 						 dst, ntohs(val.dport));
 				first = 0;
-				acl_idx++;
 			}
 			k = nk;
 			has_prev = 1;
-			if (off + 512 >= sizeof(out))
+			if (off + 512 >= out_sz)
 				break;
 		}
 	}
 
-	snprintf(out + off, sizeof(out) - off, "]}");
+	snprintf(out + off, out_sz - off, "]}");
 	json_printf(c, 200, "%s", out);
+	free(out);
 }
 
 /* Helper: Count total ACL rules across all maps */
@@ -3194,6 +3676,212 @@ static int acl_count_rules(void)
 	return count;
 }
 
+static __u32 acl_next_rule_id(void)
+{
+	if (g_acl_next_rule_id == 0)
+		g_acl_next_rule_id = 1;
+	return g_acl_next_rule_id++;
+}
+
+static int acl_map_foreach(int map_fd, size_t key_size, size_t value_size,
+			   int (*cb)(void *key, void *value, void *ctx),
+			   void *ctx)
+{
+	void *key = NULL, *next = NULL, *val = NULL;
+	int first = 1;
+
+	if (map_fd < 0 || key_size == 0 || value_size == 0 || !cb)
+		return 0;
+
+	key = calloc(1, key_size);
+	next = calloc(1, key_size);
+	val = calloc(1, value_size);
+	if (!key || !next || !val) {
+		free(key);
+		free(next);
+		free(val);
+		return -1;
+	}
+
+	while (bpf_map_get_next_key(map_fd, first ? NULL : key, next) == 0) {
+		if (bpf_map_lookup_elem(map_fd, next, val) == 0) {
+			if (cb(next, val, ctx) != 0)
+				break;
+		}
+		memcpy(key, next, key_size);
+		first = 0;
+	}
+
+	free(key);
+	free(next);
+	free(val);
+	return 0;
+}
+
+struct acl_seed_ctx {
+	int map_fd;
+	__u32 max_rule_id;
+	int assign_missing;
+};
+
+static int acl_seed_result_cb(void *key, void *value, void *ctx)
+{
+	struct acl_seed_ctx *s = ctx;
+	struct acl_result *res = value;
+
+	if (res->rule_id == 0 && s->assign_missing) {
+		res->rule_id = acl_next_rule_id();
+		bpf_map_update_elem(s->map_fd, key, res, BPF_ANY);
+	}
+	if (res->rule_id > s->max_rule_id)
+		s->max_rule_id = res->rule_id;
+	return 0;
+}
+
+static int acl_seed_lpm_cb(void *key, void *value, void *ctx)
+{
+	struct acl_seed_ctx *s = ctx;
+	struct acl_lpm_value *val = value;
+
+	if (val->rule_id == 0 && s->assign_missing) {
+		val->rule_id = acl_next_rule_id();
+		bpf_map_update_elem(s->map_fd, key, val, BPF_ANY);
+	}
+	if (val->rule_id > s->max_rule_id)
+		s->max_rule_id = val->rule_id;
+	return 0;
+}
+
+static void acl_seed_rule_ids_if_needed(void)
+{
+	struct acl_seed_ctx s;
+
+	if (g_acl_rule_ids_seeded)
+		return;
+
+	memset(&s, 0, sizeof(s));
+	s.assign_missing = 0;
+
+	if (g_maps.acl_5tuple_fd >= 0) {
+		s.map_fd = g_maps.acl_5tuple_fd;
+		acl_map_foreach(g_maps.acl_5tuple_fd, sizeof(struct acl_5tuple_key),
+				sizeof(struct acl_result), acl_seed_result_cb, &s);
+	}
+	if (g_maps.acl_pdp_fd >= 0) {
+		s.map_fd = g_maps.acl_pdp_fd;
+		acl_map_foreach(g_maps.acl_pdp_fd, sizeof(struct acl_proto_dstip_port_key),
+				sizeof(struct acl_result), acl_seed_result_cb, &s);
+	}
+	if (g_maps.acl_psp_fd >= 0) {
+		s.map_fd = g_maps.acl_psp_fd;
+		acl_map_foreach(g_maps.acl_psp_fd, sizeof(struct acl_proto_srcip_port_key),
+				sizeof(struct acl_result), acl_seed_result_cb, &s);
+	}
+	if (g_maps.acl_pp_fd >= 0) {
+		s.map_fd = g_maps.acl_pp_fd;
+		acl_map_foreach(g_maps.acl_pp_fd, sizeof(struct acl_proto_port_key),
+				sizeof(struct acl_result), acl_seed_result_cb, &s);
+	}
+	if (g_maps.acl_lpm_src_fd >= 0) {
+		s.map_fd = g_maps.acl_lpm_src_fd;
+		acl_map_foreach(g_maps.acl_lpm_src_fd, sizeof(struct lpm_key),
+				sizeof(struct acl_lpm_value), acl_seed_lpm_cb, &s);
+	}
+	if (g_maps.acl_lpm_dst_fd >= 0) {
+		s.map_fd = g_maps.acl_lpm_dst_fd;
+		acl_map_foreach(g_maps.acl_lpm_dst_fd, sizeof(struct lpm_key),
+				sizeof(struct acl_lpm_value), acl_seed_lpm_cb, &s);
+	}
+
+	g_acl_next_rule_id = (s.max_rule_id == (__u32) -1) ? 1 : (s.max_rule_id + 1);
+	s.assign_missing = 1;
+
+	if (g_maps.acl_5tuple_fd >= 0) {
+		s.map_fd = g_maps.acl_5tuple_fd;
+		acl_map_foreach(g_maps.acl_5tuple_fd, sizeof(struct acl_5tuple_key),
+				sizeof(struct acl_result), acl_seed_result_cb, &s);
+	}
+	if (g_maps.acl_pdp_fd >= 0) {
+		s.map_fd = g_maps.acl_pdp_fd;
+		acl_map_foreach(g_maps.acl_pdp_fd, sizeof(struct acl_proto_dstip_port_key),
+				sizeof(struct acl_result), acl_seed_result_cb, &s);
+	}
+	if (g_maps.acl_psp_fd >= 0) {
+		s.map_fd = g_maps.acl_psp_fd;
+		acl_map_foreach(g_maps.acl_psp_fd, sizeof(struct acl_proto_srcip_port_key),
+				sizeof(struct acl_result), acl_seed_result_cb, &s);
+	}
+	if (g_maps.acl_pp_fd >= 0) {
+		s.map_fd = g_maps.acl_pp_fd;
+		acl_map_foreach(g_maps.acl_pp_fd, sizeof(struct acl_proto_port_key),
+				sizeof(struct acl_result), acl_seed_result_cb, &s);
+	}
+	if (g_maps.acl_lpm_src_fd >= 0) {
+		s.map_fd = g_maps.acl_lpm_src_fd;
+		acl_map_foreach(g_maps.acl_lpm_src_fd, sizeof(struct lpm_key),
+				sizeof(struct acl_lpm_value), acl_seed_lpm_cb, &s);
+	}
+	if (g_maps.acl_lpm_dst_fd >= 0) {
+		s.map_fd = g_maps.acl_lpm_dst_fd;
+		acl_map_foreach(g_maps.acl_lpm_dst_fd, sizeof(struct lpm_key),
+				sizeof(struct acl_lpm_value), acl_seed_lpm_cb, &s);
+	}
+
+	if (s.max_rule_id >= g_acl_next_rule_id)
+		g_acl_next_rule_id = s.max_rule_id + 1;
+	g_acl_rule_ids_seeded = 1;
+}
+
+struct acl_delete_ctx {
+	__u32 target_rule_id;
+	int found;
+	size_t key_size;
+	unsigned char key_data[32];
+};
+
+static int acl_delete_result_find_cb(void *key, void *value, void *ctx)
+{
+	struct acl_result *res = value;
+	struct acl_delete_ctx *d = ctx;
+
+	if (res->rule_id == d->target_rule_id) {
+		memcpy(d->key_data, key, d->key_size);
+		d->found = 1;
+		return 1;
+	}
+	return 0;
+}
+
+static int acl_delete_lpm_find_cb(void *key, void *value, void *ctx)
+{
+	struct acl_lpm_value *val = value;
+	struct acl_delete_ctx *d = ctx;
+
+	if (val->rule_id == d->target_rule_id) {
+		memcpy(d->key_data, key, d->key_size);
+		d->found = 1;
+		return 1;
+	}
+	return 0;
+}
+
+static int acl_find_and_delete_rule(struct acl_delete_ctx *d, int map_fd,
+				    size_t key_size, size_t value_size,
+				    int (*find_cb)(void *key, void *value, void *ctx))
+{
+	if (map_fd < 0)
+		return 0;
+
+	d->key_size = key_size;
+	d->found = 0;
+	acl_map_foreach(map_fd, key_size, value_size, find_cb, d);
+	if (!d->found)
+		return 0;
+
+	bpf_map_delete_elem(map_fd, d->key_data);
+	return 1;
+}
+
 /* Helper: Set ACL enabled state */
 static int acl_set_enabled(int enable)
 {
@@ -3253,6 +3941,7 @@ static void handle_acl_create(struct mg_connection *c, struct mg_http_message *h
 		json_printf(c, 503, "{\"error\":\"acl map unavailable\"}");
 		return;
 	}
+	acl_seed_rule_ids_if_needed();
 
 	memset(&res, 0, sizeof(res));
 
@@ -3313,6 +4002,7 @@ static void handle_acl_create(struct mg_connection *c, struct mg_http_message *h
 	}
 	res.priority = (__u8) (priority > 7 ? 7 : priority);
 	res.stats_id = 0;
+	res.rule_id = acl_next_rule_id();
 
 	/*
 	 * Select appropriate ACL map based on which fields are specified:
@@ -3334,6 +4024,7 @@ static void handle_acl_create(struct mg_connection *c, struct mg_http_message *h
 		lpm_val.log_event = res.log_event;
 		lpm_val.redirect_ifindex = res.redirect_ifindex;
 		lpm_val.stats_id = res.stats_id;
+		lpm_val.rule_id = res.rule_id;
 		lpm_val.priority = res.priority;
 		lpm_val.other_ip = has_dst_ip ? dst_ip : 0;
 		lpm_val.proto = proto;
@@ -3361,6 +4052,7 @@ static void handle_acl_create(struct mg_connection *c, struct mg_http_message *h
 		lpm_val.log_event = res.log_event;
 		lpm_val.redirect_ifindex = res.redirect_ifindex;
 		lpm_val.stats_id = res.stats_id;
+		lpm_val.rule_id = res.rule_id;
 		lpm_val.priority = res.priority;
 		lpm_val.other_ip = has_src_ip ? src_ip : 0;
 		lpm_val.proto = proto;
@@ -3454,13 +4146,14 @@ static void handle_acl_create(struct mg_connection *c, struct mg_http_message *h
 	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_ACL, "acl_add", 1,
 			    "proto=%u src_port=%ld dst_port=%ld action=%u map=%s",
 			    proto, src_port, dst_port, res.action, map_used);
-	json_printf(c, 200, "{\"status\":\"ok\",\"map\":\"%s\"}", map_used);
+	json_printf(c, 200, "{\"status\":\"ok\",\"map\":\"%s\",\"id\":%u}",
+		    map_used, res.rule_id);
 }
 
 static void handle_acl_delete(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
 	int target_id;
-	int cur_id = 0;
+	struct acl_delete_ctx d;
 	int deleted = 0;
 
 	(void) userdata;
@@ -3475,102 +4168,34 @@ static void handle_acl_delete(struct mg_connection *c, struct mg_http_message *h
 		json_printf(c, 503, "{\"error\":\"maps unavailable\"}");
 		return;
 	}
+	acl_seed_rule_ids_if_needed();
 
-	if (g_maps.acl_5tuple_fd >= 0) {
-		struct acl_5tuple_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_5tuple_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_5tuple_fd, &nk);
-				deleted = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
+	memset(&d, 0, sizeof(d));
+	d.target_rule_id = (__u32) target_id;
 
-	if (!deleted && g_maps.acl_pdp_fd >= 0) {
-		struct acl_proto_dstip_port_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_pdp_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_pdp_fd, &nk);
-				deleted = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
-
-	if (!deleted && g_maps.acl_psp_fd >= 0) {
-		struct acl_proto_srcip_port_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_psp_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_psp_fd, &nk);
-				deleted = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
-
-	if (!deleted && g_maps.acl_pp_fd >= 0) {
-		struct acl_proto_port_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_pp_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_pp_fd, &nk);
-				deleted = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
-
-	if (!deleted && g_maps.acl_lpm_src_fd >= 0) {
-		struct lpm_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_lpm_src_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_lpm_src_fd, &nk);
-				deleted = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
-
-	if (!deleted && g_maps.acl_lpm_dst_fd >= 0) {
-		struct lpm_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_lpm_dst_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_lpm_dst_fd, &nk);
-				deleted = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
+	deleted = acl_find_and_delete_rule(&d, g_maps.acl_5tuple_fd,
+					 sizeof(struct acl_5tuple_key), sizeof(struct acl_result),
+					 acl_delete_result_find_cb);
+	if (!deleted)
+		deleted = acl_find_and_delete_rule(&d, g_maps.acl_pdp_fd,
+					 sizeof(struct acl_proto_dstip_port_key), sizeof(struct acl_result),
+					 acl_delete_result_find_cb);
+	if (!deleted)
+		deleted = acl_find_and_delete_rule(&d, g_maps.acl_psp_fd,
+					 sizeof(struct acl_proto_srcip_port_key), sizeof(struct acl_result),
+					 acl_delete_result_find_cb);
+	if (!deleted)
+		deleted = acl_find_and_delete_rule(&d, g_maps.acl_pp_fd,
+					 sizeof(struct acl_proto_port_key), sizeof(struct acl_result),
+					 acl_delete_result_find_cb);
+	if (!deleted)
+		deleted = acl_find_and_delete_rule(&d, g_maps.acl_lpm_src_fd,
+					 sizeof(struct lpm_key), sizeof(struct acl_lpm_value),
+					 acl_delete_lpm_find_cb);
+	if (!deleted)
+		deleted = acl_find_and_delete_rule(&d, g_maps.acl_lpm_dst_fd,
+					 sizeof(struct lpm_key), sizeof(struct acl_lpm_value),
+					 acl_delete_lpm_find_cb);
 
 	if (!deleted) {
 		json_printf(c, 404, "{\"error\":\"acl rule not found\"}");
@@ -3584,13 +4209,13 @@ static void handle_acl_delete(struct mg_connection *c, struct mg_http_message *h
 
 	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_ACL, "acl_delete", 1,
 			    "acl_id=%d", target_id);
-	json_printf(c, 200, "{\"status\":\"deleted\"}");
+	json_printf(c, 200, "{\"status\":\"deleted\",\"id\":%d}", target_id);
 }
 
 static void handle_acl_update(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
 	int target_id;
-	int cur_id = 0;
+	struct acl_delete_ctx d;
 	int found = 0;
 	struct acl_result res;
 	char *action_str, *src_ip_str, *dst_ip_str, *proto_str;
@@ -3614,102 +4239,34 @@ static void handle_acl_update(struct mg_connection *c, struct mg_http_message *h
 		json_printf(c, 503, "{\"error\":\"maps unavailable\"}");
 		return;
 	}
+	acl_seed_rule_ids_if_needed();
 
-	if (g_maps.acl_5tuple_fd >= 0) {
-		struct acl_5tuple_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_5tuple_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_5tuple_fd, &nk);
-				found = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
+	memset(&d, 0, sizeof(d));
+	d.target_rule_id = (__u32) target_id;
 
-	if (!found && g_maps.acl_pdp_fd >= 0) {
-		struct acl_proto_dstip_port_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_pdp_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_pdp_fd, &nk);
-				found = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
-
-	if (!found && g_maps.acl_psp_fd >= 0) {
-		struct acl_proto_srcip_port_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_psp_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_psp_fd, &nk);
-				found = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
-
-	if (!found && g_maps.acl_pp_fd >= 0) {
-		struct acl_proto_port_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_pp_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_pp_fd, &nk);
-				found = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
-
-	if (!found && g_maps.acl_lpm_src_fd >= 0) {
-		struct lpm_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_lpm_src_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_lpm_src_fd, &nk);
-				found = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
-
-	if (!found && g_maps.acl_lpm_dst_fd >= 0) {
-		struct lpm_key k, nk;
-		int has_prev = 0;
-		memset(&k, 0, sizeof(k));
-		while (bpf_map_get_next_key(g_maps.acl_lpm_dst_fd, has_prev ? &k : NULL, &nk) == 0) {
-			if (cur_id == target_id) {
-				bpf_map_delete_elem(g_maps.acl_lpm_dst_fd, &nk);
-				found = 1;
-				break;
-			}
-			cur_id++;
-			k = nk;
-			has_prev = 1;
-		}
-	}
+	found = acl_find_and_delete_rule(&d, g_maps.acl_5tuple_fd,
+				       sizeof(struct acl_5tuple_key), sizeof(struct acl_result),
+				       acl_delete_result_find_cb);
+	if (!found)
+		found = acl_find_and_delete_rule(&d, g_maps.acl_pdp_fd,
+				       sizeof(struct acl_proto_dstip_port_key), sizeof(struct acl_result),
+				       acl_delete_result_find_cb);
+	if (!found)
+		found = acl_find_and_delete_rule(&d, g_maps.acl_psp_fd,
+				       sizeof(struct acl_proto_srcip_port_key), sizeof(struct acl_result),
+				       acl_delete_result_find_cb);
+	if (!found)
+		found = acl_find_and_delete_rule(&d, g_maps.acl_pp_fd,
+				       sizeof(struct acl_proto_port_key), sizeof(struct acl_result),
+				       acl_delete_result_find_cb);
+	if (!found)
+		found = acl_find_and_delete_rule(&d, g_maps.acl_lpm_src_fd,
+				       sizeof(struct lpm_key), sizeof(struct acl_lpm_value),
+				       acl_delete_lpm_find_cb);
+	if (!found)
+		found = acl_find_and_delete_rule(&d, g_maps.acl_lpm_dst_fd,
+				       sizeof(struct lpm_key), sizeof(struct acl_lpm_value),
+				       acl_delete_lpm_find_cb);
 
 	if (!found) {
 		json_printf(c, 404, "{\"error\":\"acl rule not found\"}");
@@ -3771,6 +4328,7 @@ static void handle_acl_update(struct mg_connection *c, struct mg_http_message *h
 	}
 	res.priority = (__u8) (priority > 7 ? 7 : priority);
 	res.stats_id = 0;
+	res.rule_id = (__u32) target_id;
 
 	if (src_is_cidr && has_src_ip) {
 		struct lpm_key key;
@@ -3780,7 +4338,10 @@ static void handle_acl_update(struct mg_connection *c, struct mg_http_message *h
 		key.prefixlen = src_prefixlen;
 		key.addr = src_ip;
 		lpm_val.action = res.action;
+		lpm_val.log_event = res.log_event;
+		lpm_val.redirect_ifindex = res.redirect_ifindex;
 		lpm_val.stats_id = res.stats_id;
+		lpm_val.rule_id = res.rule_id;
 		lpm_val.priority = res.priority;
 		lpm_val.other_ip = has_dst_ip ? dst_ip : 0;
 		lpm_val.proto = proto;
@@ -3802,7 +4363,10 @@ static void handle_acl_update(struct mg_connection *c, struct mg_http_message *h
 		key.prefixlen = dst_prefixlen;
 		key.addr = dst_ip;
 		lpm_val.action = res.action;
+		lpm_val.log_event = res.log_event;
+		lpm_val.redirect_ifindex = res.redirect_ifindex;
 		lpm_val.stats_id = res.stats_id;
+		lpm_val.rule_id = res.rule_id;
 		lpm_val.priority = res.priority;
 		lpm_val.other_ip = has_src_ip ? src_ip : 0;
 		lpm_val.proto = proto;
@@ -3876,24 +4440,32 @@ static void handle_acl_update(struct mg_connection *c, struct mg_http_message *h
 
 	mgmtd_audit_log(AUDIT_SEV_INFO, AUDIT_CAT_ACL, "acl_update", 1,
 			    "acl_id=%d proto=%u action=%u map=%s", target_id, proto, res.action, map_used);
-	json_printf(c, 200, "{\"status\":\"updated\",\"map\":\"%s\"}", map_used);
+	json_printf(c, 200, "{\"status\":\"updated\",\"map\":\"%s\",\"id\":%d}",
+		    map_used, target_id);
 }
 
 static void handle_routes_list(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
-	char out[65536];
+	char *out = malloc(65536);
+	size_t out_sz = 65536;
 	size_t off = 0;
 	int first = 1;
 
 	(void) hm;
 	(void) userdata;
 
-	if (mgmtd_maps_ensure() != 0 || g_maps.route_tbl_fd < 0) {
-		json_printf(c, 200, "{\"routes\":[]}");
+	if (!out) {
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
 		return;
 	}
 
-	off += (size_t) snprintf(out + off, sizeof(out) - off, "{\"routes\":[");
+	if (mgmtd_maps_ensure() != 0 || g_maps.route_tbl_fd < 0) {
+		json_printf(c, 200, "{\"routes\":[]}");
+		free(out);
+		return;
+	}
+
+	off += (size_t) snprintf(out + off, out_sz - off, "{\"routes\":[");
 
 	{
 		struct lpm_key k, nk;
@@ -3925,7 +4497,7 @@ static void handle_routes_list(struct mg_connection *c, struct mg_http_message *
 					ifindex_to_name_sysfs(entry.ifindex, ifname, sizeof(ifname));
 			}
 
-				off += (size_t) snprintf(out + off, sizeof(out) - off,
+				off += (size_t) snprintf(out + off, out_sz - off,
 						 "%s{\"prefix\":\"%s\",\"next_hop\":\"%s\","
 						 "\"interface\":\"%s\",\"ifindex\":%u,"
 						 "\"metric\":%u,\"type\":\"%s\"}",
@@ -3937,13 +4509,14 @@ static void handle_routes_list(struct mg_connection *c, struct mg_http_message *
 			}
 			k = nk;
 			has_prev = 1;
-			if (off + 512 >= sizeof(out))
+			if (off + 512 >= out_sz)
 				break;
 		}
 	}
 
-	snprintf(out + off, sizeof(out) - off, "]}");
+	snprintf(out + off, out_sz - off, "]}");
 	json_printf(c, 200, "%s", out);
+	free(out);
 }
 
 static void handle_route_add(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -4080,19 +4653,34 @@ static void handle_route_delete(struct mg_connection *c, struct mg_http_message 
 
 static void handle_nat_rules(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
-	char out[65536];
-	char esc[131072];
+	char *out = malloc(65536);
+	char *esc = malloc(131072);
 
 	(void) hm;
 	(void) userdata;
 
-	if (run_cmd_json("rsnatctl show", out, sizeof(out)) != 0) {
-		json_printf(c, 500, "{\"error\":\"rsnatctl show failed\"}");
+	if (!out) {
+		free(esc);
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
+		return;
+	}
+	if (!esc) {
+		free(out);
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
 		return;
 	}
 
-	json_escape(out, esc, sizeof(esc));
+	if (run_cmd_json("rsnatctl show", out, 65536) != 0) {
+		json_printf(c, 500, "{\"error\":\"rsnatctl show failed\"}");
+		free(esc);
+		free(out);
+		return;
+	}
+
+	json_escape(out, esc, 131072);
 	json_printf(c, 200, "{\"output\":\"%s\"}", esc);
+	free(esc);
+	free(out);
 }
 
 static void handle_nat_add(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -4109,6 +4697,11 @@ static void handle_nat_add(struct mg_connection *c, struct mg_http_message *hm, 
 		json_printf(c, 500, "{\"error\":\"oom\"}");
 		return;
 	}
+	if (has_shell_metachar(args)) {
+		free(args);
+		json_printf(c, 400, "{\"error\":\"invalid args\"}");
+		return;
+	}
 
 	snprintf(cmd, sizeof(cmd), "rsnatctl add %s", args);
 	free(args);
@@ -4122,19 +4715,34 @@ static void handle_nat_add(struct mg_connection *c, struct mg_http_message *hm, 
 
 static void handle_nat_conntrack(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
-	char out[65536];
-	char esc[131072];
+	char *out = malloc(65536);
+	char *esc = malloc(131072);
 
 	(void) hm;
 	(void) userdata;
 
-	if (run_cmd_json("rsnatctl conntrack", out, sizeof(out)) != 0) {
-		json_printf(c, 500, "{\"error\":\"rsnatctl conntrack failed\"}");
+	if (!out) {
+		free(esc);
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
+		return;
+	}
+	if (!esc) {
+		free(out);
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
 		return;
 	}
 
-	json_escape(out, esc, sizeof(esc));
+	if (run_cmd_json("rsnatctl conntrack", out, 65536) != 0) {
+		json_printf(c, 500, "{\"error\":\"rsnatctl conntrack failed\"}");
+		free(esc);
+		free(out);
+		return;
+	}
+
+	json_escape(out, esc, 131072);
 	json_printf(c, 200, "{\"output\":\"%s\"}", esc);
+	free(esc);
+	free(out);
 }
 
 static const char *profile_dir(void)
@@ -4248,6 +4856,11 @@ static void handle_profiles_apply(struct mg_connection *c, struct mg_http_messag
 		json_printf(c, 500, "{\"error\":\"unable to detect switch interfaces\"}");
 		return;
 	}
+	if (!shell_safe_token_valid(profile) || !shell_safe_token_valid(ifaces)) {
+		free(profile);
+		json_printf(c, 400, "{\"error\":\"invalid profile or interfaces\"}");
+		return;
+	}
 
 	set_active_profile_path(profile_path);
 
@@ -4298,6 +4911,11 @@ static void handle_profiles_apply(struct mg_connection *c, struct mg_http_messag
 			 " && systemctl restart rswitch'",
 			 profile, ifaces, profile);
 
+	/*
+	 * Keep system() here intentionally: this restart path requires shell
+	 * redirections/pipelines and chained systemd-run commands. Inputs are
+	 * constrained to [a-zA-Z0-9_.-] before interpolation.
+	 */
 	free(profile);
 	system(cmd);
 }
@@ -4307,8 +4925,8 @@ static void handle_profile_read(struct mg_connection *c, struct mg_http_message 
 	char path[PATH_MAX];
 	char namebuf[256];
 	FILE *fp;
-	char raw[65536];
-	char escaped[131072];
+	char *raw;
+	char *escaped;
 	size_t nread;
 
 	(void) userdata;
@@ -4324,12 +4942,24 @@ static void handle_profile_read(struct mg_connection *c, struct mg_http_message 
 		json_printf(c, 404, "{\"error\":\"profile not found\"}");
 		return;
 	}
-	nread = fread(raw, 1, sizeof(raw) - 1, fp);
+
+	raw = malloc(65536);
+	escaped = malloc(131072);
+	if (!raw || !escaped) {
+		free(raw);
+		free(escaped);
+		fclose(fp);
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
+		return;
+	}
+	nread = fread(raw, 1, 65536 - 1, fp);
 	fclose(fp);
 	raw[nread] = '\0';
 
-	json_escape(raw, escaped, sizeof(escaped));
+	json_escape(raw, escaped, 131072);
 	json_printf(c, 200, "{\"name\":\"%s\",\"content\":\"%s\"}", namebuf, escaped);
+	free(escaped);
+	free(raw);
 }
 
 static void handle_profile_save(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -4394,21 +5024,28 @@ static void handle_profile_delete(struct mg_connection *c, struct mg_http_messag
 static void handle_topology(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
 {
 	struct rs_topology topo;
-	char out[65536];
+	char *out = malloc(65536);
+	size_t out_sz = 65536;
 	size_t off = 0;
 	int i;
 
 	(void) hm;
 	(void) userdata;
 
-	if (rs_topology_discover(&topo) != 0) {
-		json_printf(c, 500, "{\"error\":\"topology discovery failed\"}");
+	if (!out) {
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
 		return;
 	}
 
-	off += (size_t) snprintf(out + off, sizeof(out) - off, "{\"nodes\":[");
+	if (rs_topology_discover(&topo) != 0) {
+		json_printf(c, 500, "{\"error\":\"topology discovery failed\"}");
+		free(out);
+		return;
+	}
+
+	off += (size_t) snprintf(out + off, out_sz - off, "{\"nodes\":[");
 	for (i = 0; i < topo.node_count; i++) {
-		off += (size_t) snprintf(out + off, sizeof(out) - off,
+		off += (size_t) snprintf(out + off, out_sz - off,
 					 "%s{\"name\":\"%s\",\"mgmt_addr\":\"%s\","
 					 "\"description\":\"%s\",\"port_count\":%d}",
 					 i ? "," : "",
@@ -4416,11 +5053,11 @@ static void handle_topology(struct mg_connection *c, struct mg_http_message *hm,
 					 topo.nodes[i].mgmt_addr,
 					 topo.nodes[i].description,
 					 topo.nodes[i].port_count);
-		if (off + 512 >= sizeof(out))
+		if (off + 512 >= out_sz)
 			break;
 	}
 
-	off += (size_t) snprintf(out + off, sizeof(out) - off, "],\"links\":[");
+	off += (size_t) snprintf(out + off, out_sz - off, "],\"links\":[");
 	for (i = 0; i < topo.link_count; i++) {
 		const char *local_name = "";
 		const char *remote_name = "";
@@ -4430,7 +5067,7 @@ static void handle_topology(struct mg_connection *c, struct mg_http_message *hm,
 		if (topo.links[i].remote_node_idx >= 0 && topo.links[i].remote_node_idx < topo.node_count)
 			remote_name = topo.nodes[topo.links[i].remote_node_idx].system_name;
 
-		off += (size_t) snprintf(out + off, sizeof(out) - off,
+		off += (size_t) snprintf(out + off, out_sz - off,
 					 "%s{\"local_node\":\"%s\",\"local_port\":\"%s\","
 					 "\"remote_node\":\"%s\",\"remote_port\":\"%s\","
 					 "\"speed\":\"%s\"}",
@@ -4440,12 +5077,13 @@ static void handle_topology(struct mg_connection *c, struct mg_http_message *hm,
 					 remote_name,
 					 topo.links[i].remote_port,
 					 topo.links[i].link_speed);
-		if (off + 512 >= sizeof(out))
+		if (off + 512 >= out_sz)
 			break;
 	}
 
-	snprintf(out + off, sizeof(out) - off, "]}");
+	snprintf(out + off, out_sz - off, "]}");
 	json_printf(c, 200, "%s", out);
+	free(out);
 }
 
 static void handle_config_snapshots(struct mg_connection *c, struct mg_http_message *hm, void *userdata)
@@ -4453,21 +5091,28 @@ static void handle_config_snapshots(struct mg_connection *c, struct mg_http_mess
 	struct rs_snapshot_info snaps[SNAPSHOT_READ_MAX];
 	int n;
 	int i;
-	char out[65536];
+	char *out = malloc(65536);
+	size_t out_sz = 65536;
 	size_t off = 0;
 
 	(void) hm;
 	(void) userdata;
 
-	n = rs_rollback_list_snapshots(snaps, SNAPSHOT_READ_MAX);
-	if (n < 0) {
-		json_printf(c, 500, "{\"error\":\"failed to list snapshots\"}");
+	if (!out) {
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
 		return;
 	}
 
-	off += (size_t) snprintf(out + off, sizeof(out) - off, "{\"snapshots\":[");
+	n = rs_rollback_list_snapshots(snaps, SNAPSHOT_READ_MAX);
+	if (n < 0) {
+		json_printf(c, 500, "{\"error\":\"failed to list snapshots\"}");
+		free(out);
+		return;
+	}
+
+	off += (size_t) snprintf(out + off, out_sz - off, "{\"snapshots\":[");
 	for (i = 0; i < n; i++) {
-		off += (size_t) snprintf(out + off, sizeof(out) - off,
+		off += (size_t) snprintf(out + off, out_sz - off,
 					 "%s{\"id\":\"%s\",\"description\":\"%s\","
 					 "\"profile_path\":\"%s\",\"timestamp\":%llu,\"confirmed\":%d}",
 					 i ? "," : "",
@@ -4476,12 +5121,13 @@ static void handle_config_snapshots(struct mg_connection *c, struct mg_http_mess
 					 snaps[i].profile_path,
 					 (unsigned long long) snaps[i].timestamp,
 					 snaps[i].confirmed);
-		if (off + 512 >= sizeof(out))
+		if (off + 512 >= out_sz)
 			break;
 	}
 
-	snprintf(out + off, sizeof(out) - off, "]}");
+	snprintf(out + off, out_sz - off, "]}");
 	json_printf(c, 200, "%s", out);
+	free(out);
 }
 
 /* Build state file path from profile path: /path/to/profile.yaml -> /path/to/profile.yaml.state.json */
@@ -4570,8 +5216,8 @@ static int save_running_state_to_file(void)
 				inet_ntop(AF_INET, &sa, src, sizeof(src));
 				inet_ntop(AF_INET, &da, dst, sizeof(dst));
 			fprintf(f, "%s    {\"type\": \"5tuple\", \"proto\": %u, \"src_ip\": \"%s\", "
-				"\"src_port\": %u, \"dst_ip\": \"%s\", \"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
-				first ? "" : ",", nk.proto, src, ntohs(nk.sport), dst, ntohs(nk.dport), res.action, res.priority);
+				"\"src_port\": %u, \"dst_ip\": \"%s\", \"dst_port\": %u, \"action\": %u, \"priority\": %u, \"id\": %u}\n",
+				first ? "" : ",", nk.proto, src, ntohs(nk.sport), dst, ntohs(nk.dport), res.action, res.priority, res.rule_id);
 				first = 0;
 			}
 			k = nk;
@@ -4591,8 +5237,8 @@ static int save_running_state_to_file(void)
 				da.s_addr = nk.dst_ip;
 				inet_ntop(AF_INET, &da, dst, sizeof(dst));
 			fprintf(f, "%s    {\"type\": \"proto_dst\", \"proto\": %u, \"dst_ip\": \"%s\", "
-				"\"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
-				first ? "" : ",", nk.proto, dst, ntohs(nk.dst_port), res.action, res.priority);
+				"\"dst_port\": %u, \"action\": %u, \"priority\": %u, \"id\": %u}\n",
+				first ? "" : ",", nk.proto, dst, ntohs(nk.dst_port), res.action, res.priority, res.rule_id);
 				first = 0;
 			}
 			k = nk;
@@ -4612,8 +5258,8 @@ static int save_running_state_to_file(void)
 				sa.s_addr = nk.src_ip;
 				inet_ntop(AF_INET, &sa, src, sizeof(src));
 			fprintf(f, "%s    {\"type\": \"proto_src\", \"proto\": %u, \"src_ip\": \"%s\", "
-				"\"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
-				first ? "" : ",", nk.proto, src, ntohs(nk.dst_port), res.action, res.priority);
+				"\"dst_port\": %u, \"action\": %u, \"priority\": %u, \"id\": %u}\n",
+				first ? "" : ",", nk.proto, src, ntohs(nk.dst_port), res.action, res.priority, res.rule_id);
 				first = 0;
 			}
 			k = nk;
@@ -4628,8 +5274,8 @@ static int save_running_state_to_file(void)
 		memset(&k, 0, sizeof(k));
 		while (bpf_map_get_next_key(g_maps.acl_pp_fd, has_prev ? &k : NULL, &nk) == 0) {
 			if (bpf_map_lookup_elem(g_maps.acl_pp_fd, &nk, &res) == 0) {
-			fprintf(f, "%s    {\"type\": \"proto_port\", \"proto\": %u, \"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
-				first ? "" : ",", nk.proto, ntohs(nk.dst_port), res.action, res.priority);
+			fprintf(f, "%s    {\"type\": \"proto_port\", \"proto\": %u, \"dst_port\": %u, \"action\": %u, \"priority\": %u, \"id\": %u}\n",
+				first ? "" : ",", nk.proto, ntohs(nk.dst_port), res.action, res.priority, res.rule_id);
 				first = 0;
 			}
 			k = nk;
@@ -4656,9 +5302,9 @@ static int save_running_state_to_file(void)
 					strcpy(dst, "any");
 				}
 			fprintf(f, "%s    {\"type\": \"lpm_src\", \"src_ip\": \"%s\", \"prefix_len\": %u, "
-				"\"dst_ip\": \"%s\", \"proto\": %u, \"src_port\": %u, \"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
+				"\"dst_ip\": \"%s\", \"proto\": %u, \"src_port\": %u, \"dst_port\": %u, \"action\": %u, \"priority\": %u, \"id\": %u}\n",
 				first ? "" : ",", src, nk.prefixlen,
-				dst, val.proto, ntohs(val.sport), ntohs(val.dport), val.action, val.priority);
+				dst, val.proto, ntohs(val.sport), ntohs(val.dport), val.action, val.priority, val.rule_id);
 				first = 0;
 			}
 			k = nk;
@@ -4685,9 +5331,9 @@ static int save_running_state_to_file(void)
 					strcpy(src, "any");
 				}
 			fprintf(f, "%s    {\"type\": \"lpm_dst\", \"dst_ip\": \"%s\", \"prefix_len\": %u, "
-				"\"src_ip\": \"%s\", \"proto\": %u, \"src_port\": %u, \"dst_port\": %u, \"action\": %u, \"priority\": %u}\n",
+				"\"src_ip\": \"%s\", \"proto\": %u, \"src_port\": %u, \"dst_port\": %u, \"action\": %u, \"priority\": %u, \"id\": %u}\n",
 				first ? "" : ",", dst, nk.prefixlen,
-				src, val.proto, ntohs(val.sport), ntohs(val.dport), val.action, val.priority);
+				src, val.proto, ntohs(val.sport), ntohs(val.dport), val.action, val.priority, val.rule_id);
 				first = 0;
 			}
 			k = nk;
@@ -4768,7 +5414,7 @@ static void handle_config_save(struct mg_connection *c, struct mg_http_message *
 
 static int apply_acl_from_json(const char *type, __u8 proto, const char *src_ip_str,
 			       __u16 src_port, const char *dst_ip_str, __u16 dst_port,
-			       __u8 action, __u32 prefix_len, __u8 priority)
+			       __u8 action, __u32 prefix_len, __u8 priority, __u32 rule_id)
 {
 	struct acl_result res;
 	struct in_addr addr;
@@ -4777,6 +5423,7 @@ static int apply_acl_from_json(const char *type, __u8 proto, const char *src_ip_
 	memset(&res, 0, sizeof(res));
 	res.action = action;
 	res.priority = priority;
+	res.rule_id = rule_id ? rule_id : acl_next_rule_id();
 
 	if (src_ip_str && src_ip_str[0] && strcmp(src_ip_str, "any") != 0)
 		if (inet_pton(AF_INET, src_ip_str, &addr) == 1)
@@ -4829,6 +5476,7 @@ static int apply_acl_from_json(const char *type, __u8 proto, const char *src_ip_
 		lpm_val.action = res.action;
 		lpm_val.log_event = res.log_event;
 		lpm_val.redirect_ifindex = res.redirect_ifindex;
+		lpm_val.rule_id = res.rule_id;
 		lpm_val.priority = res.priority;
 		lpm_val.other_ip = dst_ip;
 		lpm_val.proto = proto;
@@ -4846,6 +5494,7 @@ static int apply_acl_from_json(const char *type, __u8 proto, const char *src_ip_
 		lpm_val.action = res.action;
 		lpm_val.log_event = res.log_event;
 		lpm_val.redirect_ifindex = res.redirect_ifindex;
+		lpm_val.rule_id = res.rule_id;
 		lpm_val.priority = res.priority;
 		lpm_val.other_ip = src_ip;
 		lpm_val.proto = proto;
@@ -4912,7 +5561,7 @@ static int load_state_from_file(void)
 	for (i = 0; ; i++) {
 		char path[64];
 		char *type_str, *src_ip_str, *dst_ip_str;
-		long proto_l, src_port_l, dst_port_l, action_l, prefix_len_l, priority_l;
+		long proto_l, src_port_l, dst_port_l, action_l, prefix_len_l, priority_l, id_l;
 
 		snprintf(path, sizeof(path), "$.acls[%d].type", i);
 		type_str = mg_json_get_str(json, path);
@@ -4943,11 +5592,14 @@ static int load_state_from_file(void)
 		snprintf(path, sizeof(path), "$.acls[%d].priority", i);
 		priority_l = mg_json_get_long(json, path, 0);
 
+		snprintf(path, sizeof(path), "$.acls[%d].id", i);
+		id_l = mg_json_get_long(json, path, 0);
+
 		if (apply_acl_from_json(type_str, (__u8)proto_l,
 					src_ip_str, (__u16)src_port_l,
 					dst_ip_str, (__u16)dst_port_l,
 					(__u8)action_l, (__u32)prefix_len_l,
-					(__u8)priority_l) == 0) {
+					(__u8)priority_l, (__u32)id_l) == 0) {
 			n++;
 		}
 
@@ -5256,24 +5908,31 @@ static void handle_config_audit(struct mg_connection *c, struct mg_http_message 
 	struct rs_audit_entry entries[AUDIT_READ_MAX];
 	int n;
 	int i;
-	char out[131072];
+	char *out = malloc(131072);
+	size_t out_sz = 131072;
 	size_t off = 0;
 
 	(void) hm;
 	(void) userdata;
 
-	n = rs_audit_read(entries, AUDIT_READ_MAX);
-	if (n < 0) {
-		json_printf(c, 500, "{\"error\":\"audit read failed\"}");
+	if (!out) {
+		mg_http_reply(c, 500, "Content-Type: application/json\r\n", "{\"error\":\"out of memory\"}\n");
 		return;
 	}
 
-	off += (size_t) snprintf(out + off, sizeof(out) - off, "{\"audit\":[");
+	n = rs_audit_read(entries, AUDIT_READ_MAX);
+	if (n < 0) {
+		json_printf(c, 500, "{\"error\":\"audit read failed\"}");
+		free(out);
+		return;
+	}
+
+	off += (size_t) snprintf(out + off, out_sz - off, "{\"audit\":[");
 	for (i = 0; i < n; i++) {
 		char esc_detail[1024];
 
 		json_escape(entries[i].detail, esc_detail, sizeof(esc_detail));
-		off += (size_t) snprintf(out + off, sizeof(out) - off,
+		off += (size_t) snprintf(out + off, out_sz - off,
 					 "%s{\"timestamp\":%llu,\"severity\":%d,\"category\":\"%s\","
 					 "\"action\":\"%s\",\"user\":\"%s\",\"detail\":\"%s\","
 					 "\"success\":%d}",
@@ -5285,12 +5944,13 @@ static void handle_config_audit(struct mg_connection *c, struct mg_http_message 
 					 entries[i].user,
 					 esc_detail,
 					 entries[i].success);
-		if (off + 1024 >= sizeof(out))
+		if (off + 1024 >= out_sz)
 			break;
 	}
 
-	snprintf(out + off, sizeof(out) - off, "]}");
+	snprintf(out + off, out_sz - off, "]}");
 	json_printf(c, 200, "%s", out);
+	free(out);
 }
 
 static void ws_timer_fn(void *arg)
@@ -5341,14 +6001,14 @@ static void ws_timer_fn(void *arg)
 
 		if (rs_watchdog_check_health(&hs) == 0) {
 			if (g_prev_health >= 0 && hs.overall != g_prev_health) {
-				const char *label_old = g_prev_health >= 4 ? "healthy" :
-							g_prev_health >= 2 ? "degraded" : "critical";
-				const char *label_new = hs.overall >= 4 ? "healthy" :
-							hs.overall >= 2 ? "degraded" : "critical";
-				int sev = hs.overall < g_prev_health ?
-					  AUDIT_SEV_WARNING : AUDIT_SEV_INFO;
+			const char *label_old = g_prev_health == 0 ? "healthy" :
+						g_prev_health == 1 ? "degraded" : "critical";
+			const char *label_new = hs.overall == 0 ? "healthy" :
+						hs.overall == 1 ? "degraded" : "critical";
+			int sev = hs.overall > g_prev_health ?
+				  AUDIT_SEV_WARNING : AUDIT_SEV_INFO;
 
-				if (hs.overall <= 1)
+			if (hs.overall >= 2)
 					sev = AUDIT_SEV_CRITICAL;
 
 				snprintf(payload, sizeof(payload),
@@ -5435,12 +6095,12 @@ static void ws_timer_fn(void *arg)
 
 static void handle_preflight(struct mg_connection *c)
 {
-	mg_http_reply(c, 204,
-		      "Access-Control-Allow-Origin: *\r\n"
-		      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-		      "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
-		      "Access-Control-Max-Age: 86400\r\n",
-		      "");
+	char cors[512];
+	char hdrs[1024];
+	snprintf(hdrs, sizeof(hdrs),
+		 "%sAccess-Control-Max-Age: 86400\r\n",
+		 cors_origin_header(cors, sizeof(cors)));
+	mg_http_reply(c, 204, hdrs, "");
 }
 
 static void handle_dhcp_snoop_get(struct mg_connection *c, struct mg_http_message *hm,
@@ -5500,10 +6160,14 @@ static void handle_dhcp_snoop_get(struct mg_connection *c, struct mg_http_messag
 	off += (size_t) snprintf(out + off, sizeof(out) - off,
 				 "],\"trusted_port_count\":%d}", port_count);
 
-	mg_http_reply(c, 200,
-		      "Content-Type: application/json\r\n"
-		      "Access-Control-Allow-Origin: *\r\n",
-		      "%.*s", (int) off, out);
+	{
+		char cors[512];
+		char hdrs[1024];
+		snprintf(hdrs, sizeof(hdrs),
+			 "Content-Type: application/json\r\n%s",
+			 cors_origin_header(cors, sizeof(cors)));
+		mg_http_reply(c, 200, hdrs, "%.*s", (int) off, out);
+	}
 }
 
 static void handle_dhcp_snoop_config_update(struct mg_connection *c, struct mg_http_message *hm,
@@ -5718,10 +6382,14 @@ static void handle_api_events(struct mg_connection *c, struct mg_http_message *h
 	}
 	off += snprintf(buf + off, bufsz - off, "],\"total\":%d}", total);
 
-	mg_http_reply(c, 200,
-		      "Content-Type: application/json\r\n"
-		      "Access-Control-Allow-Origin: *\r\n",
-		      "%s", buf);
+	{
+		char cors[512];
+		char hdrs[1024];
+		snprintf(hdrs, sizeof(hdrs),
+			 "Content-Type: application/json\r\n%s",
+			 cors_origin_header(cors, sizeof(cors)));
+		mg_http_reply(c, 200, hdrs, "%s", buf);
+	}
 
 	free(buf);
 	free(rows);
@@ -5900,11 +6568,14 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
 
 		memset(&opts, 0, sizeof(opts));
 		opts.root_dir = ctx->cfg.web_root;
-		opts.extra_headers =
-			"Access-Control-Allow-Origin: *\r\n"
-			"Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-			"Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
-			"Cache-Control: no-cache\r\n";
+		{
+			static char serve_hdrs[1024];
+			char cors[512];
+			snprintf(serve_hdrs, sizeof(serve_hdrs),
+				 "%sCache-Control: no-cache\r\n",
+				 cors_origin_header(cors, sizeof(cors)));
+			opts.extra_headers = serve_hdrs;
+		}
 		mg_http_serve_dir(c, hm, &opts);
 	} else if (ev == MG_EV_WS_MSG) {
 		struct mg_ws_message *wm = ev_data;
@@ -6118,9 +6789,10 @@ int main(int argc, char **argv)
 	if (cli_auth_pass_set)
 		strncpy(g_ctx.cfg.auth_password, cli_auth_pass, sizeof(g_ctx.cfg.auth_password) - 1);
 
-	/* Implicitly enable auth when credentials are provided via CLI */
 	if (cli_auth_user_set || cli_auth_pass_set)
 		g_ctx.cfg.auth_enabled = 1;
+
+	normalize_auth_config(&g_ctx.cfg);
 
 	snprintf(g_ctx.cfg.listen_addr, sizeof(g_ctx.cfg.listen_addr), "http://0.0.0.0:%d", g_ctx.cfg.port);
 
@@ -6141,12 +6813,9 @@ int main(int argc, char **argv)
 				RS_LOG_INFO("mgmt-br exists (ifindex=%u), namespace healthy, loader-managed mode", existing);
 				g_ctx.loader_managed_veth = 1;
 			} else {
-				RS_LOG_WARN("Inconsistent state: mgmt-br exists but namespace %s not enterable - recreating",
-					    g_ctx.mgmt_cfg.mgmt_ns);
-				char cmd[256];
-				snprintf(cmd, sizeof(cmd), "ip link del %s 2>/dev/null || true",
-					 g_ctx.mgmt_cfg.veth_host);
-				system(cmd);
+			RS_LOG_WARN("Inconsistent state: mgmt-br exists but namespace %s not enterable - recreating",
+				    g_ctx.mgmt_cfg.mgmt_ns);
+				safe_exec("ip", (char *const[]) {"ip", "link", "del", g_ctx.mgmt_cfg.veth_host, NULL});
 				if (rs_mgmt_iface_create(&g_ctx.mgmt_cfg) != 0)
 					RS_LOG_WARN("Management namespace create failed");
 			}

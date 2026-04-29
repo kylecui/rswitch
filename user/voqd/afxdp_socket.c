@@ -581,15 +581,21 @@ void xsk_manager_get_stats(struct xsk_manager *mgr,
                            uint64_t *total_rx, uint64_t *total_tx)
 {
 	uint64_t rx = 0, tx = 0;
-	
-	/* Note: mgr->sockets[] contains libxdp's xsk_socket pointers,
-	 * which don't have rx_packets/tx_packets fields.
-	 * For now, we just report the number of active sockets.
-	 * TODO: Track statistics separately or use xsk_socket__get_stats() */
-	 
-	if (total_rx) *total_rx = mgr->num_sockets;  /* Number of RX sockets */
-	if (total_tx) *total_tx = mgr->num_sockets;  /* Number of TX sockets */
-	
-	mgr->total_rx = mgr->num_sockets;
-	mgr->total_tx = mgr->num_sockets;
+
+	for (uint32_t i = 0; i < mgr->num_sockets; i++) {
+		if (!mgr->sockets[i])
+			continue;
+		uint64_t s_rx, s_rx_bytes, s_tx, s_tx_bytes, s_rx_drops, s_tx_drops;
+		xsk_socket_get_stats(mgr->sockets[i],
+		                     &s_rx, &s_rx_bytes,
+		                     &s_tx, &s_tx_bytes,
+		                     &s_rx_drops, &s_tx_drops);
+		rx += s_rx;
+		tx += s_tx;
+	}
+
+	mgr->total_rx = rx;
+	mgr->total_tx = tx;
+	if (total_rx) *total_rx = rx;
+	if (total_tx) *total_tx = tx;
 }

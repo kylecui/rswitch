@@ -19,6 +19,7 @@
  *   6. Configure port settings via maps
  */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,11 +29,18 @@
 #include <getopt.h>
 #include <net/if.h>
 #include <linux/if_link.h>
+#include <linux/bpf.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <fcntl.h>
+#include <sched.h>
 #include <dirent.h>
+
+#ifdef HAVE_SYSTEMD
+#include <systemd/sd-daemon.h>
+#endif
 
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -131,6 +139,22 @@ struct rs_module_config_value {
     };
 };
 
+/* Diagnostic target structs — must match rswitch_obs.h */
+struct rs_diag_target_key {
+    __u32 prog_id;
+};
+
+struct rs_diag_target {
+    __u32 prog_id;
+    __u32 attach_btf_id;
+    __u16 stage_id;
+    __u16 module_id;
+    __u16 hook;
+    __u16 kind;
+    char  prog_name[32];
+    char  module_name[32];
+};
+
 #define MAX_MODULES 64
 #define MAX_INTERFACES 64
 #define BPF_PIN_PATH "/sys/fs/bpf"
@@ -139,6 +163,15 @@ struct rs_module_config_value {
 static char g_rswitch_home[256] = ".";
 static char g_build_dir[512]    = "./build/bpf";
 static char g_build_root[512]   = "./build";
+
+static void rs_sd_notify(const char *state)
+{
+#ifdef HAVE_SYSTEMD
+    sd_notify(0, state);
+#else
+    (void)state;
+#endif
+}
 
 static void init_paths(void)
 {
@@ -194,6 +227,8 @@ struct loader_ctx {
     int rs_mac_table_fd;
     int rs_vlan_map_fd;
     int rs_module_config_map_fd;
+    int rs_obs_cfg_map_fd;
+    int rs_diag_targets_fd;
     
     /* Configuration */
     __u32 interfaces[MAX_INTERFACES];
@@ -742,7 +777,8 @@ static int validate_dependencies(struct loader_ctx *ctx)
         }
 
         if (!has_incoming && !has_outgoing) {
-            RS_LOG_WARN("Module %s is not connected in dependency graph", ctx->modules[i].name);
+            if (ctx->verbose)
+                RS_LOG_INFO("Module %s has no declared dependencies (stage-ordered)", ctx->modules[i].name);
         }
     }
 
@@ -754,7 +790,9 @@ static int compare_modules(const void *a, const void *b)
 {
     const struct loaded_module *ma = (const struct loaded_module *)a;
     const struct loaded_module *mb = (const struct loaded_module *)b;
-    return ma->stage - mb->stage;
+    if (ma->stage < mb->stage) return -1;
+    if (ma->stage > mb->stage) return 1;
+    return 0;
 }
 
 /* Load core dispatcher and egress programs */
@@ -943,6 +981,12 @@ static int get_pinned_maps(struct loader_ctx *ctx)
     snprintf(path, sizeof(path), "%s/rs_module_config_map", BPF_PIN_PATH);
     ctx->rs_module_config_map_fd = bpf_obj_get(path);
     
+    snprintf(path, sizeof(path), "%s/rs_obs_cfg_map", BPF_PIN_PATH);
+    ctx->rs_obs_cfg_map_fd = bpf_obj_get(path);
+
+    snprintf(path, sizeof(path), "%s/rs_diag_targets", BPF_PIN_PATH);
+    ctx->rs_diag_targets_fd = bpf_obj_get(path);
+    
     if (ctx->rs_progs_fd < 0) {
         RS_LOG_WARN("Failed to get rs_progs from /sys/fs/bpf/rs_progs");
         /* Try to get from dispatcher object */
@@ -989,6 +1033,13 @@ static int get_pinned_maps(struct loader_ctx *ctx)
         }
     }
     
+    if (ctx->rs_obs_cfg_map_fd < 0) {
+        struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_obs_cfg_map");
+        if (map) {
+            ctx->rs_obs_cfg_map_fd = bpf_map__fd(map);
+        }
+    }
+    
     if (ctx->rs_stats_map_fd < 0) {
         struct bpf_map *map = bpf_object__find_map_by_name(ctx->dispatcher_obj, "rs_stats_map");
         if (map) {
@@ -1025,13 +1076,16 @@ static int reuse_shared_maps(struct bpf_object *obj, struct loader_ctx *ctx)
     const char *names_to_reuse[] = {
         "rs_ctx_map", "rs_progs", "rs_prog_chain", "rs_port_config_map",
         "rs_ifindex_to_port_map", "rs_stats_map", "rs_event_bus", 
-        "rs_vlan_map", "rs_module_config_map", "rs_devmap", "rs_xdp_devmap"
+        "rs_vlan_map", "rs_module_config_map", "rs_devmap", "rs_xdp_devmap",
+        "rs_obs_cfg_map", "rs_obs_stats_map", "rs_drop_stats_map",
+        "rs_hist_map", "rs_stage_hit_map", "rs_diag_targets"
     };
     int fds_to_reuse[] = {
         ctx->rs_ctx_map_fd, ctx->rs_progs_fd, ctx->rs_prog_chain_fd, 
         ctx->rs_port_config_map_fd, ctx->rs_ifindex_to_port_map_fd, 
         ctx->rs_stats_map_fd, ctx->rs_event_bus_fd, ctx->rs_vlan_map_fd,
-        ctx->rs_module_config_map_fd, ctx->rs_devmap_fd, ctx->rs_devmap_fd
+        ctx->rs_module_config_map_fd, ctx->rs_devmap_fd, ctx->rs_devmap_fd,
+        ctx->rs_obs_cfg_map_fd, -1, -1, -1, -1, ctx->rs_diag_targets_fd
     };
     int num_maps = sizeof(names_to_reuse) / sizeof(names_to_reuse[0]);
     
@@ -1526,7 +1580,8 @@ static int configure_ports(struct loader_ctx *ctx)
         }
         
         char ifname[IF_NAMESIZE];
-        if_indextoname(ifindex, ifname);
+        if (!if_indextoname(ifindex, ifname))
+            snprintf(ifname, sizeof(ifname), "if%u", ifindex);
         
         const char *mode_str[] = {"OFF", "ACCESS", "TRUNK", "HYBRID"};
         printf("  Port %u (%s) -> port_idx %u: mode=%s, vlan=%d, learning=%s\n", 
@@ -1862,6 +1917,192 @@ static int initialize_qos_config(struct loader_ctx *ctx)
     return 0;
 }
 
+/* Register a single BPF program as a diagnostic target.
+ * Uses bpf_obj_get_info_by_fd() to derive prog_id from the live FD. */
+static int register_diag_target(int targets_fd, int prog_fd,
+                                __u16 stage_id, __u16 module_id,
+                                __u16 hook, __u16 kind,
+                                const char *prog_name, const char *module_name)
+{
+    struct bpf_prog_info info = {};
+    __u32 info_len = sizeof(info);
+    int err;
+
+    if (targets_fd < 0 || prog_fd < 0)
+        return -1;
+
+    err = bpf_prog_get_info_by_fd(prog_fd, &info, &info_len);
+    if (err) {
+        RS_LOG_WARN("diag: bpf_prog_get_info_by_fd failed for %s: %s",
+                    prog_name ? prog_name : "?", strerror(errno));
+        return -1;
+    }
+
+    struct rs_diag_target_key key = { .prog_id = info.id };
+    struct rs_diag_target val = {
+        .prog_id       = info.id,
+        .attach_btf_id = info.btf_id,
+        .stage_id      = stage_id,
+        .module_id     = module_id,
+        .hook          = hook,
+        .kind          = kind,
+    };
+    if (prog_name)
+        snprintf(val.prog_name, sizeof(val.prog_name), "%s", prog_name);
+    if (module_name)
+        snprintf(val.module_name, sizeof(val.module_name), "%s", module_name);
+
+    err = bpf_map_update_elem(targets_fd, &key, &val, BPF_ANY);
+    if (err) {
+        RS_LOG_WARN("diag: failed to register target %s (prog_id=%u): %s",
+                    prog_name, info.id, strerror(errno));
+        return -1;
+    }
+
+    RS_LOG_INFO("diag: registered target %s (prog_id=%u, stage=%u, module=%u, hook=%u, kind=%u)",
+                prog_name, info.id, stage_id, module_id, hook, kind);
+    return 0;
+}
+
+/* Populate rs_diag_targets with all loaded BPF programs */
+static int populate_diag_targets(struct loader_ctx *ctx)
+{
+    if (ctx->rs_diag_targets_fd < 0) {
+        printf("Diag targets: rs_diag_targets map not available, skipping\n");
+        return 0;
+    }
+
+    int registered = 0;
+
+    /* Register dispatcher (stage=1 = RS_STAGE_PREPROCESS, module=1 = RS_MOD_DISPATCHER) */
+    if (ctx->dispatcher_fd >= 0) {
+        if (register_diag_target(ctx->rs_diag_targets_fd, ctx->dispatcher_fd,
+                                 1, 1, 0 /* RS_HOOK_XDP_INGRESS */,
+                                 1 /* RS_DIAG_TARGET_DISPATCHER */,
+                                 "rswitch_dispatcher", "dispatcher") == 0)
+            registered++;
+    }
+
+    /* Register egress (stage=100, module=2 = RS_MOD_EGRESS) */
+    if (ctx->egress_fd >= 0) {
+        if (register_diag_target(ctx->rs_diag_targets_fd, ctx->egress_fd,
+                                 100, 2, 1 /* RS_HOOK_XDP_EGRESS */,
+                                 2 /* RS_DIAG_TARGET_EGRESS */,
+                                 "rswitch_egress", "egress") == 0)
+            registered++;
+    }
+
+    /* Register veth_egress if loaded */
+    if (ctx->veth_egress_fd >= 0) {
+        if (register_diag_target(ctx->rs_diag_targets_fd, ctx->veth_egress_fd,
+                                 191, 0x100 + 13 /* RS_MOD_USER_BASE + 13 */,
+                                 0 /* RS_HOOK_XDP_INGRESS */,
+                                 2 /* RS_DIAG_TARGET_EGRESS */,
+                                 "veth_egress_prog", "veth_egress") == 0)
+            registered++;
+    }
+
+    /* Register all loaded modules */
+    for (int i = 0; i < ctx->num_modules; i++) {
+        struct loaded_module *mod = &ctx->modules[i];
+        if (!mod->obj || mod->prog_fd < 0)
+            continue;
+
+        /* Determine hook from stage: stages >= 100 are egress */
+        __u16 hook = (mod->stage >= 100) ? 1 : 0;
+
+        /* Module ID: we use stage as a proxy since modules embed their
+         * RS_THIS_MODULE_ID in BPF code, but we don't have easy access
+         * to that value from user-space. The stage_id + module_name together
+         * uniquely identify the module for rsdiag. For the module_id field,
+         * we store 0 and let rsdiag match by prog_name/stage. */
+        __u16 module_id_val = 0;
+
+        /* Map well-known module names to their enum values.
+         * Must match enum rs_obs_module_id in rswitch_abi.h:
+         *   RS_MOD_USER_BASE = 4096 (0x1000) */
+        static const struct {
+            const char *name;
+            __u16 module_id;
+        } known_modules[] = {
+            { "vlan",           20 },  /* RS_MOD_VLAN */
+            { "qos_classify",   25 },  /* RS_MOD_QOS_CLASSIFY */
+            { "acl",            30 },  /* RS_MOD_ACL */
+            { "route",          40 },  /* RS_MOD_ROUTE */
+            { "flow_table",     60 },  /* RS_MOD_FLOW_TABLE */
+            { "mirror",         70 },  /* RS_MOD_MIRROR */
+            { "l2learn",        80 },  /* RS_MOD_L2LEARN */
+            { "sflow",          85 },  /* RS_MOD_SFLOW */
+            { "lastcall",       90 },  /* RS_MOD_LASTCALL */
+            { "egress_qos",    170 },  /* RS_MOD_EGRESS_QOS */
+            { "egress_vlan",   180 },  /* RS_MOD_EGRESS_VLAN */
+            { "egress_final",  190 },  /* RS_MOD_EGRESS_FINAL */
+            { "veth_egress",   191 },  /* RS_MOD_VETH_EGRESS */
+            { "source_guard",  4097 }, /* RS_MOD_USER_BASE + 1 */
+            { "lldp",          4098 }, /* RS_MOD_USER_BASE + 2 */
+            { "lacp",          4099 }, /* RS_MOD_USER_BASE + 3 */
+            { "tunnel",        4100 }, /* RS_MOD_USER_BASE + 4 */
+            { "nat",           4101 }, /* RS_MOD_USER_BASE + 5 */
+            { "rate_limiter",  4102 }, /* RS_MOD_USER_BASE + 6 */
+            { "stp",           4103 }, /* RS_MOD_USER_BASE + 7 */
+            { "dhcp_snoop",    4104 }, /* RS_MOD_USER_BASE + 8 */
+            { "conntrack",     4105 }, /* RS_MOD_USER_BASE + 9 */
+            { "arp_learn",     4106 }, /* RS_MOD_USER_BASE + 10 */
+            { "core_example",  4107 }, /* RS_MOD_USER_BASE + 11 */
+            { "afxdp_redirect",4108 }, /* RS_MOD_USER_BASE + 12 */
+        };
+
+        for (int k = 0; k < (int)(sizeof(known_modules) / sizeof(known_modules[0])); k++) {
+            if (strcmp(mod->name, known_modules[k].name) == 0) {
+                module_id_val = known_modules[k].module_id;
+                break;
+            }
+        }
+
+        if (register_diag_target(ctx->rs_diag_targets_fd, mod->prog_fd,
+                                 (__u16)mod->stage, module_id_val, hook,
+                                 3 /* RS_DIAG_TARGET_MODULE */,
+                                 mod->name, mod->name) == 0)
+            registered++;
+    }
+
+    printf("Diag targets: registered %d programs\n", registered);
+    return 0;
+}
+
+static int initialize_obs_config(struct loader_ctx *ctx)
+{
+    if (ctx->rs_obs_cfg_map_fd < 0) {
+        printf("Obs config: rs_obs_cfg_map not available, skipping\n");
+        return 0;
+    }
+
+    struct {
+        __u32 level;
+        __u32 sample_ppm;
+        __u64 event_mask;
+        __u32 burst_limit;
+        __u32 reserved;
+    } cfg = {
+        .level       = 0,        /* RS_OBS_LEVEL_L0 */
+        .sample_ppm  = 1000,     /* 0.1 % */
+        .event_mask  = 0xFFFF,
+        .burst_limit = 4,
+        .reserved    = 0,
+    };
+
+    __u32 key = 0;
+    int err = bpf_map_update_elem(ctx->rs_obs_cfg_map_fd, &key, &cfg, BPF_ANY);
+    if (err) {
+        RS_LOG_WARN("Failed to write rs_obs_cfg_map: %s", strerror(errno));
+        return -1;
+    }
+
+    printf("Obs config: L0 enabled, sample_ppm=%u, burst_limit=%u\n",
+           cfg.sample_ppm, cfg.burst_limit);
+    return 0;
+}
+
 /* Populate devmaps with queue isolation
  * 
  * Following PoC pattern: find rs_xdp_devmap from lastcall module object
@@ -1920,7 +2161,8 @@ static int populate_devmaps(struct loader_ctx *ctx)
     for (i = 0; i < ctx->num_interfaces; i++) {
         __u32 ifindex = ctx->interfaces[i];
         char ifname[IF_NAMESIZE];
-        if_indextoname(ifindex, ifname);
+        if (!if_indextoname(ifindex, ifname))
+            snprintf(ifname, sizeof(ifname), "if%u", ifindex);
         
         /* XDP devmap: queue 1 (round-robin across 1-3 in production) */
         if (xdp_devmap_fd >= 0) {
@@ -2046,7 +2288,8 @@ static int setup_veth_egress(struct loader_ctx *ctx)
             err = bpf_map_update_elem(ctx->voq_egress_devmap_fd, &ifindex, &val, BPF_ANY);
             if (err) {
                 char ifname[IF_NAMESIZE];
-                if_indextoname(ifindex, ifname);
+                if (!if_indextoname(ifindex, ifname))
+                    snprintf(ifname, sizeof(ifname), "if%u", ifindex);
                 RS_LOG_WARN("Failed to add %s to voq_egress_devmap: %s",
                             ifname, strerror(errno));
             }
@@ -2135,6 +2378,64 @@ static int setup_mgmt_veth(struct loader_ctx *ctx)
     system(cmd);
     snprintf(cmd, sizeof(cmd), "ip netns exec %s ip link set lo up", ns_name);
     system(cmd);
+
+    snprintf(cmd, sizeof(cmd),
+             "ip netns exec %s ethtool -K %s tx off sg off tso off 2>/dev/null",
+             ns_name, veth_ns);
+    system(cmd);
+    snprintf(cmd, sizeof(cmd),
+             "ethtool -K %s tx off sg off tso off 2>/dev/null", veth_host);
+    system(cmd);
+
+    /* Native XDP devmap redirect requires NAPI active on the receiving veth.
+     * Without an XDP program, veth_xdp_xmit() silently drops every frame.
+     */
+    {
+        struct bpf_insn pass_prog[] = {
+            /* BPF_MOV64_IMM(BPF_REG_0, XDP_PASS) */
+            { .code = BPF_ALU64 | BPF_MOV | BPF_K, .dst_reg = BPF_REG_0,
+              .src_reg = 0, .off = 0, .imm = XDP_PASS },
+            /* BPF_EXIT_INSN() */
+            { .code = BPF_JMP | BPF_EXIT, .dst_reg = 0,
+              .src_reg = 0, .off = 0, .imm = 0 },
+        };
+        LIBBPF_OPTS(bpf_prog_load_opts, opts);
+        int pass_fd = bpf_prog_load(BPF_PROG_TYPE_XDP, "xdp_pass",
+                                     "GPL", pass_prog, 2, &opts);
+        if (pass_fd < 0) {
+            RS_LOG_WARN("Failed to create XDP_PASS prog for %s: %s",
+                        veth_ns, strerror(errno));
+        } else {
+            char ns_path[128];
+            snprintf(ns_path, sizeof(ns_path), "/var/run/netns/%s", ns_name);
+            int netns_fd = open(ns_path, O_RDONLY);
+            if (netns_fd >= 0) {
+                int orig_ns = open("/proc/self/ns/net", O_RDONLY);
+                if (setns(netns_fd, CLONE_NEWNET) == 0) {
+                    __u32 peer_idx = if_nametoindex(veth_ns);
+                    if (peer_idx > 0) {
+                        int att_err = bpf_xdp_attach(peer_idx, pass_fd,
+                                                      XDP_FLAGS_UPDATE_IF_NOEXIST, NULL);
+                        if (att_err)
+                            RS_LOG_WARN("Failed to attach XDP_PASS to %s: %s",
+                                        veth_ns, strerror(-att_err));
+                        else
+                            printf("  XDP_PASS attached to %s (enables NAPI for devmap redirect)\n",
+                                   veth_ns);
+                    }
+                    if (orig_ns >= 0) {
+                        setns(orig_ns, CLONE_NEWNET);
+                        close(orig_ns);
+                    }
+                } else {
+                    RS_LOG_WARN("setns to %s failed: %s", ns_name, strerror(errno));
+                    if (orig_ns >= 0) close(orig_ns);
+                }
+                close(netns_fd);
+            }
+            close(pass_fd);
+        }
+    }
 
     mgmt_ifindex = if_nametoindex(veth_host);
     if (mgmt_ifindex == 0) {
@@ -2252,18 +2553,31 @@ static int setup_mgmt_veth(struct loader_ctx *ctx)
     }
 
     /*
-     * IMPORTANT: Attach mgmt-br in SKB/generic mode to match physical ports.
-     * veth supports native XDP, but if physical ports use xdpgeneric (e.g.
-     * VMware NICs), BPF_F_BROADCAST redirect from native→generic silently
-     * fails. All ports in the devmap must use the same XDP mode.
+     * Attach mgmt-br with the SAME XDP mode as physical ports.
+     * Mismatched modes (e.g. native on physical, SKB on mgmt-br) cause
+     * BPF_F_BROADCAST devmap redirect to silently fail.
+     *
+     * Query a physical port to determine the actual attach mode, since
+     * DEFAULT_XDP_FLAGS lets the kernel choose and veth always prefers native.
      */
+    __u32 mgmt_xdp_flags = ctx->xdp_flags;
+    if (ctx->num_interfaces > 0) {
+        struct bpf_xdp_query_opts qopts = { .sz = sizeof(qopts) };
+        if (bpf_xdp_query(ctx->interfaces[0], 0, &qopts) == 0) {
+            if (qopts.skb_prog_id > 0)
+                mgmt_xdp_flags = XDP_FLAGS_SKB_MODE | XDP_FLAGS_UPDATE_IF_NOEXIST;
+            else
+                mgmt_xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST;
+        }
+    }
     err = bpf_xdp_attach(mgmt_ifindex, ctx->dispatcher_fd,
-                          XDP_FLAGS_SKB_MODE, NULL);
+                          mgmt_xdp_flags, NULL);
     if (err) {
         RS_LOG_WARN("Failed to attach XDP dispatcher to mgmt-br: %s",
                     strerror(-err));
     } else {
-        printf("  XDP dispatcher attached to mgmt-br (generic/SKB mode)\n");
+        printf("  XDP dispatcher attached to mgmt-br (%s mode)\n",
+               (mgmt_xdp_flags & XDP_FLAGS_SKB_MODE) ? "generic/SKB" : "native");
     }
 
     ctx->mgmt_ifindex = mgmt_ifindex;
@@ -2306,7 +2620,8 @@ static int attach_xdp(struct loader_ctx *ctx)
         __u32 ifindex = ctx->interfaces[i];
         char ifname[IF_NAMESIZE];
         
-        if_indextoname(ifindex, ifname);
+        if (!if_indextoname(ifindex, ifname))
+            snprintf(ifname, sizeof(ifname), "if%u", ifindex);
         
         /* Prepare interface (promisc + disable VLAN offload) */
         prepare_interface(ifname);
@@ -2343,13 +2658,23 @@ static int start_voqd(struct loader_ctx *ctx)
     }
     
     /* Build interface list */
+    size_t iface_off = 0;
     for (i = 0; i < ctx->num_interfaces; i++) {
         char ifname[IF_NAMESIZE];
-        if_indextoname(ctx->interfaces[i], ifname);
+        if (!if_indextoname(ctx->interfaces[i], ifname)) {
+            RS_LOG_ERROR("if_indextoname failed for ifindex %u", ctx->interfaces[i]);
+            continue;
+        }
         
-        if (i > 0) strcat(iface_list, ",");
-        strcat(iface_list, ifname);
+        if (iface_off > 0 && iface_off + 1 < sizeof(iface_list))
+            iface_list[iface_off++] = ',';
+        size_t nlen = strlen(ifname);
+        if (iface_off + nlen >= sizeof(iface_list))
+            break;
+        memcpy(iface_list + iface_off, ifname, nlen);
+        iface_off += nlen;
     }
+    iface_list[iface_off] = '\0';
     
     /* Build VOQd command from profile configuration */
     struct rs_profile_voqd *voqd = &ctx->profile.voqd;
@@ -2357,16 +2682,25 @@ static int start_voqd(struct loader_ctx *ctx)
     RS_LOG_DEBUG("start_voqd() voqd->mode=%d, voqd->enabled=%d, voqd->prio_mask=0x%x",
                  voqd->mode, voqd->enabled, voqd->prio_mask);
     
+    char sw_queue_opts[64] = "";
+    if (voqd->enable_sw_queues) {
+        if (voqd->sw_queue_depth > 0 && voqd->sw_queue_depth != 1024)
+            snprintf(sw_queue_opts, sizeof(sw_queue_opts), "-q -Q %d ", voqd->sw_queue_depth);
+        else
+            snprintf(sw_queue_opts, sizeof(sw_queue_opts), "-q ");
+    }
+
     snprintf(cmd, sizeof(cmd),
-             "%s/rswitch-voqd -i %s -p %d -m %s -P 0x%x %s%s%s",
+             "%s/rswitch-voqd -i %s -p %d -m %s -P 0x%x %s%s%s%s",
              g_build_root,
              iface_list,
              voqd->num_ports > 0 ? voqd->num_ports : ctx->num_interfaces,
              voqd->mode == 2 ? "active" : (voqd->mode == 1 ? "shadow" : "bypass"),
              voqd->prio_mask,
-             voqd->enable_scheduler ? "-s " : "",     /* Enable scheduler thread */
-             voqd->enable_scheduler ? "-S 10 " : "",  /* Stats interval 10s */
-             voqd->zero_copy ? "-z" : "");            /* Zero-copy mode */
+             voqd->enable_scheduler ? "-s " : "",
+             voqd->enable_scheduler ? "-S 10 " : "",
+             voqd->zero_copy ? "-z " : "",
+             sw_queue_opts);
     
     printf("  Command: %s (forked)\n", cmd);
     printf("  Mode: %s\n", voqd->mode == 2 ? "ACTIVE" : (voqd->mode == 1 ? "SHADOW" : "BYPASS"));
@@ -2433,7 +2767,8 @@ static void detach_xdp(struct loader_ctx *ctx)
         char ifname[IF_NAMESIZE];
         char cmd[256];
         
-        if_indextoname(ifindex, ifname);
+        if (!if_indextoname(ifindex, ifname))
+            snprintf(ifname, sizeof(ifname), "if%u", ifindex);
         
         /* Detach XDP program */
         if (bpf_xdp_detach(ifindex, ctx->xdp_flags, NULL) < 0) {
@@ -2505,6 +2840,14 @@ static void close_map_fds(struct loader_ctx *ctx)
     if (ctx->rs_module_config_map_fd >= 0) {
         close(ctx->rs_module_config_map_fd);
         printf("  Closed rs_module_config_map_fd\n");
+    }
+    if (ctx->rs_obs_cfg_map_fd >= 0) {
+        close(ctx->rs_obs_cfg_map_fd);
+        printf("  Closed rs_obs_cfg_map_fd\n");
+    }
+    if (ctx->rs_diag_targets_fd >= 0) {
+        close(ctx->rs_diag_targets_fd);
+        printf("  Closed rs_diag_targets_fd\n");
     }
     
     if (ctx->rs_mac_table_fd >= 0) {
@@ -2635,7 +2978,8 @@ static void cleanup(struct loader_ctx *ctx)
     printf("\nFlushing TX queues...\n");
     for (i = 0; i < ctx->num_interfaces; i++) {
         char ifname[IF_NAMESIZE];
-        if_indextoname(ctx->interfaces[i], ifname);
+        if (!if_indextoname(ctx->interfaces[i], ifname))
+            snprintf(ifname, sizeof(ifname), "if%u", ctx->interfaces[i]);
         
         /* Bring interface down briefly to flush queues */
         char cmd[256];
@@ -2780,6 +3124,8 @@ int main(int argc, char **argv)
     ctx.rs_devmap_fd = -1;
     ctx.rs_stats_map_fd = -1;
     ctx.rs_module_config_map_fd = -1;
+    ctx.rs_obs_cfg_map_fd = -1;
+    ctx.rs_diag_targets_fd = -1;
     ctx.veth_egress_fd = -1;
     ctx.voq_egress_devmap_fd = -1;
     ctx.veth_out_ifindex = 0;
@@ -2861,8 +3207,6 @@ int main(int argc, char **argv)
         }
     }
     
-    ctx.xdp_flags = DEFAULT_XDP_FLAGS;
-    
     /* Parse interfaces */
     if (!iface_list) {
         RS_LOG_ERROR("-i/--ifaces required");
@@ -2901,6 +3245,8 @@ int main(int argc, char **argv)
     if (create_pin_dir(BPF_PIN_PATH)) {
         return 1;
     }
+
+    rs_sd_notify("STATUS=Loading BPF pipeline...");
     
     /* Discovery phase */
     if (discover_modules(&ctx) < 0) {
@@ -2974,6 +3320,12 @@ int main(int argc, char **argv)
     /* Initialize QoS configuration */
     initialize_qos_config(&ctx);
     
+    /* Initialize observability configuration */
+    initialize_obs_config(&ctx);
+
+    /* Populate diagnostic targets for rsdiag */
+    populate_diag_targets(&ctx);
+    
     /* Populate devmaps with queue isolation */
     populate_devmaps(&ctx);
     
@@ -3000,6 +3352,8 @@ int main(int argc, char **argv)
             RS_LOG_WARN("Failed to start VOQd, continuing with fast-path only");
         }
     }
+
+    rs_sd_notify("READY=1\nSTATUS=Pipeline loaded, attached to interfaces");
     
     printf("\nrSwitch running. Press Ctrl+C to exit.\n");
     printf("Attached to %d interface%s\n", ctx.num_interfaces, ctx.num_interfaces > 1 ? "s" : "");
@@ -3017,6 +3371,7 @@ int main(int argc, char **argv)
             shutdown_in_progress = 1;
             keep_running = 0;
             RS_LOG_INFO("Initiating graceful shutdown...");
+            rs_sd_notify("STOPPING=1");
             rs_lifecycle_shutdown(&lifecycle_cfg);
             continue;
         }

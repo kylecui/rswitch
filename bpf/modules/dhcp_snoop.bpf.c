@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 19,
+    RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 8,
+};
+
 char _license[] SEC("license") = "GPL";
 
 RS_DECLARE_MODULE("dhcp_snoop", RS_HOOK_XDP_INGRESS, 19,
@@ -193,6 +198,9 @@ int dhcp_snoop(struct xdp_md *xdp_ctx)
     if (!ctx)
         return XDP_DROP;
 
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
+
     struct dhcp_snoop_config *cfg = bpf_map_lookup_elem(&dhcp_snoop_config_map, &zero);
     if (!cfg || !cfg->enabled) {
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
@@ -240,7 +248,7 @@ int dhcp_snoop(struct xdp_md *xdp_ctx)
             if (stats)
                 stats->rogue_server_drops++;
             emit_snoop_event(ctx->ifindex, msg_type, DHCP_SNOOP_ACTION_ROGUE_DROP, 0, NULL);
-            ctx->drop_reason = RS_DROP_ACL_BLOCK;
+            RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_ACL_BLOCK);
             return XDP_DROP;
         }
 

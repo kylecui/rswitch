@@ -18,7 +18,6 @@
 
 /* rSwitch core headers */
 #include "../core/module_abi.h"
-#include "../core/uapi.h"
 #include "../core/map_defs.h"
 #include "rswitch_parsing.h"  /* Includes parsing_helpers.h internally */
 

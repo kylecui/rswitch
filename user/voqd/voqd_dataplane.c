@@ -86,12 +86,30 @@ int sw_queue_mgr_init(struct sw_queue_mgr *mgr, uint32_t num_ports,
 		return -ENOMEM;
 	}
 	mgr->pool_size = pool_size;
+	mgr->entry_free_stack = calloc(pool_size, sizeof(uint32_t));
+	if (!mgr->entry_free_stack) {
+		sw_queue_mgr_destroy(mgr);
+		return -ENOMEM;
+	}
+	mgr->entry_free_count = pool_size;
+	for (uint32_t i = 0; i < pool_size; i++) {
+		mgr->entry_free_stack[i] = pool_size - 1 - i;
+	}
 	
 	/* Allocate buffer pool */
 	mgr->buffer_pool = calloc(buffer_pool_size, max_frame_size);
 	if (!mgr->buffer_pool) {
 		sw_queue_mgr_destroy(mgr);
 		return -ENOMEM;
+	}
+	mgr->buffer_free_stack = calloc(buffer_pool_size, sizeof(uint32_t));
+	if (!mgr->buffer_free_stack) {
+		sw_queue_mgr_destroy(mgr);
+		return -ENOMEM;
+	}
+	mgr->buffer_free_count = buffer_pool_size;
+	for (uint32_t i = 0; i < buffer_pool_size; i++) {
+		mgr->buffer_free_stack[i] = buffer_pool_size - 1 - i;
 	}
 	mgr->buffer_size = max_frame_size;
 	mgr->max_total_depth = total_queues * queue_depth;
@@ -118,7 +136,9 @@ void sw_queue_mgr_destroy(struct sw_queue_mgr *mgr)
 	
 	/* Free pools */
 	free(mgr->pool);
+	free(mgr->entry_free_stack);
 	free(mgr->buffer_pool);
+	free(mgr->buffer_free_stack);
 	
 	memset(mgr, 0, sizeof(*mgr));
 }
@@ -139,22 +159,24 @@ int sw_queue_enqueue(struct sw_queue_mgr *mgr, uint32_t port_idx, uint8_t priori
 	}
 	
 	/* Check if we have free entries */
-	if (mgr->pool_used >= mgr->pool_size) {
+	if (mgr->entry_free_count == 0) {
 		queue->dropped++;
 		return -ENOSPC;
 	}
 	
 	/* Check if we have free buffers */
-	if (mgr->buffers_used >= mgr->pool_size) {
+	if (mgr->buffer_free_count == 0) {
 		queue->dropped++;
 		return -ENOSPC;
 	}
 	
 	/* Get free entry */
-	struct sw_queue_entry *entry = &mgr->pool[mgr->pool_used++];
+	uint32_t entry_idx = mgr->entry_free_stack[--mgr->entry_free_count];
+	struct sw_queue_entry *entry = &mgr->pool[entry_idx];
 	
 	/* Get free buffer */
-	uint8_t *buffer = mgr->buffer_pool + (mgr->buffers_used++ * mgr->buffer_size);
+	uint32_t buffer_idx = mgr->buffer_free_stack[--mgr->buffer_free_count];
+	uint8_t *buffer = mgr->buffer_pool + (buffer_idx * mgr->buffer_size);
 	
 	/* Copy packet data */
 	if (len > mgr->buffer_size)
@@ -221,9 +243,27 @@ void sw_queue_free_entry(struct sw_queue_mgr *mgr, struct sw_queue_entry *entry)
 	if (!mgr || !entry)
 		return;
 	
-	/* Mark entry as free (simple pool management) */
-	mgr->pool_used--;
-	mgr->buffers_used--;
+	uint32_t entry_idx = (uint32_t)(entry - mgr->pool);
+	if (entry_idx < mgr->pool_size && mgr->entry_free_count < mgr->pool_size) {
+		mgr->entry_free_stack[mgr->entry_free_count++] = entry_idx;
+	}
+
+	if (entry->data >= mgr->buffer_pool) {
+		uint64_t offset = (uint64_t)(entry->data - mgr->buffer_pool);
+		if (offset % mgr->buffer_size == 0) {
+			uint32_t buffer_idx = (uint32_t)(offset / mgr->buffer_size);
+			if (buffer_idx < mgr->pool_size && mgr->buffer_free_count < mgr->pool_size) {
+				mgr->buffer_free_stack[mgr->buffer_free_count++] = buffer_idx;
+			}
+		}
+	}
+
+	entry->data = NULL;
+	entry->len = 0;
+	entry->ts_ns = 0;
+	entry->flow_hash = 0;
+	entry->priority = 0;
+	entry->next = NULL;
 }
 
 /* Get software queue statistics */

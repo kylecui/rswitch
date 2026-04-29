@@ -2,7 +2,7 @@
 
 > **rSwitch** — A software-defined, reconfigurable network device platform built on XDP/eBPF.
 >
-> **rSwitch** — 基于 XDP/eBPF 构建的软件定义可重构网络设备平台。
+> **rSwitch** — 基于XDP/eBPF构建的软件定义可重构网络设备平台。
 
 ---
 
@@ -10,7 +10,7 @@
 
 1. [What is Reconfigurability? / 什么是可重构性？](#1-what-is-reconfigurability--什么是可重构性)
 2. [The Problem with Traditional Switches / 传统交换机的问题](#2-the-problem-with-traditional-switches--传统交换机的问题)
-3. [How rSwitch Solves It / rSwitch 如何解决](#3-how-rswitch-solves-it--rswitch-如何解决)
+3. [How rSwitch Solves It / rSwitch如何解决](#3-how-rswitch-solves-it--rswitch-如何解决)
 4. [Core Design Principles / 核心设计原则](#4-core-design-principles--核心设计原则)
 5. [Architecture Overview / 架构概览](#5-architecture-overview--架构概览)
 6. [Profile-Driven Configuration / 配置文件驱动](#6-profile-driven-configuration--配置文件驱动)
@@ -30,9 +30,9 @@ Think of it like smartphone apps: you don't buy a new phone to get a new feature
 
 **中文:**
 
-可重构性是指在运行时改变网络设备行为和能力的能力，无需更换硬件或固件。rSwitch 不使用固化在 ASIC 中的固定功能管道，而是使用可以动态加载、卸载和重新加载的软件定义 BPF 模块。
+可重构性是指在运行时改变网络设备行为和能力的能力，无需更换硬件或固件。rSwitch不使用固化在ASIC中的固定功能管道，而是使用可以动态加载、卸载和重新加载的软件定义BPF模块。
 
-可以把它想象成智能手机应用：您不需要买新手机来获得新功能——只需安装一个应用。同样，使用 rSwitch，您不需要购买新硬件来添加三层路由、QoS 或防火墙功能——只需加载相应的模块。
+可以把它想象成智能手机应用：您不需要买新手机来获得新功能——只需安装一个应用。同样，使用rSwitch，您不需要购买新硬件来添加三层路由、QoS或防火墙功能——只需加载相应的模块。
 
 ---
 
@@ -83,12 +83,12 @@ Problems:
 问题：
 - **不灵活**：只需要二层交换机？您仍然要为三层芯片付费。
 - **升级困难**：新功能需要固件更新或更换硬件。
-- **厂商锁定**：自定义 CLI、专有协议、封闭 API。
+- **厂商锁定**：自定义CLI、专有协议、封闭API。
 - **过度配置**：购买顶级型号"以防万一"以后需要功能。
 
 ---
 
-## 3. How rSwitch Solves It / rSwitch 如何解决
+## 3. How rSwitch Solves It / rSwitch如何解决
 
 **English:**
 
@@ -121,7 +121,7 @@ Key innovations:
 
 **中文:**
 
-rSwitch 颠覆了传统模式。它提供**配置文件驱动的模块化架构**，而非固定管道：
+rSwitch颠覆了传统模式。它提供**配置文件驱动的模块化架构**，而非固定管道：
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -143,8 +143,8 @@ rSwitch 颠覆了传统模式。它提供**配置文件驱动的模块化架构*
 ```
 
 关键创新：
-- **YAML 配置文件**选择运行哪些模块
-- **BPF 模块**是独立的网络功能
+- **YAML配置文件**选择运行哪些模块
+- **BPF模块**是独立的网络功能
 - **热重载**在运行时替换模块
 - **CO-RE**（一次编译，到处运行）确保可移植性
 
@@ -156,7 +156,7 @@ rSwitch 颠覆了传统模式。它提供**配置文件驱动的模块化架构*
 
 | English | 中文 |
 |---------|------|
-| YAML profiles select modules at load time | YAML 配置文件在加载时选择模块 |
+| YAML profiles select modules at load time | YAML配置文件在加载时选择模块 |
 | Hot-reload swaps modules at runtime | 热重载在运行时替换模块 |
 | Operators compose custom network functions | 运维人员组合自定义网络功能 |
 | No code changes required | 无需代码更改 |
@@ -165,26 +165,26 @@ rSwitch 颠覆了传统模式。它提供**配置文件驱动的模块化架构*
 
 | English | 中文 |
 |---------|------|
-| Each function is an independent BPF program | 每个功能是独立的 BPF 程序 |
-| Self-describing metadata embedded in ELF | 自描述元数据嵌入 ELF |
+| Each function is an independent BPF program | 每个功能是独立的BPF程序 |
+| Self-describing metadata embedded in ELF | 自描述元数据嵌入ELF |
 | Modules developed, tested, deployed independently | 模块独立开发、测试、部署 |
-| Clean API boundaries | 清晰的 API 边界 |
+| Clean API boundaries | 清晰的API边界 |
 
 ### Performance / 性能
 
 | English | 中文 |
 |---------|------|
-| XDP processes packets at driver level | XDP 在驱动级别处理数据包 |
-| Zero-copy paths via AF_XDP | 通过 AF_XDP 实现零拷贝路径 |
+| XDP processes packets at driver level | XDP在驱动级别处理数据包 |
+| Zero-copy paths via AF_XDP | 通过AF_XDP实现零拷贝路径 |
 | Wire-speed on commodity hardware | 在普通硬件上达到线速 |
-| Per-CPU state eliminates locks | 每 CPU 状态消除锁竞争 |
+| Per-CPU state eliminates locks | 每CPU状态消除锁竞争 |
 
-### CO-RE Portability / CO-RE 可移植性
+### CO-RE Portability / CO-RE可移植性
 
 | English | 中文 |
 |---------|------|
 | Compile Once, Run Everywhere | 一次编译，到处运行 |
-| Uses vmlinux.h and libbpf | 使用 vmlinux.h 和 libbpf |
+| Uses vmlinux.h and libbpf | 使用vmlinux.h和libbpf |
 | Modules work across kernel versions | 模块跨内核版本工作 |
 | No per-kernel recompilation | 无需针对每个内核重新编译 |
 
@@ -192,7 +192,7 @@ rSwitch 颠覆了传统模式。它提供**配置文件驱动的模块化架构*
 
 | English | 中文 |
 |---------|------|
-| BPF verifier enforces memory safety | BPF 验证器强制内存安全 |
+| BPF verifier enforces memory safety | BPF验证器强制内存安全 |
 | No kernel crashes from module bugs | 模块错误不会导致内核崩溃 |
 | Bounded loops, safe pointer arithmetic | 有界循环，安全指针运算 |
 | Sandboxed execution | 沙箱化执行 |
@@ -203,7 +203,7 @@ rSwitch 颠覆了传统模式。它提供**配置文件驱动的模块化架构*
 |---------|------|
 | Unified event bus for all modules | 所有模块统一事件总线 |
 | Per-module statistics | 每模块统计 |
-| Prometheus metrics, sFlow sampling | Prometheus 指标，sFlow 采样 |
+| Prometheus metrics, sFlow sampling | Prometheus指标，sFlow采样 |
 | Full pipeline visibility | 完整管道可见性 |
 
 ---
@@ -245,11 +245,11 @@ rSwitch consists of three layers:
 
 **中文:**
 
-rSwitch 由三层组成：
+rSwitch由三层组成：
 
-- **用户空间**：配置文件、加载器、CLI 工具、守护进程
+- **用户空间**：配置文件、加载器、CLI工具、守护进程
 - **BPF Maps**：内核和用户空间之间的共享状态
-- **内核空间**：XDP 入口和出口管道
+- **内核空间**：XDP入口和出口管道
 
 ---
 
@@ -287,7 +287,7 @@ ports:
 
 **中文:**
 
-配置文件是定义完整交换机特性的 YAML 文件：
+配置文件是定义完整交换机特性的YAML文件：
 
 ```yaml
 # etc/profiles/l2-switch.yaml
@@ -344,19 +344,19 @@ Modules are assigned **stage numbers** that determine execution order:
 
 **中文:**
 
-模块通过 BPF 尾调用链接。每个模块：
+模块通过BPF尾调用链接。每个模块：
 1. 读取共享上下文（`rs_ctx`）
 2. 执行其功能
 3. 调用 `RS_TAIL_CALL_NEXT()` 继续管道
 
 模块被分配**阶段号**来决定执行顺序：
-- 阶段 10-19：入口处理（调度器、协议拦截）
-- 阶段 20-29：分类（VLAN、QoS）
-- 阶段 30-49：安全（ACL、速率限制）
-- 阶段 50-79：转发（路由、NAT、流表）
-- 阶段 80-89：学习和监控
-- 阶段 90：最终转发（lastcall）
-- 阶段 170-190：出口处理
+- 阶段10-19：入口处理（调度器、协议拦截）
+- 阶段20-29：分类（VLAN、QoS）
+- 阶段30-49：安全（ACL、速率限制）
+- 阶段50-79：转发（路由、NAT、流表）
+- 阶段80-89：学习和监控
+- 阶段90：最终转发（lastcall）
+- 阶段170-190：出口处理
 
 ---
 
@@ -375,9 +375,9 @@ Modules are assigned **stage numbers** that determine execution order:
 
 | Benefit | Description / 描述 |
 |---------|-------------------|
-| **Clean APIs** | Stable SDK with versioned ABI / 带版本控制 ABI 的稳定 SDK |
+| **Clean APIs** | Stable SDK with versioned ABI / 带版本控制ABI的稳定SDK |
 | **Independent dev** | Modules built/tested separately / 模块独立构建/测试 |
-| **Familiar tools** | Standard Linux, BPF, Prometheus / 标准 Linux、BPF、Prometheus |
+| **Familiar tools** | Standard Linux, BPF, Prometheus / 标准Linux、BPF、Prometheus |
 | **Open ecosystem** | Contribute modules to marketplace / 向市场贡献模块 |
 
 ### For Organizations / 对于组织
@@ -397,36 +397,36 @@ Modules are assigned **stage numbers** that determine execution order:
 ```yaml
 modules: [vlan, acl, source_guard, dhcp_snoop, l2learn, stp]
 ```
-- VLAN segmentation for departments / 部门 VLAN 分段
-- IP source guard against spoofing / IP 源防护防止欺骗
-- DHCP snooping for rogue prevention / DHCP 监听防止恶意服务器
-- STP for loop prevention / STP 防止环路
+- VLAN segmentation for departments / 部门VLAN分段
+- IP source guard against spoofing / IP源防护防止欺骗
+- DHCP snooping for rogue prevention / DHCP监听防止恶意服务器
+- STP for loop prevention / STP防止环路
 
 ### Data Center Top-of-Rack / 数据中心接入层交换机
 ```yaml
 modules: [vlan, acl, route, flow_table, qos_classify, egress_qos]
 ```
-- L3 routing with ECMP / 带 ECMP 的三层路由
+- L3 routing with ECMP / 带ECMP的三层路由
 - Flow-based fast path / 基于流的快速路径
-- QoS for tenant isolation / QoS 实现租户隔离
+- QoS for tenant isolation / QoS实现租户隔离
 
 ### Security Gateway / 安全网关
 ```yaml
 modules: [acl, conntrack, nat, rate_limiter, mirror]
 ```
 - Stateful firewall / 状态防火墙
-- NAT for address translation / NAT 地址转换
-- Rate limiting for DDoS mitigation / 速率限制缓解 DDoS
+- NAT for address translation / NAT地址转换
+- Rate limiting for DDoS mitigation / 速率限制缓解DDoS
 - Traffic mirroring for IDS / 流量镜像用于入侵检测
 
 ### Carrier Edge Router / 运营商边缘路由器
 ```yaml
 modules: [tunnel, route, nat, qos_classify, egress_qos, sflow]
 ```
-- VXLAN/GRE tunneling / VXLAN/GRE 隧道
+- VXLAN/GRE tunneling / VXLAN/GRE隧道
 - Complex routing policies / 复杂路由策略
-- Strict QoS enforcement / 严格 QoS 执行
-- sFlow for traffic analysis / sFlow 流量分析
+- Strict QoS enforcement / 严格QoS执行
+- sFlow for traffic analysis / sFlow流量分析
 
 ---
 

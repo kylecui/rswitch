@@ -17,6 +17,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 80,
+    RS_THIS_MODULE_ID = RS_MOD_L2LEARN,
+};
+
 char _license[] SEC("license") = "GPL";
 
 // Module metadata for auto-discovery
@@ -211,6 +216,9 @@ int l2learn_ingress(struct xdp_md *xdp_ctx)
         rs_debug("Failed to get rs_ctx");
         return XDP_DROP;
     }
+
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
     
     rs_debug("target port: %u", ctx->egress_ifindex);
 
@@ -260,7 +268,7 @@ do_learning_only:
     if (data + sizeof(*eth) > data_end) {
         rs_debug("Packet too short for Ethernet header");
         ctx->error = RS_ERROR_PARSE_FAILED;
-        ctx->drop_reason = RS_DROP_PARSE_ERROR;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_PARSE_ETH);
         return XDP_DROP;
     }
     eth = data;

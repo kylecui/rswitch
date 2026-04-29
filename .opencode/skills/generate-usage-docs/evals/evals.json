@@ -1,0 +1,34 @@
+{
+  "skill_name": "generate-usage-docs",
+  "evals": [
+    {
+      "id": "doc-api-service",
+      "prompt": "根据当前 API 服务项目生成一套使用文档，至少包含 README、quick start、configuration 和 troubleshooting。",
+      "expected_output": "输出应包含受众说明、文档集结构、README 草案、quick start、配置与排障内容。",
+      "assertions": [
+        "输出包含 Audience and scope",
+        "输出包含 README 或 README 草案",
+        "输出包含 Quick Start",
+        "输出包含 Troubleshooting"
+      ]
+    },
+    {
+      "id": "doc-cli",
+      "prompt": "根据这个 CLI 项目的代码和命令结构生成使用说明。",
+      "expected_output": "输出应包含安装、命令用法、示例、常见错误或失败路径。",
+      "assertions": [
+        "输出包含 CLI 或命令相关参考",
+        "输出包含至少一个 grounded 示例"
+      ]
+    },
+    {
+      "id": "doc-library",
+      "prompt": "根据当前库项目生成 README 和 usage guide。",
+      "expected_output": "输出应围绕 public API 和最小调用路径，不应泛化为空洞介绍。",
+      "assertions": [
+        "输出区分 narrative 与 reference",
+        "输出基于当前项目事实，而不是通用模板套话"
+      ]
+    }
+  ]
+}

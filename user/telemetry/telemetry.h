@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <time.h>
+#include <pthread.h>
 
 /*
  * rSwitch Telemetry System
@@ -93,6 +94,28 @@ struct telemetry_snapshot {
         uint64_t rate_limit_drops;
         uint64_t acl_drops;
     } policy;
+
+    struct {
+        uint32_t level;
+        uint32_t sample_ppm;
+        uint64_t event_mask;
+        uint32_t burst_limit;
+    } obs_config;
+
+    struct {
+        uint16_t stage_id;
+        uint16_t module_id;
+        uint64_t hits;
+    } stage_hits[64];
+    uint32_t num_stage_hits;
+
+    struct {
+        uint16_t reason;
+        uint16_t stage_id;
+        uint16_t module_id;
+        uint64_t packets;
+    } top_drops[32];
+    uint32_t num_top_drops;
     
     /* System resource usage */
     struct {

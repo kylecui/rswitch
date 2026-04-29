@@ -1,0 +1,10 @@
+[
+  { "query": "根据当前项目设计和代码，帮我生成 test cases", "should_trigger": true },
+  { "query": "请为这个 API 服务生成测试矩阵和回归测试点", "should_trigger": true },
+  { "query": "看看当前 CLI 代码，帮我补测试用例", "should_trigger": true },
+  { "query": "根据这个模块设计做一份验收测试清单", "should_trigger": true },
+  { "query": "帮我写一份数据库建表 SQL", "should_trigger": false },
+  { "query": "把 README 翻译成中文", "should_trigger": false },
+  { "query": "根据当前项目生成使用文档", "should_trigger": false },
+  { "query": "帮我解释单元测试和集成测试的区别", "should_trigger": false }
+]

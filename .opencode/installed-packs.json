@@ -1,0 +1,12 @@
+{
+  "packs": {
+    "petfish-style-skill": {
+      "installed_at": "2026-04-24T05:48:37Z",
+      "version": "3.0.0",
+      "skills": [
+        "petfish-style-rewriter"
+      ],
+      "description": "Opencode skill package for Petfish style rewriting and humanized technical writing."
+    }
+  }
+}

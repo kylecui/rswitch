@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 85,
+    RS_THIS_MODULE_ID = RS_MOD_SFLOW,
+};
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -116,6 +121,8 @@ int sflow_sample(struct xdp_md *xdp_ctx)
 
     if (!ctx)
         return XDP_DROP;
+
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
 
     if (!ctx->parsed) {
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);

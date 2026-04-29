@@ -17,6 +17,12 @@
 
 #include "../include/rswitch_common.h"
 
+/* Observability identity for this compilation unit */
+enum {
+    RS_THIS_STAGE_ID  = 90,
+    RS_THIS_MODULE_ID = RS_MOD_LASTCALL,
+};
+
 char _license[] SEC("license") = "GPL";
 
 /* XDP devmap for packet forwarding
@@ -85,8 +91,13 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
     
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
+    
     // Check if we should forward
     if (!should_forward(ctx)) {
+        if (ctx->drop_reason == 0)
+            RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_INTERNAL);
+        RS_OBS_FINAL_ACTION(xdp_ctx, ctx, pkt_len);
         return XDP_DROP;
     }
     
@@ -101,7 +112,8 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
         if (egress_ifindex == ctx->ifindex) {
             rs_debug("Dropping packet: egress == ingress (%d)", egress_ifindex);
             ctx->error = RS_ERROR_NO_ROUTE;
-            ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
+            RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_NO_FWD_ENTRY);
+            RS_OBS_FINAL_ACTION(xdp_ctx, ctx, pkt_len);
             return XDP_DROP;
         }
         
@@ -118,6 +130,8 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
         ret = bpf_redirect_map(&rs_xdp_devmap, egress_ifindex, 0);
         rs_debug("Lastcall: Redirected to port %d, ret=%ld", egress_ifindex, ret);
 
+        ctx->action = XDP_REDIRECT;
+        RS_OBS_FINAL_ACTION(xdp_ctx, ctx, pkt_len);
         return ret;
     }
     
@@ -152,6 +166,8 @@ int lastcall_forward(struct xdp_md *xdp_ctx)
     // return bpf_redirect_map(&rs_xdp_devmap, 0, BPF_F_BROADCAST | BPF_F_EXCLUDE_INGRESS);
     ret = bpf_redirect_map(&rs_xdp_devmap, 0, BPF_F_BROADCAST | BPF_F_EXCLUDE_INGRESS);
     rs_debug("Lastcall: Broadcasted packet, ret=%ld", ret);
+    ctx->action = XDP_REDIRECT;
+    RS_OBS_FINAL_ACTION(xdp_ctx, ctx, pkt_len);
     return ret;
     
     // Note: We cannot update individual TX stats for broadcast here

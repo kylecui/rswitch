@@ -31,6 +31,11 @@
 #include "../include/rswitch_common.h"
 #include "../core/afxdp_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 170,
+    RS_THIS_MODULE_ID = RS_MOD_EGRESS_QOS,
+};
+
 char _license[] SEC("license") = "GPL";
 
 // Module metadata
@@ -412,6 +417,11 @@ int qos_process(struct xdp_md *xdp_ctx)
     if (!ctx) {
         return XDP_DROP;
     }
+
+    void *data = (void *)(long)xdp_ctx->data;
+    void *data_end = (void *)(long)xdp_ctx->data_end;
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
     
     /* Get shared QoS configuration (for DSCP mapping) */
     __u32 cfg_key = 0;
@@ -430,9 +440,6 @@ int qos_process(struct xdp_md *xdp_ctx)
         RS_TAIL_CALL_EGRESS(xdp_ctx, ctx);
         return XDP_DROP;
     }
-    
-    void *data = (void *)(long)xdp_ctx->data;
-    void *data_end = (void *)(long)xdp_ctx->data_end;
     
     /* Get IP header for DSCP manipulation */
     struct iphdr *iph = data + (ctx->layers.l3_offset & RS_L3_OFFSET_MASK);
@@ -463,7 +470,14 @@ int qos_process(struct xdp_md *xdp_ctx)
         if (check_rate_limit(priority, packet_len)) {
             rs_debug("QoS: Rate limited priority=%u len=%u", priority, packet_len);
             update_stat(QOS_STAT_RATE_LIMITED_PACKETS);
-            ctx->drop_reason = RS_DROP_RATE_LIMIT;
+            RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_RATE_LIMIT);
+
+            {
+                struct rs_obs_event evt = {0};
+                rs_obs_build_event(xdp_ctx, ctx, &evt, RS_EVENT_OBS_DROP, RS_OBS_F_DROP,
+                                   RS_DROP_RATE_LIMIT, packet_len);
+                RS_EMIT_SAMPLED_EVENT(ctx, &evt, sizeof(evt));
+            }
             return XDP_DROP;
         }
     }
@@ -512,7 +526,14 @@ int qos_process(struct xdp_md *xdp_ctx)
                             /* Drop low priority packets during congestion */
                             rs_debug("QoS: Congestion drop priority=%u qdepth=%u", priority, *qdepth);
                             update_stat(QOS_STAT_CONGESTION_DROPS);
-                            ctx->drop_reason = RS_DROP_CONGESTION;
+                            RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_CONGESTION);
+
+                            {
+                                struct rs_obs_event evt = {0};
+                                rs_obs_build_event(xdp_ctx, ctx, &evt, RS_EVENT_OBS_DROP,
+                                                   RS_OBS_F_DROP, RS_DROP_CONGESTION, pkt_len);
+                                RS_EMIT_SAMPLED_EVENT(ctx, &evt, sizeof(evt));
+                            }
                             return XDP_DROP;
                         }
                     }
@@ -540,6 +561,13 @@ int qos_process(struct xdp_md *xdp_ctx)
     }
     
     rs_debug("QoS: processed priority=%u egress=%u", priority, ctx->egress_ifindex);
+
+    {
+        struct rs_obs_event evt = {0};
+        rs_obs_build_event(xdp_ctx, ctx, &evt, RS_EVENT_OBS_SAMPLE,
+                           RS_OBS_F_SAMPLED, 0, pkt_len);
+        RS_EMIT_SAMPLED_EVENT(ctx, &evt, sizeof(evt));
+    }
     
     /* Continue to next egress module */
     RS_TAIL_CALL_EGRESS(xdp_ctx, ctx);

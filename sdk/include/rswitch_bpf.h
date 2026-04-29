@@ -2,6 +2,8 @@
 #ifndef __RSWITCH_BPF_H
 #define __RSWITCH_BPF_H
 
+#warning "rswitch_bpf.h is deprecated. Use #include <rswitch_module.h> instead. See sdk/docs/SDK_Migration_Guide.md"
+
 /*
  * rSwitch BPF Common Header with CO-RE Support
  * 
@@ -25,7 +27,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_core_read.h>
-#include "../core/map_defs.h"
+#include "map_defs.h"
 
 #ifndef RS_API_STABLE
 #define RS_API_STABLE

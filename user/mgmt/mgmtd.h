@@ -17,9 +17,11 @@ struct mgmtd_config {
 	int auth_enabled;
 	char auth_user[64];
 	char auth_password[128];
+	char auth_salt[33];
 	int session_timeout;
 	int rate_limit_max_fails;
 	int rate_limit_lockout_sec;
+	char cors_origin[128];	    /* CORS Allow-Origin value; empty = same-origin only */
 };
 
 /* Forward declarations for API handler registration */

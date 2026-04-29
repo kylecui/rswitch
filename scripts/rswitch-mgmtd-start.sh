@@ -41,6 +41,10 @@ while [ $elapsed -lt "$WAIT_TIMEOUT" ]; do
             fi
             sleep 1
         done
+        log "Starting DHCP client on mgmt0"
+        ip netns exec "$NS_NAME" dhcpcd -b --noipv4ll mgmt0 2>/dev/null \
+            || ip netns exec "$NS_NAME" dhclient -nw mgmt0 2>/dev/null \
+            || log "WARNING: no DHCP client available for mgmt0"
         log "Launching mgmtd inside namespace '${NS_NAME}'"
         exec nsenter --net=/run/netns/"$NS_NAME" "$MGMTD_BIN" -f "$PROFILE_PATH" -n
     fi

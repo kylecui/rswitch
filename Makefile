@@ -25,9 +25,11 @@ LIBXDP_LIBS = $(shell pkg-config --libs libxdp 2>/dev/null || echo "-lxdp")
 BPF_DIR = ./bpf
 CORE_DIR = $(BPF_DIR)/core
 MODULES_DIR = $(BPF_DIR)/modules
+DIAG_DIR = $(BPF_DIR)/diag
 INCLUDE_DIR = $(BPF_DIR)/include
 USER_DIR = ./user
 COMMON_DIR = $(USER_DIR)/common
+SDK_INCLUDE_DIR = ./sdk/include
 BUILD_DIR = ./build
 OBJ_DIR = $(BUILD_DIR)/bpf
 
@@ -40,7 +42,7 @@ AUDIT_OBJ = $(BUILD_DIR)/audit.o
 TOPOLOGY_OBJ = $(BUILD_DIR)/topology.o
 EVENT_DB_OBJ = $(BUILD_DIR)/event_db.o
 
-INCLUDES = $(LIBBPF_UAPI_INCLUDES) $(LIBBPF_INCLUDES) -I$(INCLUDE_DIR) -I$(CORE_DIR)
+INCLUDES = $(LIBBPF_UAPI_INCLUDES) $(LIBBPF_INCLUDES) -I$(INCLUDE_DIR) -I$(CORE_DIR) -I$(SDK_INCLUDE_DIR)
 USER_INCLUDES = -I$(COMMON_DIR)
 
 # Clang BPF system includes
@@ -69,22 +71,25 @@ EVENT_CONSUMER = $(BUILD_DIR)/rswitch-events
 PACKET_TRACE = $(BUILD_DIR)/rs_packet_trace
 SFLOW_EXPORT = $(BUILD_DIR)/rswitch-sflow
 PROMETHEUS_EXPORTER = $(BUILD_DIR)/rswitch-prometheus
+RSDIAG = $(BUILD_DIR)/rsdiag
 WATCHDOG = $(BUILD_DIR)/rswitch-watchdog
 CONTROLLER = $(BUILD_DIR)/rswitch-controller
 AGENT = $(BUILD_DIR)/rswitch-agent
 SNMPAGENT = $(BUILD_DIR)/rswitch-snmpagent
 MGMTD = $(BUILD_DIR)/rswitch-mgmtd
+KILLSWITCH_WATCHDOG = $(BUILD_DIR)/rs-killswitch-watchdog
 MONGOOSE_OBJ = $(BUILD_DIR)/mongoose.o
 MGMT_IFACE_OBJ = $(BUILD_DIR)/mgmt_iface.o
 WATCHDOG_OBJ = $(BUILD_DIR)/watchdog.o
 # AFXDP_TEST = $(BUILD_DIR)/afxdp_test  # Requires libbpf with xsk.h support
 CORE_OBJS = $(patsubst $(CORE_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(CORE_DIR)/*.bpf.c))
 MODULE_OBJS = $(patsubst $(MODULES_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(MODULES_DIR)/*.bpf.c))
+DIAG_OBJS = $(patsubst $(DIAG_DIR)/%.bpf.c,$(OBJ_DIR)/%.bpf.o,$(wildcard $(DIAG_DIR)/*.bpf.c))
 ALL_BPF_OBJS = $(CORE_OBJS) $(MODULE_OBJS)
 
 .PHONY: all clean dirs vmlinux help test test-bpf test-ci fuzz integration-test benchmark gen-docs
 
-all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSFLOWCTL) $(RSNATCTL) $(RSVOQCTL) $(RSTUNNELCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(SFLOW_EXPORT) $(PROMETHEUS_EXPORTER) $(WATCHDOG) $(CONTROLLER) $(AGENT) $(SNMPAGENT) $(MGMTD) $(ALL_BPF_OBJS)
+all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL) $(RSPORTCTL) $(RSVLANCTL) $(RSACLCTL) $(RSROUTECTL) $(RSQOSCTL) $(RSFLOWCTL) $(RSNATCTL) $(RSVOQCTL) $(RSTUNNELCTL) $(TELEMETRY) $(EVENT_CONSUMER) $(PACKET_TRACE) $(SFLOW_EXPORT) $(PROMETHEUS_EXPORTER) $(RSDIAG) $(WATCHDOG) $(CONTROLLER) $(AGENT) $(SNMPAGENT) $(MGMTD) $(KILLSWITCH_WATCHDOG) $(ALL_BPF_OBJS)
 	@echo "✓ Build complete"
 	@echo "  Loader: $(LOADER)"
 	@echo "  Reload: $(HOT_RELOAD)"
@@ -106,6 +111,7 @@ all: dirs $(LOADER) $(HOT_RELOAD) $(VOQD) $(STPD) $(LLDPD) $(LACPD) $(RSWITCHCTL
 	@echo "  Event Consumer: $(EVENT_CONSUMER)"
 	@echo "  sFlow: $(SFLOW_EXPORT)"
 	@echo "  Prometheus: $(PROMETHEUS_EXPORTER)"
+	@echo "  Diag Tool: $(RSDIAG)"
 	@echo "  Watchdog: $(WATCHDOG)"
 	@echo "  Controller: $(CONTROLLER)"
 	@echo "  Agent: $(AGENT)"
@@ -136,6 +142,13 @@ $(OBJ_DIR)/%.bpf.o: $(MODULES_DIR)/%.bpf.c $(INCLUDE_DIR)/vmlinux.h $(wildcard $
 	@echo "  CC [BPF]  $@"
 	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -DDEBUG \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) \
+		-c $< -o $@
+	@$(LLVM_STRIP) -g $@
+
+$(OBJ_DIR)/%.bpf.o: $(DIAG_DIR)/%.bpf.c $(INCLUDE_DIR)/vmlinux.h $(wildcard $(DIAG_DIR)/*.h) $(wildcard $(SDK_INCLUDE_DIR)/*.h)
+	@echo "  CC [BPF]  $@"
+	@$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -D__BPF__ \
+		$(INCLUDES) -I$(DIAG_DIR) $(CLANG_BPF_SYS_INCLUDES) \
 		-c $< -o $@
 	@$(LLVM_STRIP) -g $@
 
@@ -186,10 +199,10 @@ $(EVENT_DB_OBJ): $(USER_DIR)/mgmt/event_db.c $(USER_DIR)/mgmt/event_db.h $(COMMO
 # Build user-space loader
 $(LOADER): $(USER_DIR)/loader/rswitch_loader.c $(USER_DIR)/loader/profile_parser.c $(wildcard $(USER_DIR)/loader/*.h) $(USER_DIR)/lifecycle/lifecycle.h $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(RESOURCE_LIMITS_OBJ)
 	@echo "  CC [USER] $@"
-	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) -DHAVE_SYSTEMD \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/loader/rswitch_loader.c $(USER_DIR)/loader/profile_parser.c \
-		$(LIFECYCLE_OBJ) $(RESOURCE_LIMITS_OBJ) $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz
+		$(LIFECYCLE_OBJ) $(RESOURCE_LIMITS_OBJ) $(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lsystemd
 
 # Build hot-reload tool
 $(HOT_RELOAD): $(USER_DIR)/reload/hot_reload.c $(USER_DIR)/loader/profile_parser.h $(RS_LOG_OBJ)
@@ -239,6 +252,13 @@ $(WATCHDOG): $(USER_DIR)/watchdog/watchdog.c $(USER_DIR)/watchdog/watchdog.h $(R
 		-o $@ $(USER_DIR)/watchdog/watchdog.c \
 		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
 
+$(KILLSWITCH_WATCHDOG): $(USER_DIR)/killswitch/rs_killswitch_watchdog.c
+	@echo "  CC [USER] $@"
+	@mkdir -p $(USER_DIR)/killswitch
+	@$(CLANG) -g -O2 -I$(SDK_INCLUDE_DIR) \
+		-o $@ $(USER_DIR)/killswitch/rs_killswitch_watchdog.c \
+		$(LIBBPF_LIBS) -lelf -lz
+
 $(CONTROLLER): $(USER_DIR)/controller/controller.c $(USER_DIR)/controller/controller.h $(RS_LOG_OBJ)
 	@echo "  CC [USER] $@"
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
@@ -287,7 +307,7 @@ $(MGMTD): $(USER_DIR)/mgmt/mgmtd.c $(USER_DIR)/mgmt/mgmtd.h $(USER_DIR)/mgmt/mgm
 		-o $@ $(USER_DIR)/mgmt/mgmtd.c $(USER_DIR)/loader/profile_parser.c \
 		$(MONGOOSE_OBJ) $(MGMT_IFACE_OBJ) $(WATCHDOG_OBJ) $(EVENT_DB_OBJ) \
 		$(LIFECYCLE_OBJ) $(AUDIT_OBJ) $(ROLLBACK_OBJ) $(TOPOLOGY_OBJ) $(RS_LOG_OBJ) \
-		$(LIBBPF_LIBS) -lelf -lz -lpthread -lsqlite3
+		$(LIBBPF_LIBS) -lelf -lz -lpthread -lsqlite3 -lcrypto
 
 # Build rswitchctl
 $(RSWITCHCTL): $(USER_DIR)/ctl/rswitchctl.c $(USER_DIR)/ctl/rswitchctl_dev.c $(USER_DIR)/ctl/rswitchctl_extended.c $(USER_DIR)/ctl/rswitchctl_acl.c $(USER_DIR)/ctl/rswitchctl_mirror.c $(USER_DIR)/loader/profile_parser.c $(USER_DIR)/watchdog/watchdog.c $(USER_DIR)/watchdog/watchdog.h $(USER_DIR)/lifecycle/lifecycle.h $(USER_DIR)/registry/registry.c $(USER_DIR)/rollback/rollback.h $(USER_DIR)/audit/audit.h $(USER_DIR)/topology/topology.h $(RS_LOG_OBJ) $(LIFECYCLE_OBJ) $(REGISTRY_OBJ) $(ROLLBACK_OBJ) $(AUDIT_OBJ) $(TOPOLOGY_OBJ)
@@ -407,6 +427,14 @@ $(PROMETHEUS_EXPORTER): $(USER_DIR)/exporter/prometheus_exporter.c $(USER_DIR)/e
 	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
 		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/exporter $(USER_INCLUDES) \
 		-o $@ $(USER_DIR)/exporter/prometheus_exporter.c \
+		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
+
+# Build rsdiag diagnostic CLI tool
+$(RSDIAG): $(USER_DIR)/tools/rsdiag.c $(RS_LOG_OBJ)
+	@echo "  CC [USER] $@"
+	@$(CLANG) -g -O2 -D__TARGET_ARCH_$(ARCH) \
+		$(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -I$(USER_DIR)/tools $(USER_INCLUDES) \
+		-o $@ $(USER_DIR)/tools/rsdiag.c \
 		$(RS_LOG_OBJ) $(LIBBPF_LIBS) -lelf -lz -lpthread
 
 # Build packet trace v2 (ringbuf-based)
@@ -618,7 +646,8 @@ install: all
 	@cp -f $(BUILD_DIR)/rswitch-sflow    $(INSTALL_PREFIX)/build/
 	@for f in $(BUILD_DIR)/rswitch-voqd $(BUILD_DIR)/rswitch-stpd $(BUILD_DIR)/rswitch-lldpd \
 	          $(BUILD_DIR)/rswitch-lacpd $(BUILD_DIR)/rswitch-prometheus \
-	          $(BUILD_DIR)/rswitch-controller $(BUILD_DIR)/rswitch-agent $(BUILD_DIR)/rswitch-snmpagent; do \
+	          $(BUILD_DIR)/rswitch-controller $(BUILD_DIR)/rswitch-agent $(BUILD_DIR)/rswitch-snmpagent \
+	          $(BUILD_DIR)/rsdiag $(BUILD_DIR)/rs-killswitch-watchdog; do \
 	    [ -f "$$f" ] && cp -f "$$f" $(INSTALL_PREFIX)/build/ || true; \
 	done
 	@# BPF objects
@@ -630,11 +659,13 @@ install: all
 	@for f in scripts/setup_nic_queues.sh scripts/cleanup_nic_queues.sh \
 	          scripts/unload.sh scripts/hot-reload.sh scripts/setup_veth_egress.sh \
 	          scripts/rswitch-detect-ports.sh scripts/rswitch-gen-profile.sh \
-	          scripts/install.sh scripts/uninstall.sh; do \
+	          scripts/install.sh scripts/uninstall.sh \
+	          scripts/rswitch-dev-deploy.sh scripts/rswitch-killswitch-trigger.sh; do \
 	    [ -f "$$f" ] && cp -f "$$f" $(INSTALL_PREFIX)/scripts/ || true; \
 	done
 	@chmod +x $(INSTALL_PREFIX)/scripts/*.sh
 	@# Config, profiles, systemd templates, web
+	@mkdir -p $(INSTALL_PREFIX)/etc/rswitch
 	@cp -f etc/profiles/*.yaml $(INSTALL_PREFIX)/etc/profiles/
 	@cp -f etc/systemd/*.service $(INSTALL_PREFIX)/etc/systemd/
 	@cp -rf web/* $(INSTALL_PREFIX)/web/
@@ -665,6 +696,7 @@ install-sdk:
 	@install -d $(SDK_INCLUDEDIR)
 	@install -m 644 sdk/include/rswitch_module.h   $(SDK_INCLUDEDIR)/
 	@install -m 644 sdk/include/rswitch_abi.h      $(SDK_INCLUDEDIR)/
+	@install -m 644 sdk/include/rswitch_obs.h      $(SDK_INCLUDEDIR)/
 	@install -m 644 sdk/include/rswitch_helpers.h   $(SDK_INCLUDEDIR)/
 	@install -m 644 sdk/include/rswitch_maps.h     $(SDK_INCLUDEDIR)/
 	@install -m 644 sdk/include/rswitch_common.h   $(SDK_INCLUDEDIR)/
@@ -708,7 +740,8 @@ help:
 	@echo "Directory structure:"
 	@echo "  $(CORE_DIR)/       - Core BPF programs (dispatcher, egress)"
 	@echo "  $(MODULES_DIR)/    - Pluggable modules (vlan, acl, route, etc.)"
-	@echo "  $(USER_DIR)/       - User-space programs (loader, cli)"
+	@echo "  $(DIAG_DIR)/       - Diagnostic BPF programs (fentry/fexit, tracepoints)"
+	@echo "  $(USER_DIR)/       - User-space programs (loader, cli, rsdiag)"
 	@echo "  $(BUILD_DIR)/      - Build output"
 	@echo ""
 	@echo "Usage:"

@@ -1,0 +1,17 @@
+{
+  "test_cases": [
+    {
+      "id": "TC-001",
+      "title": "示例标题",
+      "objective": "要验证什么",
+      "target": "模块 / 接口 / 命令",
+      "preconditions": ["前置条件1", "前置条件2"],
+      "inputs": ["输入1", "输入2"],
+      "steps": ["步骤1", "步骤2"],
+      "expected_results": ["预期1", "预期2"],
+      "priority": "High",
+      "risk": "回归 / 配置 / 权限 / 边界",
+      "automation_hint": "pytest / Playwright / manual"
+    }
+  ]
+}

@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 55,
+    RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 5,
+};
+
 char _license[] SEC("license") = "GPL";
 
 RS_DECLARE_MODULE("nat", RS_HOOK_XDP_INGRESS, 55,
@@ -215,6 +220,8 @@ int nat(struct xdp_md *xdp_ctx)
 
     if (!ctx)
         return XDP_PASS;
+
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, (__u32)pkt_len);
 
     struct nat_config *cfg = bpf_map_lookup_elem(&nat_config_map, &cfg_key);
     if (!cfg || !cfg->enabled) {

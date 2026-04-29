@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 12,
+    RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 7,
+};
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -118,16 +123,19 @@ int stp_ingress(struct xdp_md *xdp_ctx)
     if (!ctx)
         return XDP_DROP;
 
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
+
     if (!ctx->parsed) {
         ctx->error = RS_ERROR_PARSE_FAILED;
-        ctx->drop_reason = RS_DROP_PARSE_ERROR;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_PARSE_ETH);
         return XDP_DROP;
     }
 
     l2 = data + (ctx->layers.l2_offset & RS_L2_OFFSET_MASK);
     if (l2 + sizeof(*eth) > data_end) {
         ctx->error = RS_ERROR_PARSE_FAILED;
-        ctx->drop_reason = RS_DROP_PARSE_ERROR;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_PARSE_ETH);
         return XDP_DROP;
     }
 
@@ -140,8 +148,7 @@ int stp_ingress(struct xdp_md *xdp_ctx)
     port_state = bpf_map_lookup_elem(&stp_port_state_map, &ctx->ifindex);
     if (port_state) {
         if (port_state->state == STP_STATE_DISCARDING) {
-            ctx->action = XDP_DROP;
-            ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
+            RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_NO_FWD_ENTRY);
             stp_stat_inc(STP_STAT_DROPPED_DISCARDING);
             return XDP_DROP;
         }

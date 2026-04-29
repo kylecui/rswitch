@@ -8,6 +8,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 70,
+    RS_THIS_MODULE_ID = RS_MOD_MIRROR,
+};
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -466,6 +471,11 @@ int mirror_ingress(struct xdp_md *xdp_ctx)
         return XDP_DROP;
     }
 
+    void *data_end = (void *)(long)xdp_ctx->data_end;
+    void *data = (void *)(long)xdp_ctx->data;
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp_ctx, rs_ctx, pkt_len);
+
     __u32 ifindex = rs_ctx->ifindex;
     struct port_mirror_config *port_config;
 
@@ -497,6 +507,13 @@ int mirror_ingress(struct xdp_md *xdp_ctx)
             continue;
 
         do_mirror(xdp_ctx, config, 1, ifindex, session_id);
+
+        {
+            struct rs_obs_event evt = {0};
+            rs_obs_build_event(xdp_ctx, rs_ctx, &evt, RS_EVENT_OBS_SAMPLE,
+                               RS_OBS_F_SAMPLED, 0, pkt_len);
+            RS_EMIT_SAMPLED_EVENT(rs_ctx, &evt, sizeof(evt));
+        }
     }
 
     RS_TAIL_CALL_NEXT(xdp_ctx, rs_ctx);

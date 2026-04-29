@@ -49,11 +49,23 @@ static char *trim(char *str)
     return str;
 }
 
-/* Remove comments from line */
+/* Remove comments from line, respecting quoted strings */
 static void remove_comment(char *line)
 {
-    char *hash = strchr(line, '#');
-    if (hash) *hash = '\0';
+    int in_single = 0;
+    int in_double = 0;
+    char *p;
+
+    for (p = line; *p != '\0'; p++) {
+        if (*p == '\'' && !in_double)
+            in_single = !in_single;
+        else if (*p == '"' && !in_single)
+            in_double = !in_double;
+        else if (*p == '#' && !in_single && !in_double) {
+            *p = '\0';
+            return;
+        }
+    }
 }
 
 /* Parse a simple key: value line */
@@ -126,6 +138,8 @@ void profile_init(struct rs_profile *profile)
     profile->voqd.enable_scheduler = 1;
     profile->voqd.use_veth_egress = 1;  // Default enabled when VOQd is on
     strcpy(profile->voqd.veth_in_ifname, "veth_voq_in");
+    profile->voqd.enable_sw_queues = 0;
+    profile->voqd.sw_queue_depth = 1024;
 
     profile->mgmt.enabled = 0;
     profile->mgmt.port = 8080;
@@ -268,6 +282,10 @@ static void profile_merge(struct rs_profile *child, const struct rs_profile *par
     if (strcmp(child->voqd.veth_in_ifname, defaults.voqd.veth_in_ifname) == 0)
         strncpy(child->voqd.veth_in_ifname, parent->voqd.veth_in_ifname,
                 sizeof(child->voqd.veth_in_ifname) - 1);
+    if (child->voqd.enable_sw_queues == defaults.voqd.enable_sw_queues)
+        child->voqd.enable_sw_queues = parent->voqd.enable_sw_queues;
+    if (child->voqd.sw_queue_depth == defaults.voqd.sw_queue_depth)
+        child->voqd.sw_queue_depth = parent->voqd.sw_queue_depth;
 
     if (child->mgmt.enabled == defaults.mgmt.enabled)
         child->mgmt.enabled = parent->mgmt.enabled;
@@ -904,10 +922,10 @@ static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
         }
         
         /* Parse VOQd configuration fields */
-        if (strcmp(key, "enable") == 0 || strcmp(key, "enabled") == 0 || 
-            strcmp(key, "enable_afxdp") == 0) {
+        if (strcmp(key, "enable") == 0 || strcmp(key, "enabled") == 0) {
             voqd->enabled = parse_bool(value);
-            voqd->enable_afxdp = voqd->enabled;  // enable_afxdp implies enabled
+        } else if (strcmp(key, "enable_afxdp") == 0) {
+            voqd->enable_afxdp = parse_bool(value);
         } else if (strcmp(key, "mode") == 0) {
             if (strcmp(value, "bypass") == 0) voqd->mode = 0;
             else if (strcmp(value, "shadow") == 0) voqd->mode = 1;
@@ -939,6 +957,10 @@ static int parse_voqd_config(FILE *fp, struct rs_profile_voqd *voqd)
             voqd->use_veth_egress = parse_bool(value);
         } else if (strcmp(key, "veth_in_ifname") == 0) {
             strncpy(voqd->veth_in_ifname, value, sizeof(voqd->veth_in_ifname) - 1);
+        } else if (strcmp(key, "enable_sw_queues") == 0) {
+            voqd->enable_sw_queues = parse_bool(value);
+        } else if (strcmp(key, "sw_queue_depth") == 0) {
+            voqd->sw_queue_depth = atoi(value);
         }
     }
     

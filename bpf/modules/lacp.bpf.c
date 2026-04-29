@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 11,
+    RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 3,
+};
+
 char _license[] SEC("license") = "GPL";
 
 RS_DECLARE_MODULE("lacp", RS_HOOK_XDP_INGRESS, 11,
@@ -107,6 +112,9 @@ int lacp_ingress(struct xdp_md *xdp_ctx)
 
     if (!ctx)
         return XDP_DROP;
+
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
 
     eth = data + (ctx->layers.l2_offset & RS_L2_OFFSET_MASK);
     if ((void *)(eth + 1) > data_end)

@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 11,
+    RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 2,
+};
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -57,6 +62,9 @@ int lldp_ingress(struct xdp_md *xdp_ctx)
 
     if (!ctx)
         return XDP_DROP;
+
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
 
     if ((void *)(eth + 1) > data_end)
         return XDP_DROP;

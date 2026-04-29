@@ -26,6 +26,7 @@ set -euo pipefail
 
 # ── Defaults ─────────────────────────────────────────────────────
 INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/rswitch}"
+FHS_MODE="${FHS_MODE:-0}"
 RSWITCH_REPO="${RSWITCH_REPO:-https://github.com/kylecui/rswitch.git}"
 RSWITCH_BRANCH="${RSWITCH_BRANCH:-dev}"
 BUILD_DIR="${RSWITCH_SRC:-}"     # empty = clone from repo
@@ -188,6 +189,7 @@ install_deps_apt() {
         libelf-dev
         zlib1g-dev
         libsqlite3-dev
+        libsystemd-dev
         dhcpcd5
         ethtool
         iproute2
@@ -371,6 +373,25 @@ build_rswitch() {
     cp -f "${src_dir}/scripts/rswitch-gen-profile.sh"  "${INSTALL_PREFIX}/scripts/" 2>/dev/null || true
     chmod +x "${INSTALL_PREFIX}/scripts/"*.sh 2>/dev/null || true
 
+    if [ "$FHS_MODE" = "1" ]; then
+        info "Setting up FHS layout..."
+        mkdir -p /etc/rswitch
+        mkdir -p /usr/share/doc/rswitch
+        mkdir -p /var/log/rswitch
+
+        ln -sfn "${INSTALL_PREFIX}/etc" /etc/rswitch/etc 2>/dev/null || \
+            cp -r "${INSTALL_PREFIX}/etc/"* /etc/rswitch/ 2>/dev/null || true
+
+        ln -sfn "${INSTALL_PREFIX}/docs" /usr/share/doc/rswitch/docs 2>/dev/null || \
+            cp -r "${INSTALL_PREFIX}/docs/"* /usr/share/doc/rswitch/ 2>/dev/null || true
+
+        info "FHS layout configured ✓"
+        info "  Binaries: ${INSTALL_PREFIX}/"
+        info "  Config:   /etc/rswitch/"
+        info "  Docs:     /usr/share/doc/rswitch/"
+        info "  Logs:     /var/log/rswitch/"
+    fi
+
     # Clean up temp build dir
     if [ -z "${RSWITCH_SRC:-}" ] && [ -d "$src_dir" ]; then
         rm -rf "$src_dir"
@@ -456,20 +477,20 @@ configure() {
 [Unit]
 Description=rSwitch XDP-based Software Switch
 After=network.target network-online.target
-Wants=network-online.target
+Wants=network-online.target rswitch-mgmtd.service rswitch-mgmt-sshd.service rswitch-killswitch.service
 Documentation=https://github.com/kylecui/rswitch
 OnFailure=rswitch-failsafe.service
 StartLimitBurst=3
 StartLimitIntervalSec=60
 
 [Service]
-Type=forking
+Type=notify
+NotifyAccess=all
 ExecStartPre=-${INSTALL_PREFIX}/scripts/rswitch-failsafe.sh teardown
 ExecStartPre=${INSTALL_PREFIX}/scripts/rswitch-init.sh prepare
 ExecStart=${INSTALL_PREFIX}/scripts/rswitch-init.sh start
 ExecStop=${INSTALL_PREFIX}/scripts/rswitch-init.sh stop
 ExecReload=${INSTALL_PREFIX}/scripts/rswitch-init.sh reload
-PIDFile=/run/rswitch/rswitch_loader.pid
 Restart=on-failure
 RestartSec=5
 LimitMEMLOCK=infinity
@@ -542,6 +563,60 @@ Environment=RSWITCH_WATCHDOG_IFACES=${ifaces}
 WantedBy=multi-user.target
 EOF
 
+    # rswitch-mgmt-sshd.service — sshd in management namespace
+    cat > /etc/systemd/system/rswitch-mgmt-sshd.service <<EOF
+[Unit]
+Description=SSHd in rSwitch management namespace
+BindsTo=rswitch.service
+After=rswitch-mgmtd.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /run/sshd
+ExecStartPre=/bin/bash -c 'for i in \$(seq 1 30); do ip netns list 2>/dev/null | grep -qw rswitch-mgmt && exit 0; sleep 1; done; exit 1'
+ExecStart=/usr/bin/ip netns exec rswitch-mgmt /usr/sbin/sshd -D
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # rswitch-killswitch.service — killswitch watchdog
+    cat > /etc/systemd/system/rswitch-killswitch.service <<EOF
+[Unit]
+Description=rSwitch Killswitch Watchdog Daemon
+After=rswitch.service
+Requires=rswitch.service
+
+[Service]
+Type=simple
+ExecStart=${INSTALL_PREFIX}/build/rs-killswitch-watchdog --key-file /etc/rswitch/killswitch.key
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Generate killswitch key file if not present
+    mkdir -p /etc/rswitch
+    if [ ! -f /etc/rswitch/killswitch.key ]; then
+        info "Generating killswitch key pair..."
+        local stop_key
+        local reboot_key
+        stop_key=$(head -c 32 /dev/urandom | xxd -p -c 64)
+        reboot_key=$(head -c 32 /dev/urandom | xxd -p -c 64)
+        printf '%s\n%s\n' "$stop_key" "$reboot_key" > /etc/rswitch/killswitch.key
+        chmod 600 /etc/rswitch/killswitch.key
+        info "Killswitch keys generated: /etc/rswitch/killswitch.key ✓"
+        info "  Stop key:   ${stop_key}"
+        info "  Reboot key: ${reboot_key}"
+        info "  ⚠ SAVE THESE KEYS — needed to trigger emergency stop/reboot"
+    else
+        info "Killswitch key file already exists ✓"
+    fi
+
     # Suppress DHCP / link-local IPs on switch ports
     # Switch ports must carry only bridged traffic — no IP stack
     info "Configuring IP suppression on switch ports..."
@@ -595,13 +670,15 @@ NETEOF
     # Enable services (but don't start yet)
     systemctl enable rswitch.service >> "$LOG_FILE" 2>&1 || true
     systemctl enable rswitch-mgmtd.service >> "$LOG_FILE" 2>&1 || true
+    systemctl enable rswitch-mgmt-sshd.service >> "$LOG_FILE" 2>&1 || true
+    systemctl enable rswitch-killswitch.service >> "$LOG_FILE" 2>&1 || true
     info "Services enabled for boot ✓"
 
     # Add CLI tools to PATH via symlinks
     mkdir -p /usr/local/bin
     for tool in rswitchctl rsportctl rsvlanctl rsaclctl rsroutectl rsqosctl \
                 rsflowctl rsnatctl rsvoqctl rstunnelctl rswitch-events \
-                rs_packet_trace rswitch-telemetry rswitch-sflow; do
+                rs_packet_trace rswitch-telemetry rswitch-sflow rs-killswitch-watchdog; do
         if [ -f "${INSTALL_PREFIX}/build/${tool}" ]; then
             ln -sf "${INSTALL_PREFIX}/build/${tool}" "/usr/local/bin/${tool}"
         fi
@@ -643,9 +720,11 @@ systemctl stop rswitch-mgmtd 2>/dev/null || true
 systemctl stop rswitch 2>/dev/null || true
 systemctl stop rswitch-failsafe 2>/dev/null || true
 systemctl stop rswitch-watchdog 2>/dev/null || true
+systemctl stop rswitch-mgmt-sshd 2>/dev/null || true
+systemctl stop rswitch-killswitch 2>/dev/null || true
 
 info "Disabling services..."
-systemctl disable rswitch-mgmtd rswitch rswitch-failsafe rswitch-watchdog 2>/dev/null || true
+systemctl disable rswitch-mgmtd rswitch rswitch-failsafe rswitch-watchdog rswitch-mgmt-sshd rswitch-killswitch 2>/dev/null || true
 
 info "Removing XDP programs from interfaces..."
 for iface in /sys/class/net/*/; do
@@ -675,6 +754,8 @@ rm -f /etc/systemd/system/rswitch.service
 rm -f /etc/systemd/system/rswitch-mgmtd.service
 rm -f /etc/systemd/system/rswitch-failsafe.service
 rm -f /etc/systemd/system/rswitch-watchdog.service
+rm -f /etc/systemd/system/rswitch-mgmt-sshd.service
+rm -f /etc/systemd/system/rswitch-killswitch.service
 systemctl daemon-reload 2>/dev/null || true
 
 info "Removing CLI symlinks..."
@@ -818,6 +899,7 @@ Options:
                              (default: auto-detect all physical NICs)
   -m, --mgmt-nic NIC        Management NIC (default: auto-detect)
   -p, --prefix PATH         Installation prefix (default: /opt/rswitch)
+  -f, --fhs                 Use FHS layout (/usr/lib/rswitch, /etc/rswitch, /var/log/rswitch)
   -y, --yes                 Skip confirmation prompts
   -h, --help                Show this help
 
@@ -825,6 +907,7 @@ Examples:
   sudo bash install.sh                         # auto-detect everything
   sudo bash install.sh -i ens34,ens35          # use only ens34 and ens35
   sudo bash install.sh -i ens34,ens35 -m eth0  # specify mgmt NIC
+  sudo bash install.sh --fhs                   # FHS layout for distro packaging
   curl -sfL https://get.rswitch.dev | sudo bash -s -- -i ens34,ens35
 EOF
     exit 0
@@ -853,6 +936,10 @@ parse_args() {
             -y|--yes)
                 RSWITCH_FORCE=1
                 export RSWITCH_FORCE
+                ;;
+            -f|--fhs)
+                FHS_MODE=1
+                INSTALL_PREFIX="/usr/lib/rswitch"
                 ;;
             -h|--help)
                 usage

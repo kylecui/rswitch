@@ -1,0 +1,19 @@
+[Unit]
+Description=rSwitch Dev-Mode Automatic Deployment
+Documentation=man:rswitch-dev-deploy(8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/rswitch/scripts/rswitch-dev-deploy.sh
+Environment="GRACE_PERIOD=60"
+Environment="RSWITCH_REPO=/opt/rswitch-src"
+Environment="RSWITCH_BRANCH=dev"
+Environment="AUTO_START=true"
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

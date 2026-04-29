@@ -14,6 +14,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 180,
+    RS_THIS_MODULE_ID = RS_MOD_EGRESS_VLAN,
+};
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -261,6 +266,11 @@ int egress_vlan_xdp(struct xdp_md *ctx)
         rs_debug("egress_vlan: No context, dropping");
         return XDP_DROP;
     }
+
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(long)ctx->data;
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(ctx, rs_ctx, pkt_len);
     
     /* Get egress port from XDP context (devmap sets this)
      * 
@@ -418,4 +428,3 @@ int egress_vlan_xdp(struct xdp_md *ctx)
     // Fallback if tail-call fails
     return XDP_PASS;
 }
-

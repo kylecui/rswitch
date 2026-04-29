@@ -28,6 +28,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 40,
+    RS_THIS_MODULE_ID = RS_MOD_ROUTE,
+};
+
 char _license[] SEC("license") = "GPL";
 
 /* Module metadata */
@@ -336,6 +341,7 @@ int route_ipv4(struct xdp_md *xdp_ctx)
 {
     void *data = (void *)(long)xdp_ctx->data;
     void *data_end = (void *)(long)xdp_ctx->data_end;
+    __u32 pkt_len = data_end - data;
     
     // Get context
     struct rs_ctx *ctx = RS_GET_CTX();
@@ -343,6 +349,8 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         rs_debug("Route: No context, passing");
         return XDP_PASS;
     }
+
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
     
     rs_debug("Route: Entry on ifindex=%u, proto=0x%x, target=%u", 
         ctx->ifindex, ctx->layers.eth_proto, ctx->egress_ifindex);
@@ -396,7 +404,7 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     if ((void *)&iph[1] > data_end) {
         rs_debug("Route: IP header bounds check failed");
         ctx->error = RS_ERROR_PARSE_FAILED;
-        ctx->drop_reason = RS_DROP_PARSE_ERROR;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_PARSE_IP);
         return XDP_DROP;
     }
 
@@ -406,7 +414,7 @@ int route_ipv4(struct xdp_md *xdp_ctx)
     if (iph->ttl <= 1) {
         rs_debug("Route: TTL exhausted, dropping");
         update_stat(ROUTE_STAT_TTL_EXCEEDED);
-        ctx->drop_reason = RS_DROP_TTL_EXCEEDED;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_TTL_EXCEEDED);
         return XDP_DROP;
     }
     
@@ -428,7 +436,13 @@ int route_ipv4(struct xdp_md *xdp_ctx)
         rs_debug("Route: No route found for %pI4, dropping", &iph->daddr);
         update_stat(ROUTE_STAT_MISS);
         ctx->error = RS_ERROR_NO_ROUTE;
-        ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_NO_FWD_ENTRY);
+        {
+            struct rs_obs_event evt = {0};
+            rs_obs_build_event(xdp_ctx, ctx, &evt, RS_EVENT_OBS_DROP, RS_OBS_F_DROP,
+                               RS_DROP_NO_FWD_ENTRY, pkt_len);
+            RS_EMIT_SAMPLED_EVENT(ctx, &evt, sizeof(evt));
+        }
         return XDP_DROP;
     }
     
@@ -511,7 +525,7 @@ int route_ipv4(struct xdp_md *xdp_ctx)
          */
         if (route->type != 0) {
             rs_debug("Route: Static route requires explicit ARP entry, dropping");
-            ctx->drop_reason = RS_DROP_NO_FWD_ENTRY;
+            RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_NO_FWD_ENTRY);
             return XDP_DROP;
         }
         

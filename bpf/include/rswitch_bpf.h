@@ -345,6 +345,18 @@ rs_module_stats_error(__u32 module_idx)
     __sync_fetch_and_add(&stats->packets_error, 1);
 }
 
+/* ── Observability stubs ───────────────────────────────────────── */
+/* Real implementations in the #if block below; activated when
+   RS_THIS_STAGE_ID is visible (i.e. after the module's enum). */
+
+#define RS_OBS_STAGE_HIT(ctx, rctx, pkt_len) ((void)0)
+#define RS_OBS_HIST_RECORD(rctx, metric, value) ((void)0)
+#define RS_OBS_FINAL_ACTION(ctx, rctx, pkt_len) ((void)0)
+#define RS_RECORD_DROP(ctx, rctx, reason) do { (rctx)->drop_reason = (reason); (rctx)->action = XDP_DROP; } while(0)
+#define RS_EMIT_SAMPLED_EVENT(rctx, evt, size) ((void)0)
+
+#define rs_obs_build_event(...) ((void)0)
+
 /*
  * Endianness Conversion Macros
  * (Already provided by bpf_endian.h, but listed for reference)

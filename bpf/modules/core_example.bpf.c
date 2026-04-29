@@ -17,6 +17,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 85,
+    RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 11,
+};
+
 char _license[] SEC("license") = "GPL";
 
 /*
@@ -145,6 +150,9 @@ int core_stats_ingress(struct xdp_md *xdp_ctx)
 {
     /* Get packet length using CO-RE helper */
     __u32 pkt_len = get_packet_length_core(xdp_ctx);
+    struct rs_ctx *ctx = RS_GET_CTX();
+    if (ctx)
+        RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
     
     /* Parse headers with CO-RE safety */
     if (parse_headers_core(xdp_ctx) < 0) {
@@ -161,7 +169,6 @@ int core_stats_ingress(struct xdp_md *xdp_ctx)
     }
     
     /* Continue to next module in pipeline */
-    struct rs_ctx *ctx = RS_GET_CTX();
     if (ctx) {
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
     }

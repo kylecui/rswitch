@@ -2,7 +2,7 @@
 
 > A practical guide to using the rSwitch reconfigurable network platform.
 >
-> rSwitch 可重构网络平台的实用指南。
+> rSwitch可重构网络平台的实用指南。
 
 ---
 
@@ -32,9 +32,9 @@
 - Libraries: `libxdp-dev`, `libbpf-dev`, `linux-headers-$(uname -r)`
 
 **中文:**
-- Linux 内核 5.8+ 并支持 BTF
-- Root/sudo 访问权限
-- 支持 XDP 的网络接口（Intel i40e、Mellanox mlx5，或其他使用通用模式）
+- Linux内核5.8+ 并支持BTF
+- Root/sudo访问权限
+- 支持XDP的网络接口（Intel i40e、Mellanox mlx5，或其他使用通用模式）
 - 构建工具：`build-essential`、`cmake`、`clang`、`llvm`、`pkg-config`
 - 库：`libxdp-dev`、`libbpf-dev`、`linux-headers-$(uname -r)`
 
@@ -88,7 +88,7 @@ Profiles are YAML files that define the complete behavior of an rSwitch instance
 
 **中文:**
 
-配置文件是定义 rSwitch 实例完整行为的 YAML 文件。它们指定要加载哪些模块、端口配置、VLAN 设置等。
+配置文件是定义rSwitch实例完整行为的YAML文件。它们指定要加载哪些模块、端口配置、VLAN设置等。
 
 ```yaml
 # Profile structure / 配置文件结构
@@ -138,12 +138,12 @@ management:                       # Optional / 可选
 | Use Case / 使用场景 | Profile / 配置文件 | Description / 描述 |
 |-----------|---------|-------------|
 | Basic testing / 基本测试 | `dumb.yaml` | Simple flooding, no learning / 简单泛洪，无学习 |
-| L2 switching / 二层交换 | `l2.yaml` | VLAN + MAC learning / VLAN + MAC 学习 |
+| L2 switching / 二层交换 | `l2.yaml` | VLAN + MAC learning / VLAN + MAC学习 |
 | L2 + STP / 二层 + STP | `l2-stp.yaml` | L2 with loop prevention / 带环路防护的二层 |
 | L3 routing / 三层路由 | `l3.yaml` | L3 routing + ACL / 三层路由 + ACL |
 | Firewall / 防火墙 | `firewall.yaml` | Security-focused / 安全为主 |
-| QoS gateway / QoS 网关 | `l3-qos-voqd.yaml` | Full QoS with VOQd / 完整 QoS 带 VOQd |
-| Campus edge / 校园边缘 | `campus.yaml` | Source guard + DHCP snoop / 源防护 + DHCP 监听 |
+| QoS gateway / QoS网关 | `l3-qos-voqd.yaml` | Full QoS with VOQd / 完整QoS带VOQd |
+| Campus edge / 校园边缘 | `campus.yaml` | Source guard + DHCP snoop / 源防护 + DHCP监听 |
 
 ### Creating Custom Profiles / 创建自定义配置文件
 
@@ -178,7 +178,7 @@ rSwitch includes 27 BPF modules covering L2 switching, L3 routing, security, QoS
 
 **中文:**
 
-rSwitch 包含 27 个 BPF 模块，涵盖二层交换、三层路由、安全、QoS 和监控。每个模块都是独立的 BPF 程序，可以独立加载或卸载。
+rSwitch包含27个BPF模块，涵盖二层交换、三层路由、安全、QoS和监控。每个模块都是独立的BPF程序，可以独立加载或卸载。
 
 ```bash
 # List all available modules / 列出所有可用模块
@@ -248,7 +248,7 @@ ports:
     mac_learning: true
 ```
 
-### VLAN Configuration / VLAN 配置
+### VLAN Configuration / VLAN配置
 
 ```yaml
 vlans:
@@ -263,7 +263,7 @@ vlans:
     untagged_ports: ["ens36"]
 ```
 
-### Runtime VLAN Management / 运行时 VLAN 管理
+### Runtime VLAN Management / 运行时VLAN管理
 
 ```bash
 # Show VLANs / 显示 VLAN
@@ -282,7 +282,7 @@ sudo ./build/rsvlanctl del-port 300 ens35
 sudo ./build/rsvlanctl del 300
 ```
 
-### ACL Configuration / ACL 配置
+### ACL Configuration / ACL配置
 
 ```bash
 # Show ACL rules / 显示 ACL 规则
@@ -403,7 +403,7 @@ sudo ./build/rswitch-events
 # [ACL_DENY] rule=10 src=10.1.2.3 dst=192.168.1.1
 ```
 
-### Prometheus Metrics / Prometheus 指标
+### Prometheus Metrics / Prometheus指标
 
 ```bash
 # Start Prometheus exporter / 启动 Prometheus 导出器
@@ -421,13 +421,13 @@ The web-based management portal provides real-time visualization:
 
 **中文:**
 
-基于 Web 的管理门户提供实时可视化：
+基于Web的管理门户提供实时可视化：
 
 - **Dashboard**: System overview, port summary, uptime / 系统概览、端口摘要、运行时间
 - **Ports**: Port status with faceplate grid / 端口状态和面板网格
 - **Modules**: Pipeline visualization / 管道可视化
-- **VLANs**: VLAN management / VLAN 管理
-- **ACLs**: ACL rule management / ACL 规则管理
+- **VLANs**: VLAN management / VLAN管理
+- **ACLs**: ACL rule management / ACL规则管理
 - **Logs**: Live event log / 实时事件日志
 
 Access at `http://<management-ip>:8080` (requires profile with `management.enabled: true`)
@@ -446,7 +446,7 @@ The SDK provides templates and APIs for developing custom BPF modules:
 
 **中文:**
 
-SDK 提供用于开发自定义 BPF 模块的模板和 API：
+SDK提供用于开发自定义BPF模块的模板和API：
 
 ```bash
 # Generate module scaffold / 生成模块脚手架
@@ -521,7 +521,7 @@ See [Module Developer Guide](../development/Module_Developer_Guide.md) for compl
 
 | Practice / 实践 | Description / 描述 |
 |----------|-------------|
-| Version control profiles / 版本控制配置文件 | Keep profiles in git / 将配置文件保存在 git 中 |
+| Version control profiles / 版本控制配置文件 | Keep profiles in git / 将配置文件保存在git中 |
 | Validate before deploy / 部署前验证 | `rswitchctl validate-profile` / `rswitchctl validate-profile` |
 | Use inheritance / 使用继承 | `inherits: base.yaml` for common settings / `inherits: base.yaml` 用于公共设置 |
 | Name meaningfully / 有意义的命名 | `campus-building-a.yaml` not `profile1.yaml` |
@@ -533,24 +533,24 @@ See [Module Developer Guide](../development/Module_Developer_Guide.md) for compl
 | Minimal modules / 最少模块 | Only load what you need / 只加载需要的 |
 | Required modules / 必需模块 | Always include `dispatcher`, `lastcall`, `egress_final` |
 | Security baseline / 安全基线 | Always include `acl` for production / 生产环境始终包含 `acl` |
-| QoS when needed / 需要时的 QoS | Add `qos_classify` only if traffic prioritization required |
+| QoS when needed / 需要时的QoS | Add `qos_classify` only if traffic prioritization required |
 
 ### Performance / 性能
 
 | Practice / 实践 | Description / 描述 |
 |----------|-------------|
-| Native XDP / 原生 XDP | Use `--xdp-mode native` when NIC supports it / 当 NIC 支持时使用 |
-| Disable VLAN offload / 禁用 VLAN 卸载 | Required for VLAN processing / VLAN 处理所需 |
-| CPU affinity / CPU 亲和性 | Pin VOQd to dedicated core / 将 VOQd 固定到专用核心 |
-| Batch size / 批处理大小 | Tune AF_XDP batch_size for throughput / 调整 AF_XDP batch_size 以获得吞吐量 |
+| Native XDP / 原生XDP | Use `--xdp-mode native` when NIC supports it / 当NIC支持时使用 |
+| Disable VLAN offload / 禁用VLAN卸载 | Required for VLAN processing / VLAN处理所需 |
+| CPU affinity / CPU亲和性 | Pin VOQd to dedicated core / 将VOQd固定到专用核心 |
+| Batch size / 批处理大小 | Tune AF_XDP batch_size for throughput / 调整AF_XDP batch_size以获得吞吐量 |
 
 ### Security / 安全
 
 | Practice / 实践 | Description / 描述 |
 |----------|-------------|
-| Management isolation / 管理隔离 | Use namespace for mgmtd / 使用命名空间隔离 mgmtd |
+| Management isolation / 管理隔离 | Use namespace for mgmtd / 使用命名空间隔离mgmtd |
 | Authentication / 认证 | Enable `auth_enabled: true` in management config / 在管理配置中启用 |
-| ACL default deny / ACL 默认拒绝 | Configure explicit allow rules / 配置显式允许规则 |
+| ACL default deny / ACL默认拒绝 | Configure explicit allow rules / 配置显式允许规则 |
 | Source guard / 源防护 | Enable for campus/edge deployments / 为校园/边缘部署启用 |
 
 ---
@@ -559,7 +559,7 @@ See [Module Developer Guide](../development/Module_Developer_Guide.md) for compl
 
 ### Common Issues / 常见问题
 
-#### XDP attachment fails / XDP 附加失败
+#### XDP attachment fails / XDP附加失败
 
 ```bash
 # Check if another XDP program is attached / 检查是否有其他 XDP 程序附加
@@ -572,7 +572,7 @@ sudo ip link set ens34 xdp off
 uname -r  # Should be 5.8+
 ```
 
-#### VLAN traffic not working / VLAN 流量不工作
+#### VLAN traffic not working / VLAN流量不工作
 
 ```bash
 # Disable hardware VLAN offload / 禁用硬件 VLAN 卸载
@@ -637,9 +637,9 @@ sudo ./build/rswitch_loader --debug --profile ...
 
 - [Reconfigurable Architecture](Reconfigurable_Architecture.md) — Platform philosophy / 平台哲学
 - [Network Device Gallery](Network_Device_Gallery.md) — Device types you can build / 可构建的设备类型
-- [Quick Start](../usage/Quick_Start.md) — 5-minute setup / 5 分钟设置
-- [Configuration Reference](../deployment/Configuration.md) — Full YAML reference / 完整 YAML 参考
-- [CLI Reference](../usage/CLI_Reference.md) — All CLI commands / 所有 CLI 命令
+- [Quick Start](../usage/Quick_Start.md) — 5-minute setup / 5分钟设置
+- [Configuration Reference](../deployment/Configuration.md) — Full YAML reference / 完整YAML参考
+- [CLI Reference](../usage/CLI_Reference.md) — All CLI commands / 所有CLI命令
 
 ---
 

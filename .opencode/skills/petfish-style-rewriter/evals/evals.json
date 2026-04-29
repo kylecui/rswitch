@@ -1,0 +1,58 @@
+{
+  "skill_name": "petfish-style-rewriter",
+  "version": "3.0.0",
+  "evals": [
+    {
+      "id": "zh-en-spacing-001",
+      "prompt": "请按petfish风格改写：接入层支持 Webhook 挂载。接入事件包括 Git 提交。",
+      "expected_output": "输出应包含：Webhook挂载、Git提交；不应包含 Webhook 挂载 或 Git 提交。",
+      "assertions": [
+        "中文和英文技术词之间没有不必要空格",
+        "表达简洁直接",
+        "没有额外修辞"
+      ]
+    },
+    {
+      "id": "cn-ai-fluff-001",
+      "prompt": "请把下面这段话说人话，并尽量接近我的风格：在当今高度复杂的网络对抗格局中，银弹式的单点防御理念早已失效。我们需要构建从点到线再到面的立体认知，打造完整能力闭环。",
+      "expected_output": "输出应去掉银弹、立体认知、打造闭环等表达，改为现有防御体系局限、原因分析、必要改进方向。",
+      "assertions": [
+        "不出现"银弹""立体认知""打造"等词",
+        "包含明确的问题定义",
+        "包含至少两个分析维度",
+        "结尾收敛到必要性或下一步"
+      ]
+    },
+    {
+      "id": "cn-course-proposal-002",
+      "prompt": "用我的语言习惯表达：本课程基于CAISP与CAIDCP两大权威框架，系统覆盖AI安全认知、威胁分析、技术防护、合规治理、开发落地、安全运营与组织管理七大维度，帮助企业建立从看得懂AI风险到管得住AI风险的完整能力闭环。",
+      "expected_output": "输出应简化句式，减少口号，将课程目标、内容范围、交付结果拆开表达。",
+      "assertions": [
+        "不出现"从看得懂到管得住"",
+        "不出现"完整能力闭环"或将其具体化",
+        "句子结构清晰，避免单句承载过多内容"
+      ]
+    },
+    {
+      "id": "en-support-email-003",
+      "prompt": "Rewrite this in my English support email style: The network seems to be broken and the server cannot receive the full authentication blob. The customer should check the network device.",
+      "expected_output": "Output should use concise support engineer style, include findings and recommended action, and avoid dramatic wording.",
+      "assertions": [
+        "Includes a clear finding",
+        "Uses cautious wording such as appears/seems if evidence is incomplete",
+        "Includes recommended next step",
+        "Does not overstate certainty"
+      ]
+    },
+    {
+      "id": "cn-negative-judgment-004",
+      "prompt": "按我的风格改写：这个方案很烂，根本不可能落地。",
+      "expected_output": "Output should express criticism objectively with reasons and without emotional wording.",
+      "assertions": [
+        "不出现"很烂"",
+        "说明不可落地的条件或原因",
+        "语气客观克制"
+      ]
+    }
+  ]
+}

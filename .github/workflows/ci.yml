@@ -120,6 +120,121 @@ jobs:
           name: bpf-test-results
           path: rswitch/build/*.junit.xml
 
+  # ── Multi-Kernel Compile Compatibility ──────────────────────
+  # Validates CO-RE BTF compatibility by compiling BPF objects
+  # against multiple kernel header versions.  Runtime tests
+  # (BPF_PROG_TEST_RUN) still run on the host kernel only because
+  # GitHub-hosted runners provide a single kernel.  Full runtime
+  # multi-kernel testing requires virtme-ng or self-hosted runners.
+  kernel-compat:
+    name: Kernel Headers (${{ matrix.kernel }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel:
+          - "6.8.0-*"     # ubuntu-24.04 default (runner kernel)
+          - "6.5.0-*"     # ubuntu-23.10
+          - "6.2.0-*"     # ubuntu-23.04
+        # Note: 5.15 / 6.1 LTS headers are not in the Ubuntu 24.04
+        # repos.  We test the oldest available versions instead.
+        # When self-hosted runners are available, add 5.15 and 6.1.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies + target kernel headers
+        run: |
+          sudo apt-get update -qq
+          # Find the latest matching kernel-headers package
+          HDR_PKG=$(apt-cache search "linux-headers-${{ matrix.kernel }}-generic" \
+                    | sort -V | tail -1 | awk '{print $1}')
+          if [ -z "$HDR_PKG" ]; then
+            echo "::warning::No headers matching ${{ matrix.kernel }}; falling back to runner kernel"
+            HDR_PKG="linux-headers-$(uname -r)"
+          fi
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 llvm-18 libelf-dev zlib1g-dev libbpf-dev \
+            pkg-config "$HDR_PKG"
+
+      - name: Resolve kernel build directory
+        id: kdir
+        run: |
+          # Pick the directory that matches the matrix pattern
+          KDIR=$(ls -d /usr/src/linux-headers-${{ matrix.kernel }}generic 2>/dev/null \
+                 | sort -V | tail -1 || true)
+          if [ -z "$KDIR" ] || [ ! -d "$KDIR" ]; then
+            KDIR="/usr/src/linux-headers-$(uname -r)"
+          fi
+          echo "kdir=$KDIR" >> "$GITHUB_OUTPUT"
+          echo "Using kernel headers: $KDIR"
+
+      - name: Build libbpf
+        working-directory: external/libbpf/src
+        run: |
+          make -j$(nproc)
+          sudo make install PREFIX=/usr/local/bpf
+
+      - name: Compile BPF objects (compile-only, no runtime)
+        working-directory: rswitch
+        env:
+          CLANG: clang-18
+          LLVM_STRIP: llvm-strip-18
+          KERNEL_DIR: ${{ steps.kdir.outputs.kdir }}
+        run: |
+          # Compile BPF objects only — validates CO-RE compatibility
+          make -j$(nproc) bpf
+          echo "✓ BPF objects compile against $(basename $KERNEL_DIR)"
+
+  # ── Performance Baseline ──────────────────────────────────────
+  # Runs BPF_PROG_TEST_RUN with repeat count to measure per-packet
+  # latency.  Absolute numbers are runner-specific; only relative
+  # regression between runs matters.
+  perf-baseline:
+    name: Performance Baseline
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang llvm libelf-dev zlib1g-dev libbpf-dev \
+            linux-headers-$(uname -r) pkg-config
+
+      - name: Build libbpf
+        working-directory: external/libbpf/src
+        run: |
+          make -j$(nproc)
+          sudo make install PREFIX=/usr/local/bpf
+
+      - name: Build BPF objects + perf test
+        working-directory: rswitch
+        run: |
+          make -j$(nproc) all
+          make test-ci
+
+      - name: Run performance baseline (requires root)
+        working-directory: rswitch
+        run: |
+          sudo ./build/test_perf_baseline \
+            ./build/bpf/dispatcher.bpf.o \
+            ./build/test_perf_baseline.junit.xml
+
+      - name: Upload perf results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-baseline-results
+          path: |
+            rswitch/build/test_perf_baseline.junit.xml
+          retention-days: 30
+
   # ── Profile YAML validation ──────────────────────────────────
   profiles:
     name: Validate Profiles

@@ -23,9 +23,61 @@
 #else
 #include "../common/rs_log.h"
 #endif
+#include "../../sdk/include/rswitch_obs.h"
 
 /* BPF map paths */
 #define BPF_PIN_PATH "/sys/fs/bpf"
+#define RS_OBS_CFG_MAP_PATH      BPF_PIN_PATH "/rs_obs_cfg_map"
+#define RS_OBS_STATS_MAP_PATH    BPF_PIN_PATH "/rs_obs_stats_map"
+#define RS_DROP_STATS_MAP_PATH   BPF_PIN_PATH "/rs_drop_stats_map"
+#define RS_HIST_MAP_PATH         BPF_PIN_PATH "/rs_hist_map"
+#define RS_STAGE_HIT_MAP_PATH    BPF_PIN_PATH "/rs_stage_hit_map"
+
+static const char *drop_reason_to_name(__u16 reason)
+{
+    static char reason_buf[32];
+
+    switch (reason) {
+    case RS_DROP_PARSE_ETH:      return "PARSE_ETH";
+    case RS_DROP_PARSE_VLAN_TAG: return "PARSE_VLAN_TAG";
+    case RS_DROP_PARSE_IP:       return "PARSE_IP";
+    case RS_DROP_ACL_DENY:       return "ACL_DENY";
+    case RS_DROP_NO_ROUTE:       return "NO_ROUTE";
+    case RS_DROP_TTL_EXCEEDED:   return "TTL_EXCEEDED";
+    case RS_DROP_QUEUE_FULL:     return "QUEUE_FULL";
+    case RS_DROP_RATE_EXCEEDED:  return "RATE_EXCEEDED";
+    case RS_DROP_TAILCALL_FAIL:  return "TAILCALL_FAIL";
+    case RS_DROP_INTERNAL:       return "INTERNAL";
+    case RS_DROP_REDIRECT_FAIL:  return "REDIRECT_FAIL";
+    default:
+        snprintf(reason_buf, sizeof(reason_buf), "reason_%u", reason);
+        return reason_buf;
+    }
+}
+
+static int cmp_stage_hits_desc(const void *a, const void *b)
+{
+    const typeof(((struct telemetry_snapshot *)0)->stage_hits[0]) *ra = a;
+    const typeof(((struct telemetry_snapshot *)0)->stage_hits[0]) *rb = b;
+
+    if (ra->hits < rb->hits)
+        return 1;
+    if (ra->hits > rb->hits)
+        return -1;
+    return 0;
+}
+
+static int cmp_top_drops_desc(const void *a, const void *b)
+{
+    const typeof(((struct telemetry_snapshot *)0)->top_drops[0]) *ra = a;
+    const typeof(((struct telemetry_snapshot *)0)->top_drops[0]) *rb = b;
+
+    if (ra->packets < rb->packets)
+        return 1;
+    if (ra->packets > rb->packets)
+        return -1;
+    return 0;
+}
 
 struct rs_module_stats {
     uint64_t packets_processed;
@@ -244,6 +296,134 @@ static int collect_system_stats(struct telemetry_ctx *ctx)
     return 0;
 }
 
+static int collect_obs_stats(struct telemetry_ctx *ctx)
+{
+    int cfg_fd = -1;
+    int stage_fd = -1;
+    int drop_fd = -1;
+    int stats_fd = -1;
+    int hist_fd = -1;
+    int ret;
+    __u32 cfg_key = 0;
+    struct rs_obs_cfg cfg = {0};
+    int ncpus;
+    struct rs_stage_hit_key stage_key;
+    struct rs_stage_hit_key stage_next;
+    struct rs_stage_hit_val *stage_vals = NULL;
+    struct rs_drop_stats_key drop_key;
+    struct rs_drop_stats_key drop_next;
+    struct rs_drop_stats_val *drop_vals = NULL;
+
+    ctx->snapshot.obs_config.level = 0;
+    ctx->snapshot.obs_config.sample_ppm = 0;
+    ctx->snapshot.obs_config.event_mask = 0;
+    ctx->snapshot.obs_config.burst_limit = 0;
+    ctx->snapshot.num_stage_hits = 0;
+    ctx->snapshot.num_top_drops = 0;
+
+    cfg_fd = bpf_obj_get(RS_OBS_CFG_MAP_PATH);
+    if (cfg_fd >= 0) {
+        if (bpf_map_lookup_elem(cfg_fd, &cfg_key, &cfg) == 0) {
+            ctx->snapshot.obs_config.level = cfg.level;
+            ctx->snapshot.obs_config.sample_ppm = cfg.sample_ppm;
+            ctx->snapshot.obs_config.event_mask = cfg.event_mask;
+            ctx->snapshot.obs_config.burst_limit = cfg.burst_limit;
+        }
+    }
+
+    ncpus = libbpf_num_possible_cpus();
+    if (ncpus <= 0)
+        goto out;
+
+    stage_fd = bpf_obj_get(RS_STAGE_HIT_MAP_PATH);
+    if (stage_fd >= 0) {
+        stage_vals = calloc((size_t)ncpus, sizeof(*stage_vals));
+        if (!stage_vals) {
+            ret = -ENOMEM;
+            goto out;
+        }
+
+        ret = bpf_map_get_next_key(stage_fd, NULL, &stage_next);
+        while (ret == 0) {
+            __u64 total = 0;
+
+            stage_key = stage_next;
+            if (bpf_map_lookup_elem(stage_fd, &stage_key, stage_vals) == 0) {
+                for (int c = 0; c < ncpus; c++)
+                    total += stage_vals[c].hits;
+
+                if (total > 0 && ctx->snapshot.num_stage_hits < 64) {
+                    uint32_t i = ctx->snapshot.num_stage_hits++;
+                    ctx->snapshot.stage_hits[i].stage_id = stage_key.stage_id;
+                    ctx->snapshot.stage_hits[i].module_id = stage_key.module_id;
+                    ctx->snapshot.stage_hits[i].hits = total;
+                }
+            }
+
+            ret = bpf_map_get_next_key(stage_fd, &stage_key, &stage_next);
+        }
+
+        if (ctx->snapshot.num_stage_hits > 1) {
+            qsort(ctx->snapshot.stage_hits, ctx->snapshot.num_stage_hits,
+                  sizeof(ctx->snapshot.stage_hits[0]), cmp_stage_hits_desc);
+        }
+    }
+
+    drop_fd = bpf_obj_get(RS_DROP_STATS_MAP_PATH);
+    if (drop_fd >= 0) {
+        drop_vals = calloc((size_t)ncpus, sizeof(*drop_vals));
+        if (!drop_vals) {
+            ret = -ENOMEM;
+            goto out;
+        }
+
+        ret = bpf_map_get_next_key(drop_fd, NULL, &drop_next);
+        while (ret == 0) {
+            __u64 total = 0;
+
+            drop_key = drop_next;
+            if (bpf_map_lookup_elem(drop_fd, &drop_key, drop_vals) == 0) {
+                for (int c = 0; c < ncpus; c++)
+                    total += drop_vals[c].packets;
+
+                if (total > 0 && ctx->snapshot.num_top_drops < 32) {
+                    uint32_t i = ctx->snapshot.num_top_drops++;
+                    ctx->snapshot.top_drops[i].reason = drop_key.reason;
+                    ctx->snapshot.top_drops[i].stage_id = drop_key.stage_id;
+                    ctx->snapshot.top_drops[i].module_id = drop_key.module_id;
+                    ctx->snapshot.top_drops[i].packets = total;
+                }
+            }
+
+            ret = bpf_map_get_next_key(drop_fd, &drop_key, &drop_next);
+        }
+
+        if (ctx->snapshot.num_top_drops > 1) {
+            qsort(ctx->snapshot.top_drops, ctx->snapshot.num_top_drops,
+                  sizeof(ctx->snapshot.top_drops[0]), cmp_top_drops_desc);
+        }
+    }
+
+    stats_fd = bpf_obj_get(RS_OBS_STATS_MAP_PATH);
+    if (stats_fd >= 0)
+        close(stats_fd);
+
+    hist_fd = bpf_obj_get(RS_HIST_MAP_PATH);
+    if (hist_fd >= 0)
+        close(hist_fd);
+
+out:
+    free(stage_vals);
+    free(drop_vals);
+    if (cfg_fd >= 0)
+        close(cfg_fd);
+    if (stage_fd >= 0)
+        close(stage_fd);
+    if (drop_fd >= 0)
+        close(drop_fd);
+    return 0;
+}
+
 int telemetry_collect_snapshot(struct telemetry_ctx *ctx)
 {
     /* Update timestamp */
@@ -255,6 +435,7 @@ int telemetry_collect_snapshot(struct telemetry_ctx *ctx)
     collect_bpf_stats(ctx);
     collect_voqd_stats(ctx);
     collect_system_stats(ctx);
+    collect_obs_stats(ctx);
     
     return 0;
 }
@@ -313,6 +494,37 @@ int telemetry_export_prometheus(struct telemetry_ctx *ctx, char *buf, size_t siz
         "# TYPE rswitch_memory_mb gauge\n"
         "rswitch_memory_mb{node=\"%s\"} %lu\n",
         ctx->snapshot.node, ctx->snapshot.system.rss_mb);
+
+    offset += snprintf(buf + offset, size - offset,
+        "# HELP rswitch_obs_config_level Observability level\n"
+        "# TYPE rswitch_obs_config_level gauge\n"
+        "rswitch_obs_config_level{node=\"%s\"} %u\n"
+        "# HELP rswitch_obs_config_sample_ppm Observability sample ppm\n"
+        "# TYPE rswitch_obs_config_sample_ppm gauge\n"
+        "rswitch_obs_config_sample_ppm{node=\"%s\"} %u\n"
+        "# HELP rswitch_obs_config_event_mask Observability event mask\n"
+        "# TYPE rswitch_obs_config_event_mask gauge\n"
+        "rswitch_obs_config_event_mask{node=\"%s\"} %llu\n"
+        "# HELP rswitch_obs_config_burst_limit Observability burst limit\n"
+        "# TYPE rswitch_obs_config_burst_limit gauge\n"
+        "rswitch_obs_config_burst_limit{node=\"%s\"} %u\n",
+        ctx->snapshot.node, ctx->snapshot.obs_config.level,
+        ctx->snapshot.node, ctx->snapshot.obs_config.sample_ppm,
+        ctx->snapshot.node, (unsigned long long)ctx->snapshot.obs_config.event_mask,
+        ctx->snapshot.node, ctx->snapshot.obs_config.burst_limit);
+
+    offset += snprintf(buf + offset, size - offset,
+        "# HELP rswitch_top_drop_packets Top drop packets by reason/stage/module\n"
+        "# TYPE rswitch_top_drop_packets counter\n");
+    for (uint32_t i = 0; i < ctx->snapshot.num_top_drops; i++) {
+        offset += snprintf(buf + offset, size - offset,
+            "rswitch_top_drop_packets{node=\"%s\",reason=\"%s\",stage_id=\"%u\",module_id=\"%u\"} %llu\n",
+            ctx->snapshot.node,
+            drop_reason_to_name(ctx->snapshot.top_drops[i].reason),
+            ctx->snapshot.top_drops[i].stage_id,
+            ctx->snapshot.top_drops[i].module_id,
+            (unsigned long long)ctx->snapshot.top_drops[i].packets);
+    }
     
     return offset;
 }
@@ -366,15 +578,54 @@ int telemetry_export_json(struct telemetry_ctx *ctx, char *buf, size_t size)
         "  \"system\": {\n"
         "    \"cpu_pct\": %.2f,\n"
         "    \"rss_mb\": %lu\n"
-        "  }\n"
-        "}\n",
+        "  },\n"
+        "  \"obs\": {\n"
+        "    \"config\": {\n"
+        "      \"level\": %u,\n"
+        "      \"sample_ppm\": %u,\n"
+        "      \"event_mask\": \"0x%llx\",\n"
+        "      \"burst_limit\": %u\n"
+        "    },\n"
+        "    \"stage_hits\": [\n",
         ctx->snapshot.voqd.mode,
         ctx->snapshot.voqd.running,
         ctx->snapshot.voqd.prio_mask,
         ctx->snapshot.voqd.failover_count,
         ctx->snapshot.voqd.overload_drops,
         ctx->snapshot.system.cpu_percent,
-        ctx->snapshot.system.rss_mb);
+        ctx->snapshot.system.rss_mb,
+        ctx->snapshot.obs_config.level,
+        ctx->snapshot.obs_config.sample_ppm,
+        (unsigned long long)ctx->snapshot.obs_config.event_mask,
+        ctx->snapshot.obs_config.burst_limit);
+
+    for (uint32_t i = 0; i < ctx->snapshot.num_stage_hits; i++) {
+        offset += snprintf(buf + offset, size - offset,
+            "      {\"stage_id\": %u, \"module_id\": %u, \"hits\": %llu}%s\n",
+            ctx->snapshot.stage_hits[i].stage_id,
+            ctx->snapshot.stage_hits[i].module_id,
+            (unsigned long long)ctx->snapshot.stage_hits[i].hits,
+            (i + 1 < ctx->snapshot.num_stage_hits) ? "," : "");
+    }
+
+    offset += snprintf(buf + offset, size - offset,
+        "    ],\n"
+        "    \"top_drops\": [\n");
+
+    for (uint32_t i = 0; i < ctx->snapshot.num_top_drops; i++) {
+        offset += snprintf(buf + offset, size - offset,
+            "      {\"reason\": \"%s\", \"stage_id\": %u, \"module_id\": %u, \"packets\": %llu}%s\n",
+            drop_reason_to_name(ctx->snapshot.top_drops[i].reason),
+            ctx->snapshot.top_drops[i].stage_id,
+            ctx->snapshot.top_drops[i].module_id,
+            (unsigned long long)ctx->snapshot.top_drops[i].packets,
+            (i + 1 < ctx->snapshot.num_top_drops) ? "," : "");
+    }
+
+    offset += snprintf(buf + offset, size - offset,
+        "    ]\n"
+        "  }\n"
+        "}\n");
     
     return offset;
 }

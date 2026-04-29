@@ -222,3 +222,136 @@ sudo systemctl enable rswitch-lan rswitch-wan
 - [Installation](Installation.md) — build and install
 - [NIC Configuration](NIC_Configuration.md) — NIC setup
 - [Configuration](Configuration.md) — YAML profile reference
+
+---
+
+## Downstream Integration
+
+Projects that build on top of rSwitch (e.g., network appliances, traffic analyzers) need their services to start **after** the rSwitch pipeline is fully loaded. This section covers dependency ordering, readiness detection, and graceful shutdown.
+
+### Service Dependency Ordering
+
+Your downstream service should declare a dependency on `rswitch.service`:
+
+```ini
+[Unit]
+Description=My Downstream Network Service
+After=rswitch.service
+Requires=rswitch.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'test -e /sys/fs/bpf/rs_ctx_map'
+ExecStart=/usr/local/bin/my-service
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Key directives:
+
+| Directive | Purpose |
+|-----------|---------|
+| `After=rswitch.service` | Start only after rSwitch has started |
+| `Requires=rswitch.service` | If rSwitch fails to start, don't start this service either |
+| `ExecStartPre=...test -e /sys/fs/bpf/rs_ctx_map` | Verify BPF pipeline is actually loaded (pin file exists) |
+
+### Readiness Detection
+
+Currently, rSwitch uses `Type=forking` — systemd considers the service ready once the init script exits. This does **not** guarantee the BPF pipeline is fully loaded. To handle this:
+
+**Option 1: Pin file check (recommended)**
+
+Add an `ExecStartPre` that polls for the presence of a core BPF map pin file:
+
+```bash
+#!/bin/bash
+# /usr/local/bin/wait-for-rswitch.sh
+for i in $(seq 1 30); do
+    if [ -e /sys/fs/bpf/rs_ctx_map ] && [ -e /sys/fs/bpf/rs_progs ]; then
+        exit 0
+    fi
+    sleep 1
+done
+echo "rSwitch pipeline not ready after 30s" >&2
+exit 1
+```
+
+```ini
+[Service]
+ExecStartPre=/usr/local/bin/wait-for-rswitch.sh
+```
+
+**Option 2: sd_notify (planned)**
+
+A future release will add `Type=notify` support with `sd_notify(READY=1)` after pipeline load, eliminating the need for pin file polling. See [Platform Backlog](../backlog/platform-backlog.md).
+
+### Startup Sequence
+
+```
+systemd
+  └─ rswitch-nic.service     (Type=oneshot) — configure NIC offloads
+       └─ rswitch.service     (Type=forking) — load BPF pipeline
+            ├─ BPF programs loaded and attached
+            ├─ Pin files created (/sys/fs/bpf/rs_*)
+            └─ your-service.service — downstream starts after pin files exist
+```
+
+### Graceful Shutdown Ordering
+
+Systemd reverses the startup order on shutdown. With `Requires=rswitch.service`, your downstream service stops **before** rSwitch tears down the pipeline:
+
+```
+Shutdown:
+  1. your-service.service stops (SIGTERM → your process)
+  2. rswitch.service stops (unpin maps, detach XDP)
+  3. rswitch-nic.service stops (no-op, oneshot)
+```
+
+If your service reads BPF maps during shutdown (e.g., flushing statistics), ensure your shutdown handler completes before systemd's `TimeoutStopSec` (default 90s).
+
+### Interface Configuration Best Practice
+
+Instead of hardcoding interface names in service files, use an `EnvironmentFile`:
+
+```bash
+# /etc/rswitch/interfaces.conf
+RSWITCH_IFACES=ens34,ens35,ens36,ens37
+```
+
+```ini
+[Service]
+EnvironmentFile=/etc/rswitch/interfaces.conf
+ExecStart=/opt/rswitch/scripts/rswitch-init.sh start
+```
+
+This allows changing interfaces without editing service files or running `systemctl daemon-reload`.
+
+### Common Pitfalls
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| Downstream starts before pipeline is loaded | rSwitch `Type=forking` returns before BPF load completes | Use `ExecStartPre` pin file check |
+| "No such file" errors on BPF map access | Service started before pin files were created | Add pin file readiness check |
+| Downstream keeps running after rSwitch stops | Missing `Requires=` dependency | Add `Requires=rswitch.service` |
+| Interface names change across reboots | Hardcoded names in service files | Use `EnvironmentFile` for interface config |
+
+## FHS Install Layout
+
+The installer supports an FHS-compatible layout via `--fhs`:
+
+```bash
+sudo bash install.sh --fhs
+```
+
+| Component | Default (`/opt/rswitch`) | FHS (`--fhs`) |
+|-----------|--------------------------|---------------|
+| Binaries | `/opt/rswitch/build/` | `/usr/lib/rswitch/build/` |
+| Config | `/opt/rswitch/etc/` | `/etc/rswitch/` |
+| Docs | `/opt/rswitch/docs/` | `/usr/share/doc/rswitch/` |
+| Logs | `/var/log/rswitch/` | `/var/log/rswitch/` |
+| Systemd units | `/etc/systemd/system/` | `/etc/systemd/system/` |
+
+The FHS layout is recommended for distribution packaging.

@@ -8,6 +8,8 @@
 #ifndef __RSWITCH_UAPI_H
 #define __RSWITCH_UAPI_H
 
+#warning "uapi.h is deprecated. Use #include <rswitch_module.h> instead. See sdk/docs/SDK_Migration_Guide.md"
+
 /* BPF programs use vmlinux.h (CO-RE), user-space uses kernel headers */
 #ifdef __BPF__
     /* BPF side: types already defined in vmlinux.h (included via rswitch_bpf.h) */
@@ -53,6 +55,7 @@
  * Populated by parsing modules and consumed by downstream modules.
  * Avoids re-parsing the same packet multiple times.
  */
+#ifndef __RSWITCH_ABI_H  /* Skip if rswitch_abi.h already defined these structs */
 struct rs_layers {
     __u16 eth_proto;            /* Ethernet protocol (ETH_P_IP, ETH_P_IPV6, etc.) */
     __u16 vlan_ids[RS_VLAN_MAX_DEPTH]; /* VLAN IDs (outer to inner) */
@@ -121,6 +124,7 @@ struct rs_ctx {
     /* Reserved for future use (64 bytes — ABI v2) */
     __u32 reserved[16];
 };
+#endif /* !__RSWITCH_ABI_H */
 
 /* Error codes */
 #define RS_ERROR_NONE           0
@@ -131,15 +135,24 @@ struct rs_ctx {
 #define RS_ERROR_QUEUE_FULL     5
 #define RS_ERROR_INTERNAL       99
 
-/* Drop reasons (for telemetry) */
-#define RS_DROP_NONE            0
-#define RS_DROP_PARSE_ERROR     1
-#define RS_DROP_VLAN_FILTER     2
-#define RS_DROP_ACL_BLOCK       3
-#define RS_DROP_NO_FWD_ENTRY    4
-#define RS_DROP_TTL_EXCEEDED    5
-#define RS_DROP_RATE_LIMIT      6
-#define RS_DROP_CONGESTION      7
+/* Drop reasons — DEPRECATED: migrate to enum rs_drop_reason (rswitch_abi.h)
+ * Values below match the canonical enum for transitional compatibility.
+ */
+#define RS_DROP_NONE              0
+#define RS_DROP_PARSE_ETH         1
+#define RS_DROP_PARSE_VLAN_TAG    2
+#define RS_DROP_PARSE_IP          3
+#define RS_DROP_VLAN_FILTER       16
+#define RS_DROP_ACL_DENY          32
+#define RS_DROP_NO_FWD_ENTRY      51
+#define RS_DROP_TTL_EXCEEDED      49
+#define RS_DROP_RATE_EXCEEDED     65
+#define RS_DROP_CONGESTION        66
+#define RS_DROP_MAP_ERROR         96
+#define RS_DROP_TAILCALL_FAIL     97
+#define RS_DROP_INTERNAL          99
+
+#ifdef __BPF__
 
 /* Per-CPU context map
  * 
@@ -211,6 +224,8 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } rs_event_bus SEC(".maps");
 
+#endif
+
 /* Event Type Enumeration
  * 
  * Each module defines its own event types in a reserved range:
@@ -246,6 +261,8 @@ struct {
 /* Error Events (0xFF00-0xFFFF) */
 #define RS_EVENT_PARSE_ERROR    (RS_EVENT_ERROR_BASE + 1)
 #define RS_EVENT_MAP_FULL       (RS_EVENT_ERROR_BASE + 2)
+
+#ifdef __BPF__
 
 /* Helper macros for module development */
 
@@ -325,5 +342,7 @@ struct {
     } \
     __ret; \
 })
+
+#endif
 
 #endif /* __RSWITCH_UAPI_H */

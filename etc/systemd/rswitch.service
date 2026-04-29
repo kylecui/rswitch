@@ -1,20 +1,20 @@
 [Unit]
 Description=rSwitch XDP-based Software Switch
 After=network.target network-online.target
-Wants=network-online.target
+Wants=network-online.target rswitch-mgmtd.service rswitch-mgmt-sshd.service rswitch-killswitch.service
 Documentation=https://github.com/rswitch
 OnFailure=rswitch-failsafe.service
 StartLimitBurst=3
 StartLimitIntervalSec=60
 
 [Service]
-Type=forking
+Type=notify
+NotifyAccess=all
 ExecStartPre=-/opt/rswitch/scripts/rswitch-failsafe.sh teardown
 ExecStartPre=/opt/rswitch/scripts/rswitch-init.sh prepare
 ExecStart=/opt/rswitch/scripts/rswitch-init.sh start
 ExecStop=/opt/rswitch/scripts/rswitch-init.sh stop
 ExecReload=/opt/rswitch/scripts/rswitch-init.sh reload
-PIDFile=/run/rswitch/rswitch_loader.pid
 Restart=on-failure
 RestartSec=5
 LimitMEMLOCK=infinity

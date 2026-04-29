@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 18,
+    RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 1,
+};
+
 char _license[] SEC("license") = "GPL";
 
 RS_DECLARE_MODULE("source_guard", RS_HOOK_XDP_INGRESS, 18,
@@ -120,6 +125,9 @@ int source_guard(struct xdp_md *xdp_ctx)
     if (!ctx)
         return XDP_DROP;
 
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
+
     struct sg_config *cfg = bpf_map_lookup_elem(&sg_config_map, &zero);
     if (!cfg || !cfg->enabled) {
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
@@ -139,7 +147,7 @@ int source_guard(struct xdp_md *xdp_ctx)
 
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end) {
-        ctx->drop_reason = RS_DROP_PARSE_ERROR;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_PARSE_ETH);
         return XDP_DROP;
     }
 
@@ -154,7 +162,7 @@ int source_guard(struct xdp_md *xdp_ctx)
         if (cfg->strict_mode) {
             sg_stat_inc(SG_STAT_MAC_VIOLATIONS);
             emit_violation_event(ctx->ifindex, ctx->layers.saddr, eth->h_source, NULL);
-            ctx->drop_reason = RS_DROP_ACL_BLOCK;
+            RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_ACL_BLOCK);
             return XDP_DROP;
         }
 
@@ -184,7 +192,7 @@ int source_guard(struct xdp_md *xdp_ctx)
         emit_violation_event(ctx->ifindex, ctx->layers.saddr, eth->h_source, entry);
 
         if (cfg->strict_mode) {
-            ctx->drop_reason = RS_DROP_ACL_BLOCK;
+            RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_ACL_BLOCK);
             return XDP_DROP;
         }
 

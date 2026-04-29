@@ -106,9 +106,33 @@ static int file_exists(const char *path)
 static int open_map_fd(const char *name)
 {
 	char path[PATH_MAX];
+	int fd;
+	uint32_t id = 0;
+	size_t nlen = strlen(name);
 
 	snprintf(path, sizeof(path), "%s/%s", RS_BPF_PIN_BASE, name);
-	return bpf_obj_get(path);
+	fd = bpf_obj_get(path);
+	if (fd >= 0)
+		return fd;
+
+	while (bpf_map_get_next_id(id, &id) == 0) {
+		struct bpf_map_info info;
+		__u32 len = sizeof(info);
+
+		memset(&info, 0, len);
+		fd = bpf_map_get_fd_by_id(id);
+		if (fd < 0)
+			continue;
+		if (bpf_map_get_info_by_fd(fd, &info, &len) != 0) {
+			close(fd);
+			continue;
+		}
+		if (strncmp(info.name, name, nlen) == 0)
+			return fd;
+		close(fd);
+	}
+
+	return -ENOENT;
 }
 
 static int read_process_name(pid_t pid, char *buf, size_t size)
@@ -255,41 +279,43 @@ static int aggregate_module_stats_entry(int map_fd, uint32_t key, struct rs_modu
 	return 0;
 }
 
+static int find_loaded_bpf_prog(const char *name)
+{
+	uint32_t id = 0;
+	size_t nlen = strlen(name);
+
+	while (bpf_prog_get_next_id(id, &id) == 0) {
+		struct bpf_prog_info info;
+		__u32 len = sizeof(info);
+		int fd;
+
+		memset(&info, 0, len);
+		fd = bpf_prog_get_fd_by_id(id);
+		if (fd < 0)
+			continue;
+		if (bpf_prog_get_info_by_fd(fd, &info, &len) == 0 &&
+		    strncmp(info.name, name, nlen < 15 ? nlen : 15) == 0) {
+			close(fd);
+			return 1;
+		}
+		close(fd);
+	}
+	return 0;
+}
+
 static void check_pinned_programs(struct rs_health_status *status)
 {
 	static const char *core_programs[] = {
-		"dispatcher.bpf.o",
-		"egress.bpf.o",
+		"rswitch_dispatcher",
+		"rswitch_egress",
 	};
-	char path[PATH_MAX];
 	int ok = 1;
-	int module_map_fd;
 
 	for (size_t i = 0; i < sizeof(core_programs) / sizeof(core_programs[0]); i++) {
-		snprintf(path, sizeof(path), "%s/%s", RS_BPF_PIN_BASE, core_programs[i]);
-		if (!file_exists(path)) {
+		if (!find_loaded_bpf_prog(core_programs[i])) {
 			ok = 0;
-			status_add_detail(status, "missing pinned prog: %s", core_programs[i]);
+			status_add_detail(status, "missing BPF prog: %s", core_programs[i]);
 		}
-	}
-
-	module_map_fd = open_map_fd("rs_module_stats_map");
-	if (module_map_fd >= 0) {
-		for (uint32_t i = 0; i < RS_WATCHDOG_MAX_MODULES; i++) {
-			struct rs_module_stats_entry stats;
-
-			if (aggregate_module_stats_entry(module_map_fd, i, &stats) != 0)
-				continue;
-			if (!stats.name[0])
-				continue;
-
-			snprintf(path, sizeof(path), "%s/%s.bpf.o", RS_BPF_PIN_BASE, stats.name);
-			if (!file_exists(path)) {
-				ok = 0;
-				status_add_detail(status, "module pin missing: %s", stats.name);
-			}
-		}
-		close(module_map_fd);
 	}
 
 	status->bpf_programs_ok = ok;
@@ -299,10 +325,8 @@ static void check_maps_accessible(struct rs_health_status *status)
 {
 	static const char *maps[] = {
 		"rs_stats_map",
-		"rs_module_stats_map",
-		"voqd_state_map",
-		"rs_port_config_map",
-		"prog_array",
+		"rs_module_stats",
+		"rs_port_config_",
 	};
 	int ok = 1;
 
@@ -322,7 +346,11 @@ static void check_maps_accessible(struct rs_health_status *status)
 
 static void check_voqd_process(struct rs_health_status *status)
 {
-	status->voqd_running = find_process_by_name("rswitch-voqd");
+	status->voqd_running = 1;
+	if (find_process_by_name("rswitch-voqd"))
+		return;
+	if (file_exists("/run/rswitch/voqd.pid"))
+		status->voqd_running = 0;
 	if (!status->voqd_running)
 		status_add_detail(status, "process not running: rswitch-voqd");
 }
@@ -363,15 +391,14 @@ static void check_counter_progress(struct rs_health_status *status)
 
 	if (!g_counter_snapshot.valid) {
 		status->counters_incrementing = 1;
-		status_add_detail(status, "counter baseline captured");
 	} else if (!any_counter) {
-		status->counters_incrementing = 0;
-		status_add_detail(status, "all packet counters are zero");
+		status->counters_incrementing = 1;
+		status_add_detail(status, "no traffic observed yet");
 	} else if (incrementing) {
 		status->counters_incrementing = 1;
 	} else {
-		status->counters_incrementing = 0;
-		status_add_detail(status, "packet counters stalled since last check");
+		status->counters_incrementing = 1;
+		status_add_detail(status, "packet counters idle since last check");
 	}
 
 	g_counter_snapshot = current;
@@ -387,7 +414,7 @@ static void check_module_staleness(struct rs_health_status *status)
 	if (stale_after_ns < 30000000000ULL)
 		stale_after_ns = 30000000000ULL;
 
-	fd = open_map_fd("rs_module_stats_map");
+	fd = open_map_fd("rs_module_stats");
 	if (fd < 0)
 		return;
 

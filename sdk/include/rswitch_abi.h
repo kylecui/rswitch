@@ -151,6 +151,7 @@ RS_API_EXPERIMENTAL struct rs_module_deps {
 /* ── Stage numbers ─────────────────────────────────────────────── */
 
 /* Core module stages (ingress 10-99, egress 100-199) */
+#define RS_STAGE_KILLSWITCH     10
 #define RS_STAGE_PREPROCESS     10
 #define RS_STAGE_VLAN           20
 #define RS_STAGE_ACL            30
@@ -170,7 +171,7 @@ RS_API_EXPERIMENTAL struct rs_module_deps {
 
 #define RS_ONLYKEY          0       /* Single-entry per-CPU map key */
 #define RS_MAX_PROGS        256     /* Maximum tail-call programs */
-#define RS_MAX_INTERFACES   64      /* Maximum network interfaces */
+#define RS_MAX_INTERFACES   256     /* Maximum network interfaces (must match bitmask range in rs_vlan_members) */
 #define RS_MAX_VLANS        4096    /* Maximum VLAN IDs */
 #define RS_MAX_ALLOWED_VLANS 128    /* Maximum allowed VLANs per port */
 #define RS_VLAN_MAX_DEPTH   2       /* Q-in-Q support (802.1ad) */
@@ -185,6 +186,7 @@ RS_API_EXPERIMENTAL struct rs_module_deps {
 
 /* ── Parsed packet layer offsets ───────────────────────────────── */
 
+#ifndef __RSWITCH_UAPI_H  /* Skip if uapi.h already defined these structs */
 struct rs_layers {
     __u16 eth_proto;            /* Ethernet protocol (ETH_P_IP, ETH_P_IPV6, etc.) */
     __u16 vlan_ids[RS_VLAN_MAX_DEPTH]; /* VLAN IDs (outer to inner) */
@@ -249,6 +251,7 @@ struct rs_ctx {
     /* Reserved for future use (64 bytes — ABI v2) */
     __u32 reserved[16];
 };
+#endif /* !__RSWITCH_UAPI_H */
 
 /* ── Error codes ───────────────────────────────────────────────── */
 
@@ -262,14 +265,145 @@ struct rs_ctx {
 
 /* ── Drop reasons ──────────────────────────────────────────────── */
 
-#define RS_DROP_NONE            0
-#define RS_DROP_PARSE_ERROR     1
-#define RS_DROP_VLAN_FILTER     2
-#define RS_DROP_ACL_BLOCK       3
-#define RS_DROP_NO_FWD_ENTRY    4
-#define RS_DROP_TTL_EXCEEDED    5
-#define RS_DROP_RATE_LIMIT      6
-#define RS_DROP_CONGESTION      7
+/*
+ * Drop reason taxonomy — organized by category.
+ *
+ * Ranges:
+ *   0:       No drop
+ *   1-15:    Parse errors
+ *   16-31:   VLAN
+ *   32-47:   ACL / security
+ *   48-63:   Routing / forwarding
+ *   64-79:   QoS / scheduling
+ *   80-95:   Mirror / redirect
+ *   96-111:  Internal / framework errors
+ *   128-255: User-defined (external modules)
+ */
+/* Undefine legacy macros from uapi.h so the enum can use the same names */
+#ifdef RS_DROP_NONE
+#undef RS_DROP_NONE
+#undef RS_DROP_PARSE_ETH
+#undef RS_DROP_PARSE_VLAN_TAG
+#undef RS_DROP_PARSE_IP
+#undef RS_DROP_VLAN_FILTER
+#undef RS_DROP_ACL_DENY
+#undef RS_DROP_NO_FWD_ENTRY
+#undef RS_DROP_TTL_EXCEEDED
+#undef RS_DROP_RATE_EXCEEDED
+#undef RS_DROP_CONGESTION
+#undef RS_DROP_MAP_ERROR
+#undef RS_DROP_TAILCALL_FAIL
+#undef RS_DROP_INTERNAL
+#endif
+
+enum rs_drop_reason {
+    /* No drop */
+    RS_DROP_NONE                = 0,
+
+    /* Parse errors (1-15) */
+    RS_DROP_PARSE_ETH           = 1,
+    RS_DROP_PARSE_VLAN_TAG      = 2,
+    RS_DROP_PARSE_IP            = 3,
+    RS_DROP_PARSE_IP6           = 4,
+    RS_DROP_PARSE_L4            = 5,
+    RS_DROP_PARSE_ARP           = 6,
+    RS_DROP_PARSE_TRUNCATED     = 7,
+
+    /* VLAN (16-31) */
+    RS_DROP_VLAN_FILTER         = 16,
+    RS_DROP_VLAN_NO_MEMBER      = 17,
+    RS_DROP_VLAN_NATIVE_MISMATCH = 18,
+    RS_DROP_VLAN_DEPTH_EXCEEDED = 19,
+
+    /* ACL / security (32-47) */
+    RS_DROP_ACL_DENY            = 32,
+    RS_DROP_ACL_RATE_LIMIT      = 33,
+    RS_DROP_ACL_PORT_SECURITY   = 34,
+    RS_DROP_ACL_MAC_LIMIT       = 35,
+    RS_DROP_ACL_BLOCK           = 36,
+
+    /* Routing / forwarding (48-63) */
+    RS_DROP_NO_ROUTE            = 48,
+    RS_DROP_TTL_EXCEEDED        = 49,
+    RS_DROP_BLACKHOLE           = 50,
+    RS_DROP_NO_FWD_ENTRY        = 51,
+    RS_DROP_FIB_LOOKUP_FAIL     = 52,
+
+    /* QoS / scheduling (64-79) */
+    RS_DROP_QUEUE_FULL          = 64,
+    RS_DROP_RATE_EXCEEDED       = 65,
+    RS_DROP_RATE_LIMIT          = 65, /* alias for RATE_EXCEEDED */
+    RS_DROP_CONGESTION          = 66,
+    RS_DROP_WRED                = 67,
+
+    /* Mirror / redirect (80-95) */
+    RS_DROP_MIRROR_TARGET_DOWN  = 80,
+    RS_DROP_REDIRECT_FAIL       = 81,
+    RS_DROP_DEVMAP_FULL         = 82,
+    RS_DROP_REDIRECT_LOOP       = 83,
+
+    /* Internal / framework (96-111) */
+    RS_DROP_MAP_ERROR           = 96,
+    RS_DROP_TAILCALL_FAIL       = 97,
+    RS_DROP_CTX_ERROR           = 98,
+    RS_DROP_INTERNAL            = 99,
+    RS_DROP_PROG_NOT_FOUND      = 100,
+
+    /* User-defined (128-255) */
+    RS_DROP_USER_BASE           = 128,
+    RS_DROP_USER_MAX            = 255,
+
+    RS_DROP__MAX,
+};
+
+#define RS_DROP_REASON_MAX 256
+
+/* -- rs_ctx reserved slot accessors -------------------------------- */
+
+#define RS_CTX_PIPELINE_ID(rctx)      ((rctx)->reserved[0])
+#define RS_CTX_PROFILE_ID(rctx)       ((rctx)->reserved[1])
+#define RS_CTX_OBS_BURST_USED(rctx)   ((rctx)->reserved[2])
+#define RS_CTX_OBS_FLOW_HASH(rctx)    ((rctx)->reserved[3])
+
+/* -- Observability level enum -------------------------------------- */
+
+enum rs_obs_level {
+    RS_OBS_LEVEL_L0 = 0,
+    RS_OBS_LEVEL_L1 = 1,
+    RS_OBS_LEVEL_L2 = 2,
+};
+
+/* -- Module identity enum ------------------------------------------ */
+
+enum rs_obs_module_id {
+    RS_MOD_UNKNOWN = 0,
+    RS_MOD_DISPATCHER = 1,
+    RS_MOD_KILLSWITCH = 5,
+    RS_MOD_VLAN = 20,
+    RS_MOD_QOS_CLASSIFY = 25,
+    RS_MOD_ACL = 30,
+    RS_MOD_ROUTE = 40,
+    RS_MOD_FLOW_TABLE = 60,
+    RS_MOD_MIRROR = 70,
+    RS_MOD_L2LEARN = 80,
+    RS_MOD_SFLOW = 85,
+    RS_MOD_LASTCALL = 90,
+    RS_MOD_EGRESS = 100,
+    RS_MOD_EGRESS_QOS = 170,
+    RS_MOD_EGRESS_VLAN = 180,
+    RS_MOD_EGRESS_FINAL = 190,
+    RS_MOD_VETH_EGRESS = 191,
+    RS_MOD_USER_BASE = 4096,
+};
+
+/* -- Observability event types (core range 0x0000-0x00FF) ---------- */
+
+enum rs_obs_event_type {
+    RS_EVENT_OBS_SAMPLE       = 0x0002,
+    RS_EVENT_OBS_DROP         = 0x0003,
+    RS_EVENT_OBS_REDIRECT_ERR = 0x0004,
+    RS_EVENT_OBS_PROFILE_MARK = 0x0005,
+};
 
 /* ── Event types ───────────────────────────────────────────────── */
 

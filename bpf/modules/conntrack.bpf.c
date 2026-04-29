@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 32,
+    RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 9,
+};
+
 char _license[] SEC("license") = "GPL";
 
 RS_DECLARE_MODULE("conntrack", RS_HOOK_XDP_INGRESS, 32,
@@ -194,6 +199,8 @@ int conntrack(struct xdp_md *xdp_ctx)
 
     if (!ctx)
         return XDP_PASS;
+
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, (__u32)pkt_len);
 
     struct ct_config *cfg = bpf_map_lookup_elem(&ct_config_map, &cfg_key);
     if (!cfg || !cfg->enabled) {

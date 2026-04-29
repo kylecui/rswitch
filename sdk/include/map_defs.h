@@ -9,6 +9,8 @@
 #ifndef __RSWITCH_MAP_DEFS_H
 #define __RSWITCH_MAP_DEFS_H
 
+#warning "map_defs.h is deprecated. Use #include <rswitch_maps.h> instead. See sdk/docs/SDK_Migration_Guide.md"
+
 #ifdef __BPF__
     /* BPF side: types from vmlinux.h, bpf_helpers from rswitch_bpf.h */
     #include <bpf/bpf_helpers.h>

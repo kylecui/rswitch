@@ -20,6 +20,12 @@
 
 #include "../include/rswitch_common.h"
 
+/* Observability identity for this compilation unit */
+enum {
+    RS_THIS_STAGE_ID  = 190,
+    RS_THIS_MODULE_ID = RS_MOD_EGRESS_FINAL,
+};
+
 char _license[] SEC("license") = "GPL";
 
 // Module metadata for auto-discovery
@@ -249,6 +255,12 @@ int egress_final(struct xdp_md *xdp_ctx)
         return XDP_PASS;
     }
     
+    void *data = (void *)(long)xdp_ctx->data;
+    void *data_end = (void *)(long)xdp_ctx->data_end;
+    __u32 pkt_len = data_end - data;
+    
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
+    
     update_final_stat(EGRESS_FINAL_PACKETS);
     
     /* Verify and fix IP checksum if this is an IPv4 packet
@@ -271,6 +283,8 @@ int egress_final(struct xdp_md *xdp_ctx)
             if (ip_checksum(iph, data_end, &correct_cksum) < 0) {
                 rs_debug("Egress final: Invalid IP header, cannot compute checksum");
                 update_final_stat(EGRESS_FINAL_NON_IP);
+                RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_PARSE_IP);
+                RS_OBS_FINAL_ACTION(xdp_ctx, ctx, pkt_len);
                 return XDP_DROP;
             }
             
@@ -312,5 +326,7 @@ int egress_final(struct xdp_md *xdp_ctx)
     rs_debug("Egress final: packet processing complete");
     
     /* Transmit packet */
+    ctx->action = XDP_PASS;
+    RS_OBS_FINAL_ACTION(xdp_ctx, ctx, pkt_len);
     return XDP_PASS;
 }

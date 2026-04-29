@@ -6,6 +6,10 @@
 **A production-grade, modular XDP switch with CO-RE compatibility and advanced QoS capabilities**
 
 > 📖 **[中文文档 / Chinese Documentation](docs/zh-CN/README.md)**
+>
+> **First-read docs for physical-machine deployment and follow-up development:**
+> - [物理机 Native XDP 部署与运维手册](docs/zh-CN/deployment/Physical_Machine_Native_XDP_Deployment.md)
+> - [Native XDP 物理机场景排错复盘](docs/zh-CN/development/Native_XDP_Physical_Debugging_Postmortem.md)
 
 rSwitch is a high-performance, programmable network switch built on XDP (eXpress Data Path) and AF_XDP. It features a modular architecture with CO-RE (Compile Once - Run Everywhere) compatibility, enabling seamless deployment across different kernel versions. The system includes a user-space QoS scheduler (VOQd) for fine-grained traffic control and supports comprehensive network features through its extensible module system.
 
@@ -28,7 +32,7 @@ rSwitch is a high-performance, programmable network switch built on XDP (eXpress
 ### 🔧 Technical Highlights
 - **Zero-Copy Data Paths**: AF_XDP integration for high-throughput scenarios
 - **Event-Driven Architecture**: Structured event bus for observability
-- **Hot-Reload**: Runtime module updates `[Planned: atomic replacement]`
+- **Hot-Reload**: Runtime module updates — atomic prog_array replacement without XDP detach
 - **BPF Verifier Friendly**: Bounds checking and offset masking for reliability
 - **Production Ready**: Comprehensive testing and validation framework
 
@@ -53,7 +57,7 @@ Get rSwitch running in under 5 minutes:
 # Debian/Ubuntu
 sudo apt update
 sudo apt install -y build-essential cmake clang llvm pkg-config \
-                     libxdp-dev libbpf-dev linux-headers-$(uname -r)
+                     libxdp-dev libbpf-dev libsystemd-dev linux-headers-$(uname -r)
 
 # Or install libbpf from source (recommended)
 git submodule update --init --recursive
@@ -190,7 +194,7 @@ make vmlinux && make
 ### System Requirements
 - **Kernel**: 5.8+ (for AF_XDP and CO-RE support)
 - **NIC**: XDP-native drivers (i40e, mlx5) or generic mode
-- **Libraries**: libbpf, libxdp, clang/LLVM
+- **Libraries**: libbpf, libxdp, libsystemd, clang/LLVM
 - **Permissions**: Root access for XDP program loading
 
 ## 💡 Usage
@@ -430,7 +434,7 @@ RS_EMIT_EVENT(&evt, sizeof(evt));
 
 ## 📚 Documentation
 
-> 📖 [Full Documentation Index](docs/Documentation_Index.md) · [中文文档](docs/zh-CN/)
+> 📖 [Full Documentation Index](docs/Documentation_Index.md) · [中文文档](docs/zh-CN/) · [Changelog](CHANGELOG.md)
 
 ### 📘 Usage
 - **[Quick Start](docs/usage/Quick_Start.md)** — Build, run, and verify in 5 minutes
@@ -481,8 +485,8 @@ The following features are documented or referenced but **not yet fully implemen
 | Stateful ACL with connection tracking | Planned | [Product Backlog 2.2](docs/backlog/product-backlog.md) |
 | Ingress QoS traffic classification module | Planned | [Product Backlog 3.1](docs/backlog/product-backlog.md) |
 | QinQ double VLAN tagging | Planned | [Product Backlog 1.1](docs/backlog/product-backlog.md) |
-| Robust hot-reload with atomic replacement | Planned | [Platform Backlog 2.1](docs/backlog/platform-backlog.md) |
-| Per-module `config:` in YAML profiles | Planned | [Platform Backlog 1.3](docs/backlog/platform-backlog.md) |
+| Robust hot-reload with atomic replacement | ✅ Implemented | [Hot-Reload Documentation](docs/development/Hot_Reload.md) |
+| Per-module `config:` in YAML profiles | Planned (v2.1) | [Platform Backlog 1.3](docs/backlog/platform-backlog.md) |
 | Conditional `optional_modules:` loading | Planned | [Platform Backlog 1.2](docs/backlog/platform-backlog.md) |
 
 > See the [Backlog](#-backlog) section for the full roadmap.

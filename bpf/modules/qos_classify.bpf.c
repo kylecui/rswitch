@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 25,
+    RS_THIS_MODULE_ID = RS_MOD_QOS_CLASSIFY,
+};
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -107,6 +112,11 @@ int qos_classify(struct xdp_md *xdp_ctx)
     if (!ctx)
         return XDP_DROP;
 
+    void *data_end = (void *)(long)xdp_ctx->data_end;
+    void *data = (void *)(long)xdp_ctx->data;
+    __u32 pkt_len = data_end - data;
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
+
     __u32 cfg_key = 0;
     struct qos_config *cfg = bpf_map_lookup_elem(&qos_config_map, &cfg_key);
     if (!cfg || !cfg->enabled) {
@@ -124,8 +134,6 @@ int qos_classify(struct xdp_md *xdp_ctx)
     __u8 traffic_class = cfg->default_class;
     int matched = 0;
 
-    void *data = (void *)(long)xdp_ctx->data;
-    void *data_end = (void *)(long)xdp_ctx->data_end;
     struct iphdr *iph = data + (ctx->layers.l3_offset & RS_L3_OFFSET_MASK);
     if ((void *)(iph + 1) > data_end) {
         rs_debug("QoS classify: IP header bounds check failed");

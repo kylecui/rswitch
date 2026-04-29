@@ -1,8 +1,8 @@
 > 📖 [English Version](../../usage/CLI_Reference.md)
 
-# CLI 参考
+# CLI参考
 
-rSwitch 提供了多个用于运行时管理和监控的命令行工具。所有工具都构建到 `build/` 目录中，并且需要 root 权限。
+rSwitch提供了多个用于运行时管理和监控的命令行工具。所有工具都构建到 `build/` 目录中，并且需要root权限。
 
 ## rswitchctl
 
@@ -19,7 +19,7 @@ sudo ./build/rswitchctl show-stats
 sudo ./build/rswitchctl stats [interface]
 ```
 
-### MAC 表
+### MAC表
 
 ```bash
 # 显示已学习的 MAC 地址
@@ -41,7 +41,7 @@ sudo ./build/rswitchctl show-events
 
 ## rsvlanctl
 
-VLAN 配置工具。
+VLAN配置工具。
 
 ```bash
 # 显示所有 VLAN 配置
@@ -90,7 +90,7 @@ sudo ./build/rsaclctl add 5 "src=192.168.1.100" drop
 
 ## rsqosctl
 
-QoS 配置和监控工具。
+QoS配置和监控工具。
 
 ```bash
 # 显示 QoS 统计信息
@@ -105,7 +105,7 @@ sudo ./build/rsqosctl set-prio <interface> <priority>
 
 ## rsvoqctl
 
-VOQd 调度器控制工具。
+VOQd调度器控制工具。
 
 ```bash
 # 显示 VOQd 状态
@@ -117,7 +117,7 @@ sudo ./build/rsvoqctl stats
 
 ## rswitch_loader
 
-主加载器二进制文件。通常不作为“工具”使用，而是运行 rSwitch 的入口点。
+主加载器二进制文件。通常不作为“工具”使用，而是运行rSwitch的入口点。
 
 ```bash
 sudo ./build/rswitch_loader [options]
@@ -125,16 +125,16 @@ sudo ./build/rswitch_loader [options]
 
 | 选项 | 描述 |
 |--------|-------------|
-| `--profile <path>` | YAML profile 文件的路径 |
+| `--profile <path>` | YAML profile文件的路径 |
 | `--ifaces <if1,if2,...>` | 逗号分隔的接口列表 |
 | `--verbose` | 启用详细日志 |
 | `--debug` | 启用调试级别日志 |
-| `--xdp-mode <native\|generic>` | XDP 挂载模式（默认：native） |
-| `--detach` | 从接口分离 XDP 程序并退出 |
+| `--xdp-mode <native\|generic>` | XDP挂载模式（默认：native） |
+| `--detach` | 从接口分离XDP程序并退出 |
 
 ## rswitch-voqd
 
-VOQd 用户空间调度器。当 profile 中的 `voqd_config.enabled: true` 时，通常由加载器自动启动。
+VOQd用户空间调度器。当profile中的 `voqd_config.enabled: true` 时，通常由加载器自动启动。
 
 ```bash
 sudo ./build/rswitch-voqd [options]
@@ -143,7 +143,7 @@ sudo ./build/rswitch-voqd [options]
 | 选项 | 描述 |
 |--------|-------------|
 | `-i <interfaces>` | 逗号分隔的接口列表 |
-| `-m <mode>` | VOQd 模式：`bypass`, `shadow` 或 `active` |
+| `-m <mode>` | VOQd模式：`bypass`, `shadow` 或 `active` |
 | `-p <num_ports>` | 端口数量 |
 | `-P <prio_mask>` | 优先级掩码（十六进制） |
 | `-q` | 启用软件队列 |
@@ -151,9 +151,9 @@ sudo ./build/rswitch-voqd [options]
 | `-s` | 启用调度器 |
 | `-S <interval>` | 统计报告间隔（秒） |
 
-## bpftool 命令
+## bpftool命令
 
-对 rSwitch 检查有用的标准 `bpftool` 命令：
+对rSwitch检查有用的标准 `bpftool` 命令：
 
 ```bash
 # 列出已加载的 BPF 程序
@@ -181,24 +181,24 @@ sudo bpftool map dump name voqd_state_map
 
 | 脚本 | 描述 |
 |--------|-------------|
-| `rswitch_start.sh` | 启动加载器，并进行 map 就绪检查和启动 VOQd |
+| `rswitch_start.sh` | 启动加载器，并进行map就绪检查和启动VOQd |
 | `rswitch_diag.sh` | 快速诊断（程序、map、接口） |
-| `voqd_check.sh` | 验证 VOQd 就绪情况和状态 |
-| `unpin_maps.sh` | 移除所有已固定的 rSwitch map |
-| `hot-reload.sh` | 在不完全重启的情况下热重载 BPF 模块 |
-| `setup_nic_queues.sh` | 配置 NIC IRQ 亲和性和队列隔离 |
+| `voqd_check.sh` | 验证VOQd就绪情况和状态 |
+| `unpin_maps.sh` | 移除所有已固定的rSwitch map |
+| `hot-reload.sh` | 在不完全重启的情况下热重载BPF模块 |
+| `setup_nic_queues.sh` | 配置NIC IRQ亲和性和队列隔离 |
 
 位于 `tools/` 目录：
 
 | 脚本 | 描述 |
 |--------|-------------|
-| `tools/qos_verify.sh` | 快速 QoS 验证 |
-| `tools/qos_monitor.sh` | 实时 QoS 监控 |
-| `tools/scripts/all/disable_vlan_offload.sh` | 在接口上禁用硬件 VLAN 卸载 (offload) |
+| `tools/qos_verify.sh` | 快速QoS验证 |
+| `tools/qos_monitor.sh` | 实时QoS监控 |
+| `tools/scripts/all/disable_vlan_offload.sh` | 在接口上禁用硬件VLAN卸载 (offload) |
 | `tools/scripts/all/promisc_switch.sh` | 在接口上启用混杂模式 |
 
 ## 另请参阅
 
 - [如何使用](How_To_Use.md) — 使用工作流
 - [故障排除](Troubleshooting.md) — 常见问题
-- [VOQd 设置](../deployment/VOQd_Setup.md) — VOQd 部署指南
+- [VOQd设置](../deployment/VOQd_Setup.md) — VOQd部署指南

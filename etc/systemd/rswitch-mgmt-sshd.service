@@ -1,0 +1,15 @@
+[Unit]
+Description=SSHd in rSwitch management namespace
+After=rswitch-mgmtd.service
+BindsTo=rswitch.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /run/sshd
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do ip netns list 2>/dev/null | grep -qw rswitch-mgmt && exit 0; sleep 1; done; exit 1'
+ExecStart=/usr/bin/ip netns exec rswitch-mgmt /usr/sbin/sshd -D
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

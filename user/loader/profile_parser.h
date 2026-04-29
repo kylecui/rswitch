@@ -62,6 +62,8 @@ struct rs_profile_voqd {
     int enable_scheduler;  // Enable DRR/WFQ scheduler
     int use_veth_egress;   // Enable veth egress path for XDP egress processing
     char veth_in_ifname[32]; // Veth inside interface name
+    int enable_sw_queues;  // Enable software queue simulation (no AF_XDP needed)
+    int sw_queue_depth;    // Software queue depth per port/priority (default 1024)
 };
 
 /* Management plane configuration */

@@ -2,6 +2,11 @@
 
 #include "../include/rswitch_common.h"
 
+enum {
+    RS_THIS_STAGE_ID  = 28,
+    RS_THIS_MODULE_ID = RS_MOD_USER_BASE + 6,
+};
+
 
 char _license[] SEC("license") = "GPL";
 
@@ -175,6 +180,11 @@ int rate_limit(struct xdp_md *xdp_ctx)
     if (!ctx)
         return XDP_DROP;
 
+    void *data_end = (void *)(long)xdp_ctx->data_end;
+    void *data = (void *)(long)xdp_ctx->data;
+    __u32 pkt_len = (__u32)(data_end - data);
+    RS_OBS_STAGE_HIT(xdp_ctx, ctx, pkt_len);
+
     __u32 cfg_key = 0;
     struct rl_config *cfg = bpf_map_lookup_elem(&rl_config_map, &cfg_key);
     if (!cfg || !cfg->enabled) {
@@ -188,10 +198,6 @@ int rate_limit(struct xdp_md *xdp_ctx)
         RS_TAIL_CALL_NEXT(xdp_ctx, ctx);
         return XDP_DROP;
     }
-
-    void *data = (void *)(long)xdp_ctx->data;
-    void *data_end = (void *)(long)xdp_ctx->data_end;
-    __u32 pkt_len = (__u32)(data_end - data);
 
     struct rl_key key = {};
     struct rl_bucket *bucket = lookup_bucket_with_fallback(ctx, &key);
@@ -213,7 +219,7 @@ int rate_limit(struct xdp_md *xdp_ctx)
 
     if (bucket->exceed_action == RL_EXCEED_DROP) {
         rs_debug("RL: exceed drop type=%u len=%u", key.type, pkt_len);
-        ctx->drop_reason = RS_DROP_RATE_LIMIT;
+        RS_RECORD_DROP(xdp_ctx, ctx, RS_DROP_RATE_LIMIT);
         return XDP_DROP;
     }
 

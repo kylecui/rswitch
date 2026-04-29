@@ -1,0 +1,6 @@
+[
+  { "query": "请根据仓库现状生成 quick start、配置指南和 FAQ", "should_trigger": true },
+  { "query": "根据这个 CLI 工具的代码整理一份使用手册", "should_trigger": true },
+  { "query": "请根据当前模块生成 regression tests", "should_trigger": false },
+  { "query": "把下面这段英文翻译成中文", "should_trigger": false }
+]

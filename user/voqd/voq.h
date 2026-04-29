@@ -93,6 +93,9 @@ struct voq_mgr {
 	
 	/* Memory pool for voq_entry */
 	struct voq_entry *free_entries;
+	struct voq_entry **chunk_ptrs;
+	uint32_t num_chunks;
+	uint32_t max_chunks;
 	uint32_t num_free_entries;
 	uint32_t total_entries;
 	pthread_mutex_t pool_lock;
