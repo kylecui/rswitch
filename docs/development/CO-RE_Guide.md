@@ -205,7 +205,7 @@ make            # Compile BPF objects
 
 # Deploy to production server (kernel 6.1)
 scp build/bpf/*.bpf.o server:/opt/rswitch/bpf/
-ssh server "cd /opt/rswitch && sudo ./rswitch_loader --profile profiles/l2.yaml --ifaces eth0"
+ssh server "cd /opt/rswitch && sudo ./rswitch_loader --profile profiles/l2-simple-managed.yaml --ifaces eth0"
 # libbpf automatically adapts struct layouts for kernel 6.1
 ```
 
@@ -257,7 +257,7 @@ if (bpf_core_field_exists(struct xdp_md, rx_queue_index)) {
 ```bash
 make vmlinux     # Regenerate vmlinux.h (if not already done)
 make clean && make
-sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml --ifaces eth0 --verbose
+sudo ./build/rswitch_loader --profile etc/profiles/l2-simple-managed.yaml --ifaces eth0 --verbose
 ```
 
 ---

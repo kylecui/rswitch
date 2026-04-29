@@ -12,7 +12,7 @@
 
 **诊断**：
 ```bash
-sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml --verbose
+sudo ./build/rswitch_loader --profile etc/profiles/l2-simple-managed.yaml --verbose
 dmesg | grep bpf
 ```
 
@@ -43,7 +43,7 @@ sleep 5 && ls /sys/fs/bpf/ | grep rs_
 
 # 清理陈旧的 map 并重启
 sudo rm -rf /sys/fs/bpf/rs_*
-sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml
+sudo ./build/rswitch_loader --profile etc/profiles/l2-simple-managed.yaml
 ```
 
 ### 模块ABI版本不匹配

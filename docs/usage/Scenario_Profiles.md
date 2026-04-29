@@ -72,43 +72,30 @@ voqd_config:
 
 ## Included Profiles
 
-### Layer 2
+rSwitch ships 5 curated profiles, organized from simplest to most complete. Legacy profiles are archived in `etc/profiles/archive/`.
 
-| Profile | Modules | Use Case |
-|---------|---------|----------|
-| `dumb.yaml` | lastcall | Simple flooding switch, no learning |
-| `l2.yaml` | vlan, l2learn, lastcall, egress_vlan, egress_final | Basic L2 learning switch |
-| `l2-vlan.yaml` | vlan, l2learn, lastcall, egress_vlan, egress_final | L2 switch with VLAN enforcement |
-| `l2-vlan-lab.yaml` | vlan, l2learn, lastcall, egress_vlan, egress_final | Lab configuration with test VLANs |
-| `vlan-test.yaml` | vlan, l2learn, lastcall, egress_vlan, egress_final | VLAN isolation testing |
+| Profile | Ingress Modules | Egress Modules | Port Defaults | Management | Use Case |
+|---------|----------------|----------------|---------------|------------|----------|
+| `dumb.yaml` | lastcall | egress_final | — | No | Simple flooding switch, no learning |
+| `l2-unmanaged.yaml` | l2learn, lastcall | egress_final | mac_learning | No | Unmanaged L2 switch |
+| `l2-simple-managed.yaml` | vlan, dhcp_snoop, l2learn, lastcall | egress_vlan, egress_final | trunk, vlan[1] | Yes | Managed L2 switch with VLAN + DHCP snooping |
+| `l3-full.yaml` | vlan, acl, dhcp_snoop, route, l2learn, lastcall | egress_vlan, egress_final | trunk, vlan[1] | Yes | Full L3 routing with ACL |
+| `all.yaml` | vlan, acl, dhcp_snoop, route, mirror, l2learn, killswitch, arp_learn, afxdp_redirect, lastcall | egress_qos, egress_vlan, egress_final | trunk, vlan[1] | Yes | All modules — testing, QoS, full pipeline |
 
-### Layer 3
+### Port Defaults
 
-| Profile | Modules | Use Case |
-|---------|---------|----------|
-| `l3.yaml` | vlan, acl, route, l2learn, lastcall, egress_vlan, egress_final | L3 routing with basic ACL |
-| `l3-acl-lab.yaml` | vlan, acl, l2learn, lastcall, egress_vlan, egress_final | ACL testing lab |
-| `l3-vlan-acl-route.yaml` | vlan, acl, route, l2learn, lastcall, egress_vlan, egress_final | Full L3 stack |
-| `l3-vlan-acl-route-lx.yaml` | vlan, acl, route, l2learn, lastcall, egress_vlan, egress_final | Extended L3 configuration |
+Profiles can define `port_defaults:` — default settings applied to **all** ports passed via `--ifaces` unless overridden by per-port `ports:` configuration:
 
-### QoS / VOQd
+```yaml
+port_defaults:
+  vlan_mode: trunk
+  allowed_vlans: [1]
+  native_vlan: 1
+  mac_learning: true
+  default_priority: 1
+```
 
-| Profile | Modules | Use Case |
-|---------|---------|----------|
-| `l3-qos-voqd-test.yaml` | Full stack + afxdp_redirect, egress_qos | L3 with QoS and VOQd testing |
-| `l3-qos-voqd-simple.yaml` | Full stack + afxdp_redirect, egress_qos | Simplified QoS setup |
-| `qos-voqd-test.yaml` | afxdp_redirect, egress_qos, ... | QoS-heavy scenario testing |
-| `qos-voqd-minimal.yaml` | Minimal QoS modules | Minimal VOQd configuration |
-| `qos-voqd-shadow.yaml` | QoS modules in shadow mode | VOQd observation-only mode |
-| `qos-software-queues-test.yaml` | QoS with software queues | For NICs without hardware queues |
-
-### Specialized
-
-| Profile | Modules | Use Case |
-|---------|---------|----------|
-| `firewall.yaml` | vlan, acl, lastcall, egress_final | Security-focused, ordered ACLs |
-| `veth-egress-test.yaml` | Egress pipeline testing | Virtual interface egress testing |
-| `all-modules-test.yaml` | All modules | Full pipeline testing |
+This eliminates repetitive per-port configuration when all ports share the same baseline. See [Configuration](../deployment/Configuration.md) for the full reference.
 
 ## Settings Reference
 
@@ -155,7 +142,7 @@ ports:
 
 1. Copy an existing profile as a starting point:
    ```bash
-   cp etc/profiles/l2.yaml etc/profiles/my-custom.yaml
+   cp etc/profiles/l2-simple-managed.yaml etc/profiles/my-custom.yaml
    ```
 
 2. Edit module lists, settings, and port configuration.

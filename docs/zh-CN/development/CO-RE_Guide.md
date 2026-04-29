@@ -207,7 +207,7 @@ make            # 编译 BPF 对象
 
 # 部署到生产服务器 (内核 6.1)
 scp build/bpf/*.bpf.o server:/opt/rswitch/bpf/
-ssh server "cd /opt/rswitch && sudo ./rswitch_loader --profile profiles/l2.yaml --ifaces eth0"
+ssh server "cd /opt/rswitch && sudo ./rswitch_loader --profile profiles/l2-simple-managed.yaml --ifaces eth0"
 # libbpf 会自动为内核 6.1 适配结构体布局
 ```
 
@@ -259,7 +259,7 @@ if (bpf_core_field_exists(struct xdp_md, rx_queue_index)) {
 ```bash
 make vmlinux     # 重新生成 vmlinux.h (如果尚未完成)
 make clean && make
-sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml --ifaces eth0 --verbose
+sudo ./build/rswitch_loader --profile etc/profiles/l2-simple-managed.yaml --ifaces eth0 --verbose
 ```
 
 ---

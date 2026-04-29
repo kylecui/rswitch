@@ -88,7 +88,7 @@ voqd_config:
 
 ```bash
 sudo ./build/rswitch_loader \
-    --profile etc/profiles/l3-qos-voqd-test.yaml \
+    --profile etc/profiles/all.yaml \
     --ifaces ens33,ens34,ens35,ens36 \
     --verbose
 ```

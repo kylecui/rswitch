@@ -68,7 +68,7 @@ ls etc/profiles/
 
 # Start with a basic L2 switch / 启动基本二层交换机
 sudo ./build/rswitch_loader \
-    --profile etc/profiles/l2.yaml \
+    --profile etc/profiles/l2-simple-managed.yaml \
     --ifaces ens34,ens35,ens36
 
 # Verify it's running / 验证运行状态
@@ -138,12 +138,10 @@ management:                       # Optional / 可选
 | Use Case / 使用场景 | Profile / 配置文件 | Description / 描述 |
 |-----------|---------|-------------|
 | Basic testing / 基本测试 | `dumb.yaml` | Simple flooding, no learning / 简单泛洪，无学习 |
-| L2 switching / 二层交换 | `l2.yaml` | VLAN + MAC learning / VLAN + MAC学习 |
-| L2 + STP / 二层 + STP | `l2-stp.yaml` | L2 with loop prevention / 带环路防护的二层 |
-| L3 routing / 三层路由 | `l3.yaml` | L3 routing + ACL / 三层路由 + ACL |
-| Firewall / 防火墙 | `firewall.yaml` | Security-focused / 安全为主 |
-| QoS gateway / QoS网关 | `l3-qos-voqd.yaml` | Full QoS with VOQd / 完整QoS带VOQd |
-| Campus edge / 校园边缘 | `campus.yaml` | Source guard + DHCP snoop / 源防护 + DHCP监听 |
+| L2 unmanaged / 二层非管理 | `l2-unmanaged.yaml` | MAC learning, no VLANs / MAC学习，无VLAN |
+| L2 managed / 二层管理 | `l2-simple-managed.yaml` | VLAN + DHCP snooping + mgmt / VLAN + DHCP监听 + 管理 |
+| L3 routing / 三层路由 | `l3-full.yaml` | Full L3 routing + ACL / 完整三层路由 + ACL |
+| All modules / 全模块 | `all.yaml` | Everything including QoS / 包括QoS的所有模块 |
 
 ### Creating Custom Profiles / 创建自定义配置文件
 
@@ -157,7 +155,7 @@ Start from a similar existing profile and modify:
 
 ```bash
 # Copy a base profile / 复制基础配置文件
-cp etc/profiles/l2.yaml etc/profiles/my-custom.yaml
+cp etc/profiles/l2-simple-managed.yaml etc/profiles/my-custom.yaml
 
 # Edit to your needs / 根据需求编辑
 vim etc/profiles/my-custom.yaml

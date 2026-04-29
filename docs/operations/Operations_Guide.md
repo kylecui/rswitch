@@ -316,7 +316,7 @@ done
 
 # 4. Try starting with verbose output
 sudo /opt/rswitch/build/rswitch_loader \
-    --profile /opt/rswitch/etc/profiles/l2.yaml \
+    --profile /opt/rswitch/etc/profiles/l2-simple-managed.yaml \
     --ifaces ens34,ens35,ens36 \
     --verbose
 

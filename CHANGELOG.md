@@ -19,6 +19,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.0] - 2026-04-28
+
+### Added
+- **Profile Architecture Redesign**: 5 new tiered profiles replacing 10+ legacy profiles
+  - `dumb.yaml` — simple flooding switch (no learning)
+  - `l2-unmanaged.yaml` — L2 switch with MAC learning, no VLANs
+  - `l2-simple-managed.yaml` — managed L2 switch with VLAN, DHCP snooping, management port
+  - `l3-full.yaml` — full L3 routing with ACL, VLAN, DHCP snooping, management port
+  - `all.yaml` — all modules including killswitch, ARP learn, AF_XDP redirect
+- **Port Defaults**: `port_defaults:` YAML section for profile-wide port configuration (vlan_mode, allowed_vlans, native_vlan, mac_learning, default_priority) — applied to all ports unless overridden by per-port `ports:` entries
+- **Profile Parser**: `parse_port_defaults()` in `profile_parser.c` with `port_defaults` fields in `struct rs_profile`
+- **Loader**: `configure_ports()` port_defaults branch applies defaults to all `--ifaces` interfaces
+- **Installer Profile Chooser**: Interactive 1–5 profile selection during `install.sh` (default: 3 = l2-simple-managed); non-interactive via `RSWITCH_PROFILE=<name>`
+- **Test Coverage**: Unit tests for profile parser (11 tests), integration tests for installer (18 assertions), updated profile and loader integration tests
+
+### Changed
+- Archived 10 legacy profiles to `etc/profiles/archive/` (l2.yaml, l3.yaml, firewall.yaml, qos-voqd.yaml, etc.)
+- Profile count reduced from 10+ active to 5 curated profiles
+- `test/integration/test_loader.sh`: profile count threshold 10→3
+- `test/integration/test_profiles.sh`: added port_defaults validation
+
+### Removed
+- Active use of legacy profiles (archived, not deleted)
+
+---
+
 ## [2.1.0] - 2026-03-29
 
 ### Added
@@ -164,7 +190,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[unreleased]: https://github.com/kylecui/rswitch/compare/v2.0.1...HEAD
+[unreleased]: https://github.com/kylecui/rswitch/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/kylecui/rswitch/compare/v2.1.0...v2.2.0
 [2.0.1]: https://github.com/kylecui/rswitch/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/kylecui/rswitch/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/kylecui/rswitch/compare/v0.9...v1.0.0

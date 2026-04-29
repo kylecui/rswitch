@@ -167,6 +167,31 @@ sudo bpftool map show | grep rswitch
 # Press Ctrl+C in the loader terminal
 ```
 
+## Automated Installation
+
+The `install.sh` script automates dependency installation, building, and deployment:
+
+```bash
+sudo bash scripts/install.sh
+```
+
+During installation, an interactive profile chooser prompts you to select a profile:
+
+```
+Select a profile for rSwitch:
+  1) dumb              — Simple flooding switch (no learning)
+  2) l2-unmanaged      — L2 switch with MAC learning
+  3) l2-simple-managed — Managed L2 with VLAN + DHCP snooping  [default]
+  4) l3-full           — Full L3 routing with ACL
+  5) all               — All modules (testing, QoS)
+```
+
+For non-interactive installation (CI/automation), set `RSWITCH_PROFILE`:
+
+```bash
+RSWITCH_PROFILE=l3-full sudo bash scripts/install.sh
+```
+
 ## Cross-Kernel Deployment
 
 Thanks to CO-RE, compiled BPF objects can run on different kernel versions without recompilation:
@@ -180,7 +205,7 @@ scp -r build/ target:/opt/rswitch/
 scp -r etc/profiles/ target:/opt/rswitch/etc/profiles/
 
 # Run on target (no build tools needed, just libbpf)
-ssh target "cd /opt/rswitch && sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml --ifaces eth0,eth1"
+ssh target "cd /opt/rswitch && sudo ./build/rswitch_loader --profile etc/profiles/l2-simple-managed.yaml --ifaces eth0,eth1"
 ```
 
 **Target machine requirements**:

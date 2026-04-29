@@ -40,7 +40,7 @@ Profiles are YAML files in `etc/profiles/` that define which BPF modules to load
 ls etc/profiles/
 
 # Preview a profile
-cat etc/profiles/l2-vlan.yaml
+cat etc/profiles/l2-simple-managed.yaml
 ```
 
 ## 3. Pre-Launch Configuration (Optional)
@@ -74,7 +74,7 @@ See [NIC Configuration](../deployment/NIC_Configuration.md) for details.
 
 ```bash
 sudo ./build/rswitch_loader \
-    --profile etc/profiles/l2.yaml \
+    --profile etc/profiles/l2-simple-managed.yaml \
     --ifaces ens34,ens35,ens36
 ```
 
@@ -82,7 +82,7 @@ sudo ./build/rswitch_loader \
 
 ```bash
 sudo ./build/rswitch_loader \
-    --profile etc/profiles/l3-qos-voqd-test.yaml \
+    --profile etc/profiles/l3-full.yaml \
     --ifaces ens34,ens35 \
     --verbose
 ```
@@ -91,7 +91,7 @@ sudo ./build/rswitch_loader \
 
 ```bash
 sudo ./build/rswitch_loader \
-    --profile etc/profiles/l2.yaml \
+    --profile etc/profiles/l2-simple-managed.yaml \
     --ifaces ens34,ens35 \
     --xdp-mode generic
 ```
@@ -101,7 +101,7 @@ sudo ./build/rswitch_loader \
 The start script handles map readiness checks and VOQd startup timing:
 
 ```bash
-sudo scripts/rswitch_start.sh etc/profiles/l3-qos-voqd-test.yaml ens34,ens35
+sudo scripts/rswitch_start.sh etc/profiles/l3-full.yaml ens34,ens35
 ```
 
 ## 5. Validating Operation
@@ -225,7 +225,7 @@ sudo rm -rf /sys/fs/bpf/rs_*
 ### Detach XDP Programs Only
 
 ```bash
-sudo ./build/rswitch_loader --detach --profile etc/profiles/l2.yaml
+sudo ./build/rswitch_loader --detach --profile etc/profiles/l2-simple-managed.yaml
 ```
 
 ## Tips

@@ -17,7 +17,7 @@ Requires=rswitch-nic.service
 [Service]
 Type=simple
 ExecStart=/opt/rswitch/build/rswitch_loader \
-    --profile /opt/rswitch/etc/profiles/l2.yaml \
+    --profile /opt/rswitch/etc/profiles/l2-simple-managed.yaml \
     --ifaces ens34,ens35,ens36
 ExecStop=/bin/kill -SIGTERM $MAINPID
 ExecStopPost=/bin/rm -rf /sys/fs/bpf/rs_*
@@ -126,7 +126,7 @@ To switch profiles without editing the service file, use an environment file:
 
 ```bash
 # /etc/rswitch/rswitch.env
-RSWITCH_PROFILE=/opt/rswitch/etc/profiles/l3-qos-voqd-test.yaml
+RSWITCH_PROFILE=/opt/rswitch/etc/profiles/l3-full.yaml
 RSWITCH_IFACES=ens34,ens35,ens36,ens37
 ```
 

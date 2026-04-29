@@ -262,13 +262,10 @@ egress:
 | Profile | Modules | Relative Performance |
 |---------|---------|---------------------|
 | `dumb.yaml` | Minimal | Fastest |
-| `l2.yaml` | L2 switching | Fast |
-| `l2-vlan.yaml` | L2 + VLAN | Fast |
-| `l3.yaml` | L3 routing + ACL | Moderate |
-| `firewall.yaml` | Security-focused | Moderate |
-| `qos-voqd-minimal.yaml` | L2 + minimal QoS | Moderate |
-| `qos-voqd.yaml` | Full QoS | Moderate-High |
-| `all-modules.yaml` | Everything loaded | Slowest (testing only) |
+| `l2-unmanaged.yaml` | L2 + MAC learning | Fast |
+| `l2-simple-managed.yaml` | L2 + VLAN + DHCP | Fast |
+| `l3-full.yaml` | L3 routing + ACL | Moderate |
+| `all.yaml` | Everything loaded | Slowest (testing only) |
 
 ### ACL Optimization
 
@@ -325,7 +322,7 @@ curl -s http://localhost:9417/metrics | grep rswitch_port
 
 ```bash
 # Use native XDP, minimal modules, BYPASS mode
-sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml --ifaces ens34,ens35
+sudo ./build/rswitch_loader --profile etc/profiles/l2-unmanaged.yaml --ifaces ens34,ens35
 
 # NIC tuning
 sudo ethtool -L ens34 combined 4

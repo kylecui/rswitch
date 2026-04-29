@@ -173,7 +173,7 @@ scp -r build/ target:/opt/rswitch/
 scp -r etc/profiles/ target:/opt/rswitch/etc/profiles/
 
 # 在目标机上运行（不需要构建工具，只需要 libbpf）
-ssh target "cd /opt/rswitch && sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml --ifaces eth0,eth1"
+ssh target "cd /opt/rswitch && sudo ./build/rswitch_loader --profile etc/profiles/l2-simple-managed.yaml --ifaces eth0,eth1"
 ```
 
 **目标机要求**：

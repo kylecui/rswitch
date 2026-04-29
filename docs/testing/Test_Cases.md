@@ -23,7 +23,7 @@ Multi-component network infrastructure platform combining:
 | Daemons (14) | rswitch_loader, rswitch-voqd, rswitch-mgmtd, rswitch-stpd, rswitch-lldpd, rswitch-lacpd, rswitch-watchdog, rswitch-telemetry, rswitch-events, rswitch-sflow, rswitch-prometheus, rswitch-controller, rswitch-agent, rswitch-snmpagent |
 | REST API | 45+ endpoints across auth, system, ports, modules, vlans, acls, routes, nat, profiles, config, topology, events, dhcp-snooping, websocket |
 | Web Portal | 10 HTML pages: index, ports, modules, vlans, acls, routes, logs, dhcp, network, profiles |
-| Profiles | 9 YAML profiles in etc/profiles/: all-modules, dumb, firewall, l2, l3, l3-routing, qos-voqd, qos-voqd-minimal, qos-voqd-shadow |
+| Profiles | 5 YAML profiles in etc/profiles/: dumb, l2-unmanaged, l2-simple-managed, l3-full, all (10 legacy archived in etc/profiles/archive/) |
 
 ### External Interfaces
 
@@ -173,8 +173,9 @@ Multi-component network infrastructure platform combining:
 | User-space: rs_packet_trace_v2 | rs_packet_trace_v2.c | Ringbuf attach failure | Integration | Load BPF, ringbuf, SIGINT/SIGTERM clean exit | Medium | New in 4.14 |
 | User-space: rsqosctl_simple | rsqosctl_simple.c | Unknown cmd no error | CLI | enable, disable, stats, unknown command → exit 1 | Medium | New in 4.14 |
 | Profile: dumb | etc/profiles/dumb.yaml | MAC learning active when disabled | Integration | Single-module load, flood-all, no MAC table activity | Medium | New in 4.7 |
-| Profile: all-modules | etc/profiles/all-modules.yaml | Missing module BPF object | Integration | 12-module load, stage order verification | High | New in 4.7 |
-| Profile: qos-voqd-shadow | etc/profiles/qos-voqd-shadow.yaml | AF_XDP sockets created in shadow | Integration | VOQd shadow mode, AF_XDP disabled, pipeline match | High | New in 4.7 |
+| Profile: all-modules | etc/profiles/all.yaml | Missing module BPF object | Integration | All-module load, stage order verification | High | Renamed from all-modules |
+| Profile: port_defaults | Profile YAML with port_defaults | Defaults not applied | Unit / Integration | port_defaults parsing, loader apply, per-port override | High | New in v2.2 |
+| Profile: qos-voqd-shadow | etc/profiles/all.yaml (with voqd shadow mode) | AF_XDP sockets created in shadow | Integration | VOQd shadow mode, AF_XDP disabled, pipeline match | High | Profile renamed |
 
 ---
 
@@ -1322,10 +1323,10 @@ Multi-component network infrastructure platform combining:
 
 #### TC-LOADER-001 Load valid L2 profile
 
-- **Objective**: Verify loader successfully loads l2.yaml profile
+- **Objective**: Verify loader successfully loads l2-simple-managed.yaml profile
 - **Target**: `rswitch_loader`
 - **Preconditions**: Build complete, BPF filesystem mounted
-- **Inputs**: `sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml --ifaces veth0`
+- **Inputs**: `sudo ./build/rswitch_loader --profile etc/profiles/l2-simple-managed.yaml --ifaces veth0`
 - **Steps**:
   1. Create veth pair
   2. Run loader with l2 profile
@@ -1338,13 +1339,13 @@ Multi-component network infrastructure platform combining:
 
 #### TC-LOADER-002 Load all profiles sequentially
 
-- **Objective**: Verify all 10 shipped profiles load without error
+- **Objective**: Verify all 5 shipped profiles load without error
 - **Target**: `rswitch_loader`
 - **Preconditions**: Build complete
 - **Inputs**: Each profile in etc/profiles/
 - **Steps**:
   1. For each profile: load → verify → unload → cleanup
-- **Expected Results**: All 10 profiles load successfully
+- **Expected Results**: All 5 profiles load successfully
 - **Priority**: High
 - **Risk Covered**: Profile compatibility regression
 - **Automation Hint**: Shell integration test
@@ -1460,12 +1461,12 @@ Multi-component network infrastructure platform combining:
 - **Risk Covered**: Minimal-pipeline correctness; flood-all behaviour when MAC learning disabled
 - **Automation Hint**: Shell integration test
 
-#### TC-LOADER-009 Profile loader — all-modules profile loads all 12 modules
+#### TC-LOADER-009 Profile loader — all.yaml profile loads all modules
 
-- **Objective**: Verify loader registers all 9 ingress + 3 egress modules from `all-modules.yaml`
-- **Target**: `rswitch_loader`, `etc/profiles/all-modules.yaml`
+- **Objective**: Verify loader registers all ingress + egress modules from `all.yaml`
+- **Target**: `rswitch_loader`, `etc/profiles/all.yaml`
 - **Preconditions**: Build complete; 2 veth pairs available; all `.bpf.o` files present in `./build/bpf/`
-- **Inputs**: `sudo ./build/rswitch_loader --profile etc/profiles/all-modules.yaml --ifaces veth0,veth1`
+- **Inputs**: `sudo ./build/rswitch_loader --profile etc/profiles/all.yaml --ifaces veth0,veth1`
 - **Steps**:
   1. Load all-modules profile
   2. Run `sudo ./build/rswitchctl show-pipeline`
@@ -1476,12 +1477,12 @@ Multi-component network infrastructure platform combining:
 - **Risk Covered**: Full-pipeline load ordering; module ABI compatibility across all modules
 - **Automation Hint**: Shell integration test (`rswitchctl show-pipeline` output parsing)
 
-#### TC-LOADER-010 Profile loader — qos-voqd-shadow profile starts VOQd in shadow mode
+#### TC-LOADER-010 Profile loader — all.yaml with VOQd shadow mode
 
-- **Objective**: Verify `qos-voqd-shadow.yaml` loads correctly with VOQd in shadow mode and `enable_afxdp=false`
-- **Target**: `rswitch_loader`, `rswitch-voqd`, `etc/profiles/qos-voqd-shadow.yaml`
+- **Objective**: Verify `all.yaml` loads correctly with VOQd in shadow mode and `enable_afxdp=false`
+- **Target**: `rswitch_loader`, `rswitch-voqd`, `etc/profiles/all.yaml`
 - **Preconditions**: Build complete; veth pair available; no existing VOQd process
-- **Inputs**: `sudo ./build/rswitch_loader --profile etc/profiles/qos-voqd-shadow.yaml --ifaces veth0,veth1`
+- **Inputs**: `sudo ./build/rswitch_loader --profile etc/profiles/all.yaml --ifaces veth0,veth1`
 - **Steps**:
   1. Load qos-voqd-shadow profile
   2. Confirm VOQd process starts with `mode=shadow`

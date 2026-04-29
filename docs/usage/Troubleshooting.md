@@ -10,7 +10,7 @@ Common issues and solutions when running rSwitch.
 
 **Diagnosis**:
 ```bash
-sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml --verbose
+sudo ./build/rswitch_loader --profile etc/profiles/l2-simple-managed.yaml --verbose
 dmesg | grep bpf
 ```
 
@@ -41,7 +41,7 @@ sleep 5 && ls /sys/fs/bpf/ | grep rs_
 
 # Clean stale maps and restart
 sudo rm -rf /sys/fs/bpf/rs_*
-sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml
+sudo ./build/rswitch_loader --profile etc/profiles/l2-simple-managed.yaml
 ```
 
 ### Module ABI Version Mismatch

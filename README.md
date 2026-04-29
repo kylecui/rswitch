@@ -71,7 +71,7 @@ make vmlinux && make
 
 # Quick L2 switching demo
 sudo ./build/rswitch_loader \
-     --profile etc/profiles/l2.yaml \
+     --profile etc/profiles/l2-simple-managed.yaml \
      --ifaces ens34,ens35,ens36
 ```
 
@@ -204,22 +204,22 @@ make vmlinux && make
 #### Start with L2 Profile
 ```bash
 sudo ./build/rswitch_loader \
-     --profile etc/profiles/l2.yaml \
+     --profile etc/profiles/l2-simple-managed.yaml \
      --ifaces eth0,eth1,eth2
 ```
 
-#### Enable QoS with VOQd
+#### Full L3 Routing
 ```bash
 sudo ./build/rswitch_loader \
-     --profile etc/profiles/qos-voqd.yaml \
+     --profile etc/profiles/l3-full.yaml \
      --ifaces eth0,eth1,eth2,eth3 \
      --verbose
 ```
 
-#### Firewall Configuration
+#### All Modules (including QoS)
 ```bash
 sudo ./build/rswitch_loader \
-     --profile etc/profiles/firewall.yaml \
+     --profile etc/profiles/all.yaml \
      --ifaces eth0,eth1
 ```
 
@@ -333,11 +333,13 @@ voqd_config:
 
 | Profile | Description | Use Case |
 |---------|-------------|----------|
-| `l2.yaml` | Basic L2 switching | Simple bridging |
-| `l3.yaml` | L3 routing + ACL | Basic routing |
-| `firewall.yaml` | Security-focused | Access control |
-| `qos-voqd.yaml` | QoS with VOQd | Performance testing |
-| `qos-voqd-minimal.yaml` | Minimal QoS | Lightweight QoS |
+| `dumb.yaml` | Simple flooding switch | No learning, minimal pipeline |
+| `l2-unmanaged.yaml` | L2 with MAC learning | Unmanaged switch, no VLANs |
+| `l2-simple-managed.yaml` | L2 with VLAN + DHCP snooping | Managed switch with management port |
+| `l3-full.yaml` | Full L3 routing + ACL | Production routing with VLANs |
+| `all.yaml` | All modules enabled | Testing, QoS, full pipeline |
+
+Profiles support `port_defaults` — default VLAN mode, allowed VLANs, and MAC learning settings applied to all ports unless overridden by per-port `ports:` configuration. See [Configuration](docs/deployment/Configuration.md).
 
 ### Advanced Configuration
 
@@ -439,7 +441,7 @@ RS_EMIT_EVENT(&evt, sizeof(evt));
 ### 📘 Usage
 - **[Quick Start](docs/usage/Quick_Start.md)** — Build, run, and verify in 5 minutes
 - **[How To Use](docs/usage/How_To_Use.md)** — Practical usage examples and workflows
-- **[Scenario Profiles](docs/usage/Scenario_Profiles.md)** — All 18 YAML profiles explained
+- **[Scenario Profiles](docs/usage/Scenario_Profiles.md)** — All 5 YAML profiles explained
 - **[CLI Reference](docs/usage/CLI_Reference.md)** — Complete CLI tool reference
 - **[Troubleshooting](docs/usage/Troubleshooting.md)** — Diagnostics and common issues
 

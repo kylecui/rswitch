@@ -40,15 +40,16 @@ ls etc/profiles/
 | Profile | 描述 |
 |---------|-------------|
 | `dumb.yaml` | 简单的泛洪交换机（无学习功能） |
-| `l2.yaml` | 支持VLAN的L2学习型交换机 |
-| `l3.yaml` | 带有基础ACL的L3路由 |
-| `firewall.yaml` | 以安全为中心，带有有序ACL |
+| `l2-unmanaged.yaml` | 带MAC学习的L2交换机 |
+| `l2-simple-managed.yaml` | 管理型L2交换机，带VLAN + DHCP监听 |
+| `l3-full.yaml` | 完整L3路由 + ACL |
+| `all.yaml` | 全部模块（测试、QoS） |
 
 ## 运行
 
 ```bash
 # 设置你的 Profile 和接口
-PROFILE=etc/profiles/l2.yaml
+PROFILE=etc/profiles/l2-simple-managed.yaml
 INTERFACES=ens34,ens35,ens36
 
 # 启动 rSwitch

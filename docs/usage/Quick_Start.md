@@ -38,15 +38,16 @@ Common starting points:
 | Profile | Description |
 |---------|-------------|
 | `dumb.yaml` | Simple flooding switch (no learning) |
-| `l2.yaml` | L2 learning switch with VLAN support |
-| `l3.yaml` | L3 routing with basic ACL |
-| `firewall.yaml` | Security-focused with ordered ACLs |
+| `l2-unmanaged.yaml` | L2 switch with MAC learning |
+| `l2-simple-managed.yaml` | Managed L2 with VLAN + DHCP snooping |
+| `l3-full.yaml` | Full L3 routing with ACL |
+| `all.yaml` | All modules (testing, QoS) |
 
 ## Run
 
 ```bash
 # Set your profile and interfaces
-PROFILE=etc/profiles/l2.yaml
+PROFILE=etc/profiles/l2-simple-managed.yaml
 INTERFACES=ens34,ens35,ens36
 
 # Start rSwitch

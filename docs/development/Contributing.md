@@ -114,7 +114,7 @@ Follow the coding guidelines below. Keep commits focused and atomic.
 make clean && make
 
 # Load and test (requires root)
-sudo ./build/rswitch_loader --profile etc/profiles/l2.yaml --ifaces eth0 --verbose
+sudo ./build/rswitch_loader --profile etc/profiles/l2-simple-managed.yaml --ifaces eth0 --verbose
 
 # Verify pipeline
 sudo ./build/rswitchctl show-pipeline

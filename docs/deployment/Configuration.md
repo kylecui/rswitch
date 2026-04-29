@@ -105,6 +105,29 @@ settings:
 | `ringbuf_enabled` | bool | `true` | Enable the `rs_event_bus` ring buffer |
 | `debug` | bool | `false` | Enable verbose BPF debug output |
 
+## Port Defaults Section
+
+Profile-wide port defaults applied to **all** interfaces passed via `--ifaces`. Per-port `ports:` entries override these defaults.
+
+```yaml
+port_defaults:
+  vlan_mode: trunk
+  allowed_vlans: [1]
+  native_vlan: 1
+  mac_learning: true
+  default_priority: 1
+```
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `vlan_mode` | string | Default VLAN mode for all ports (`off`, `access`, `trunk`, `hybrid`) |
+| `allowed_vlans` | int[] | Default allowed VLAN list |
+| `native_vlan` | int | Default native VLAN for trunk mode |
+| `mac_learning` | bool | Default MAC learning toggle |
+| `default_priority` | int | Default QoS priority 0–7 |
+
+When `port_defaults` is present, the loader calls `configure_ports()` which applies these settings to every interface. Any interface also listed in `ports:` uses the per-port values instead.
+
 ## Ports Section
 
 Per-interface configuration.
@@ -252,15 +275,14 @@ settings:
   default_vlan: 1
   stats_enabled: true
 
-ports:
-  - interface: "ens34"
-    enabled: true
-    vlan_mode: trunk
-    native_vlan: 1
-    allowed_vlans: [1, 100, 200]
-    mac_learning: true
-    default_priority: 0
+port_defaults:
+  vlan_mode: trunk
+  allowed_vlans: [1, 100, 200]
+  native_vlan: 1
+  mac_learning: true
+  default_priority: 0
 
+ports:
   - interface: "ens35"
     enabled: true
     vlan_mode: access
