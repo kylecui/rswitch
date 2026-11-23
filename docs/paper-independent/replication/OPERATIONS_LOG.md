@@ -31,6 +31,25 @@
 - 22:21｜ENV_PROBE 上机执行｜修正探针脚本一行无效残留后，scp 至 `~/s1-replication/`，`sudo bash ENV_PROBE.sh` 运行。**结果六组全过，`VERDICT: GO`**：G1 内核配置（BPF/BPF_SYSCALL/DEBUG_INFO_BTF=y；CONFIG_BPF_TRACING 行未在输出中出现，待源码加载 fentry 时以实际行为复核）、G2 BTF 存在、G3 `dev_map_enqueue` 与 `bq_xmit_all` 均在 available_filter_functions 可挂、G4 工具链全齐、G5 veth/clsact 创建清理正常、G6 tsc 时钟源。日志 `env_probe_20261123T142135Z.log` 归档于 `artifacts/rswitch-dev-20/`，远端与本地 sha256 一致（`16cb2a093eb35e52cdb277390afbaca94552aea36cf953e7f4320d75e045a12d`）。
 - 22:21｜状态更新｜复现环境就绪。下一步：交付源码 v0.1（规格见 SOURCES.md），在 130 上远程编译校准，冒烟通过后进入正式 go/no-go 矩阵。先前候选机（10.174.254.128 的 HWE 升级、kc-ubuntu-2404-01 开机）不再需要。
 
+## 2026-11-23（续二）：源码 v0.1→v0.3 交付与冒烟调试全记录
+
+- 22:21–23:16｜源码交付｜`bpf/min_slice.bpf.c`（ingress root + BANK_A/B + COMMON_MUX + capsule/wire + 六 arm 配置）、`bpf/trace_export.bpf.c`（fentry dev_map_enqueue/bq_xmit_all + ringbuf + ifindex 过滤）、`user/min_ctl.c`（open_file 低层 libbpf，单进程常驻）、`Makefile`（clang -target bpf + bpftool gen skeleton/btf dump vmlinux.h）。
+- 23:16–23:59｜远程编译迭代（全部于 rswitch-dev-20）｜修复清单按顺序：① `linux/in.h` 缺失（IPPROTO_UDP）；② trace_export 改用 `bpftool btf dump` 生成的 `vmlinux.h`（内核内部结构 CO-RE 需要）；③ `-I.` include 路径（vmlinux.h 与 skeleton 头跨目录）；④ skeleton 前缀为 `min_slice_bpf`/`trace_export_bpf`（bpftool 将 `.` 归一 `_`）；⑤ `bpf_ringbuf_consume` 是内核侧 helper，用户态改 `ring_buffer__new/poll`；⑥ `XDP_FLAGS_ANY` 在该用户态头不存在，改 `XDP_FLAGS_MASK`；⑦ `0xS1D` 非法字面量改 `0x51d`；⑧ **open_file 方案替换 skeleton**（skeleton `open_skeleton→find_map_by_name` 段错误，gdb 回溯定位，改低层 API 绕过）；⑨ per-CPU stats 读取按 `libbpf_num_possible_cpus()`（=128）动态分配（固定 MAX_CPU 读数不可信）。
+- 23:59｜verifier 迭代｜`adjust_head` 后旧 pkt 指针失效（R8 invalid mem access）→ 重新经 ctx 解析 sender header；随后**v0.2 重构：capsule/wire 内嵌 UDP payload（36+72+64=172B），零 adjust_head**，规避 AF_PACKET 注入帧 headroom 不足。
+- 23:59｜注入路径迭代｜AF_PACKET write 成功但帧不到 s1_in 的 XDP（tcpdump 双端证实）→ **veth native XDP 要求对端 GRO off**（gro off 后 XDP 开始触发）；突发 128 帧溢出 veth XDP rq 被静默丢弃 → **节流 1ms/帧**。
+- 00:00 前后｜**devmap value 类型根因**：BPF 侧 value 定义为 `int`（4B）导致 `bpf_devmap_val`（8B，ifindex+prog）被截断——egress program 一直没装上（readback prog_id=0、trace prog_id=0）。改为 `__type(value, struct bpf_devmap_val)`。
+- 00:00 前后｜**devmap update EINVAL 根因（v6.8 源码逐字核对）**：`__dev_map_alloc_node` 要求 `prog->expected_attach_type == BPF_XDP_DEVMAP`——`SEC("xdp")` 的 expected_attach_type 是 BPF_XDP；egress 程序 section 改为 **`SEC("xdp/devmap")`**。修复后 readback：`devmap[0] ifindex=79 prog_id=407`、trace enqueue 事件 `prog_id=407`——**egress bank 确认挂上**。
+- 00:00 前后｜bpftool 直读真值（pin + hold）：stats percpu **RX=128（cpu1）**——128 帧全部进入 ingress root；devmap 两条目 ifindex=75、prog id 395/396 正确。此前 stats 打印 RX=7/8/12 为 per-CPU 读取缺陷所致，已修复（动态 possible_cpus=128）。
+- 00:00 前后｜**当前断点：devmap bq flush（bq_xmit_all）未触发**——trace kind=2 恒为 0，帧滞留 bulk queue，egress 未执行、s1_rx 无帧。generic XDP 模式下 devmap flush 时机不明确（已回退 native 优先）。行为存在轮间不稳定（RX 128/12 波动），高度嫌疑为同机活体 rSwitch 栈（rswitch.service、mgmtd 15:23:32 启动、killswitch watchdog）的周期性干扰。
+- 00:00 前后｜trace 过滤教训：fentry 为系统级 hook，未过滤时把同机 rSwitch 平台栈自身转发流量的 dev_map_enqueue 全部计入（130 条假象）。已加 trace_cfg ifindex 过滤（写入失败静默的缺陷本轮暴露，已加错误打印）。
+
+## 遗留断点（下一轮）
+
+1. **bq flush 不触发**：候选原因——veth_poll 尾部 xdp_do_flush 的 VETH_XMIT_RED 位未置位（redirect 路径差异）、同机 rSwitch 栈干扰、或 fentry/bq_xmit_all 与实际 flush 函数不一致。候选手段：加 fentry/xdp_do_flush、fentry/__dev_flush 旁证 hook 定位 flush 链；或对照停用 rswitch 服务（**须主理人确认**，属有影响操作）。
+2. **行为轮间不稳定**：RX 128 与 12 波动。候选：mgmtd/watchdog 周期动作。观察法：连续多轮 run 记录 run_cnt（bpftool prog show）。
+3. receiver.py、judge.py、run_go_no_go.sh 尚未编写（SOURCES.md 已有规格）；stats 读取已修复但未复验。
+4. 三态判读所需数据：待 egress 执行后，direct arm 冲突帧按 wire.ingress_gen != wire.egress_gen 且 semantic 与 retained 计算自洽判定。
+
 ## 待办（guest 侧）
 
 1. 在 Ubuntu 6.8 guest 上以 root 运行 `ENV_PROBE.sh`，归档 `env_probe_*.log` 并回传。
