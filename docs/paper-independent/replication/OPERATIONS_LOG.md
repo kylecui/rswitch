@@ -14,6 +14,19 @@
 - 22:01｜源码规格交付｜`SOURCES.md` 写入，列出待实现的切片与工具源码及接口规格；源码 v0.1 未编译、未验证，首次运行前须先过 ENV_PROBE 并按实际内核校准。
 - 22:01｜合同决策登记｜经五顾问 Council 裁决（见 `../04-独立论文价值评审.md` 附录），主理人选定 S1 走独立投稿合同 (a)；随附纪律：去内部化措辞、正面回答非干预发生性、补 commit 引文、artifact 公开与 AI 声明补全、go/no-go 为不可降级闸门、时间盒保留。
 
+## 2026-11-23（续）：凭证检索与主机探测
+
+- 22:13｜凭证检索｜rswitch 仓库 grep `password|credential|10.174.|lab.machine|sshpass`：仅命中 rSwitch 管理口默认密码样例（`etc/profiles/*.yaml` 的 `auth_password: rswitch`，应用层，非机器登录）与 ACL 示例 IP；jz_sniff_rn 命中 lab IP 记录（10.174.254.163、10.174.254.139 等研究文档）但无明文登录凭证。**结论：两仓库均未记录机器登录凭证；凭证载体为本机 `~/.ssh/id_ed25519` 密钥 + `~/.ssh/config`（全部 `User kylecui`，无密码指令）。**
+- 22:13｜known_hosts 主机清单｜10.174.1.x 十余台、10.174.254.x 十八台（含论文 N=3 证据机 10.174.254.139、E2E 机 .163）、mshome.net 本地 VM 域。config 条目：`10.174.254.128`、`kc-ebpf-test-01.mshome.net`、`kc-ubuntu-2404-01.mshome.net`（172.21.25.197）。
+- 22:13｜连通与能力探测（BatchMode 只读）｜
+  - `kc-ebpf-test-01`：可达，kylecui，kernel `7.0.0-1017-azure`，BTF=yes。内核偏离论文环境大，只宜做工具链预研。
+  - `kc-ubuntu-2404-01`（172.21.25.197）：连接超时（关机或 NAT 不通）。**Ubuntu 24.04 对应 6.8 系内核，是论文同款内核的候选机，需先开机。**
+  - `10.174.254.128`（ubuntu-vm-2204）：可达，kernel `5.15.0-204-generic`，BTF=yes，**免密 sudo=yes**，有 `ip`，缺 `clang`/`bpftool`（需装工具链）。devmap 批量语义 5.14 引入，5.15 含该语义；可用但非论文内核。
+  - `10.174.254.139`（论文 N=3 证据机）：连接超时，不在线。
+  - `10.174.254.163`：`Permission denied (publickey)`，未装本机公钥。
+  - tracing 可用清单读取失败（tracefs 未挂载或路径差异），留给 ENV_PROBE.sh 的 G3 项在目标机上判。
+- 22:13｜选机结论｜首选路径：`10.174.254.128` 装 HWE 内核（`linux-image-generic-hwe-22.04` 可升至 6.8 系，与论文 6.8.0-139-generic 同系）后作正式复现机；升级内核与重启为有影响操作，**须经主理人确认后执行**。次选：开机 `kc-ubuntu-2404-01`。128 在现有 5.15 上可先完成工具链安装、ENV_PROBE 与冒烟（语义自 5.14 存在）。
+
 ## 待办（guest 侧）
 
 1. 在 Ubuntu 6.8 guest 上以 root 运行 `ENV_PROBE.sh`，归档 `env_probe_*.log` 并回传。
