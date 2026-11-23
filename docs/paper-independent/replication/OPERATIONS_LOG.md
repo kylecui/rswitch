@@ -27,6 +27,10 @@
   - tracing 可用清单读取失败（tracefs 未挂载或路径差异），留给 ENV_PROBE.sh 的 G3 项在目标机上判。
 - 22:13｜选机结论｜首选路径：`10.174.254.128` 装 HWE 内核（`linux-image-generic-hwe-22.04` 可升至 6.8 系，与论文 6.8.0-139-generic 同系）后作正式复现机；升级内核与重启为有影响操作，**须经主理人确认后执行**。次选：开机 `kc-ubuntu-2404-01`。128 在现有 5.15 上可先完成工具链安装、ENV_PROBE 与冒烟（语义自 5.14 存在）。
 
+- 22:21｜测试机登记｜主理人指定复现测试机 `rswitch-dev@10.174.254.130`（主机名 rswitch-dev-20，在 known_hosts 清单内）。探测：Ubuntu 24.04 LTS，**kernel 6.8.0-111-generic（与论文 6.8.0-139-generic 同系）**，BTF=yes，免密 sudo=yes，工具链齐（clang 18.1.3、llvm-strip、bpftool v7.4.0、ip、tc、python3 3.12.3、libbpf），4 核 7.9G。非 root 下 tracefs 不可读，留待 sudo 判定。
+- 22:21｜ENV_PROBE 上机执行｜修正探针脚本一行无效残留后，scp 至 `~/s1-replication/`，`sudo bash ENV_PROBE.sh` 运行。**结果六组全过，`VERDICT: GO`**：G1 内核配置（BPF/BPF_SYSCALL/DEBUG_INFO_BTF=y；CONFIG_BPF_TRACING 行未在输出中出现，待源码加载 fentry 时以实际行为复核）、G2 BTF 存在、G3 `dev_map_enqueue` 与 `bq_xmit_all` 均在 available_filter_functions 可挂、G4 工具链全齐、G5 veth/clsact 创建清理正常、G6 tsc 时钟源。日志 `env_probe_20261123T142135Z.log` 归档于 `artifacts/rswitch-dev-20/`，远端与本地 sha256 一致（`16cb2a093eb35e52cdb277390afbaca94552aea36cf953e7f4320d75e045a12d`）。
+- 22:21｜状态更新｜复现环境就绪。下一步：交付源码 v0.1（规格见 SOURCES.md），在 130 上远程编译校准，冒烟通过后进入正式 go/no-go 矩阵。先前候选机（10.174.254.128 的 HWE 升级、kc-ubuntu-2404-01 开机）不再需要。
+
 ## 待办（guest 侧）
 
 1. 在 Ubuntu 6.8 guest 上以 root 运行 `ENV_PROBE.sh`，归档 `env_probe_*.log` 并回传。

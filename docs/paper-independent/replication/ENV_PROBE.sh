@@ -39,10 +39,8 @@ echo "== [G5] veth 与 XDP generic 能力（建完即删） =="
 V=s1probe$$
 ip link add "$V" type veth peer name "$V"p 2>&1 && echo "OK: veth 创建" || echo "FAIL: veth 创建"
 if ip link show "$V" >/dev/null 2>&1; then
-  TCID=$((RANDOM))
   ip link set "$V" xdp obj /dev/null 2>/dev/null || echo "NOTE: 无预编译 XDP 对象，generic 挂载能力留待套件加载阶段验证"
   tc qdisc add dev "$V" clsact 2>&1 && echo "OK: clsact" || echo "NOTE: clsact 不可用"
-  ip link set "$V"x xdp fd 2>/dev/null || true
   ip link del "$V" 2>&1 && echo "OK: 清理完成"
 else
   echo "FAIL: 探测链路不存在，跳过清理"
