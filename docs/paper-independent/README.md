@@ -2,7 +2,7 @@
 
 > 分支 `paper/independent-cross-hook-xdp`，基线 `dev 8850f7f`，2026-11-23。
 > 用途：承载现稿 `Computer_Networks_Manuscript.pdf` 复位为独立论文的全部工作文档。
-> 边界：只新增 `docs/paper-independent/`，不修改 `bpf/`、`user/`、`src/`、`Makefile` 或任何核心实现；未 push。
+> 边界：新增 `docs/paper-independent/`（含 `replication/` 复现工作区，未触碰 `bpf/`、`user/`、`src/`、`Makefile` 等核心实现）；已推送 origin。
 
 ## 与主线分支的关系
 
@@ -25,7 +25,8 @@
 | `01-独立论文契约与主线边界.md` | 独立 RQ、机制、实验、失败条件、主要 claim、共享内容声明与禁句 |
 | `02-手稿骨架与逐节复位说明.md` | 现稿复位为独立论文的逐节规格，全部数字引自现稿，不新增实验 |
 | `03-证据缺口与投稿闸门.md` | Q0–Q5、Claim Gate、Submission Gate 对账，必须补实验清单与 venue 模板 |
-| `04-独立论文价值评审.md` | S1 独立成篇的价值评分、上游出处定位、新颖性初查、风险与时间盒决策 |
+| `04-独立论文价值评审.md` | 价值评分、上游出处定位、新颖性初查、风险与时间盒决策，附 Council 裁决与投稿合同决策 |
+| `replication/` | go/no-go 复现工作区：协议与三态判读、日志契约、ENV_PROBE、操作原始日志、源码规格 |
 
 ## 使用约定
 
