@@ -8,14 +8,14 @@
 
 | 分支 | 目录 | 主题 |
 |---|---|---|
-| `paper/rswitch-weaving` | `docs/paper/` | 主线复位：框架 → 流量编织 → 应用，对齐 R0 的 P1 与 P2 |
+| `paper/rswitch-weaving` | `docs/paper/` | 主线复位：框架 → 流量编织 → 应用（评估卡推荐形态 A 单篇；本分支 00 文档主张按 R0 拆为 P1 加 P2，属待落地建议） |
 | `paper/independent-cross-hook-xdp` | `docs/paper-independent/` | 独立机制论文：跨 hook 更新中被选中的入口对象与实际执行的出口对象的区分 |
 
-两个分支同从 `dev` 切出、互不依赖，目录不相交。独立论文不占 R0 的 P1–P4 编号：按 `PUBLICATION_STRATEGY.md` §3 的 Anti-Salami 规则与 `RESEARCH_BRIEF_v0.2.md` §7 的 Optional Paper 成立逻辑，登记为研究组合之外的 standalone mechanism study，并需在 `PAPER_PORTFOLIO.md` 中补一条贡献合同。
+两个分支同从 `dev` 切出、互不依赖，目录不相交。独立论文不占 R0 的 P1–P4 编号：`PUBLICATION_STRATEGY.md` §3 的 Anti-Salami 规则给出独立贡献条件；`RESEARCH_BRIEF_v0.2.md` §7 的 Optional Paper 5 另设数据规模、时间真实性与可公开性条件，不适用于 S1。R0 全文未定义组合外机制研究这一类别，S1 须在 `PAPER_PORTFOLIO.md`（`RESEARCH_EXECUTION_PLAN_v0.1.md` WS1 的待建产物，导出包内暂无实体）中显式登记、说明理由，并声明 shared substrate 与 reused section limits。
 
 ## 实现版本口径
 
-现稿参考文献 [8] 与 `jz_sniff_rn` 的 submodule pin 同为 `c10fbd8e15dc68fad936fead1f207b950d1ee296`（`v2.2.0` tag，也是 `origin/main`）。本分支基线 `dev 8850f7f` 与之分叉：`merge-base --is-ancestor c10fbd8 HEAD` 退出 1，`c10fbd8..HEAD` 为 3 个提交、`HEAD..c10fbd8` 为 8 个提交。本分支是文档分支，**不得**用其代码状态代替现稿所引的冻结实现；复现实验须显式 checkout `c10fbd8`，并按 `EXPERIMENT_QUALITY_GATE.md` Q1 记录 commit、kernel、NIC、driver、CPU、XDP mode、topology、profile、config 与 random seed。
+现稿参考文献 [8] 与 `jz_sniff_rn` 的 submodule pin 同为 `c10fbd8e15dc68fad936fead1f207b950d1ee296`（`v2.2.0` tag，也是 `origin/main`）。本分支基线 `dev 8850f7f` 与之分叉：`merge-base --is-ancestor c10fbd8 HEAD` 退出 1，`c10fbd8..dev` 为 3 个提交、`HEAD..c10fbd8` 为 8 个提交；本分支在 `dev` 之上另有文档提交，`c10fbd8..HEAD` 会随文档提交递增（复核时 HEAD 为 `5a46086`，实测 5 个），故相对计数须绑定当时的 HEAD 重算，不可跨分支照抄。本分支是文档分支，**不得**用其代码状态代替现稿所引的冻结实现；复现实验须显式 checkout `c10fbd8`，并按 `EXPERIMENT_QUALITY_GATE.md` Q1 记录 commit、kernel、NIC、driver、CPU、XDP mode、topology、profile、config 与 random seed。
 
 ## 文档清单
 
