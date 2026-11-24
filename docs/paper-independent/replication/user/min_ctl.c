@@ -128,7 +128,15 @@ static int send_frames(const struct cfg *c, struct bpf_object *obj)
             } else {
                 sent++;
             }
-            usleep(1000);   /* 节流 1ms/帧：突发会溢出 veth 的 XDP rq 被静默丢弃（实测 RX=7/128） */
+            if ((f % 16) == 15) {
+                /* 触发帧：同帧型、UDP 目的端口 40002 → root redirect 到 devmap[2]（s1_tx）
+                 * → 本次 poll stats.xdp_redirect>0 → poll 尾 xdp_do_flush 全局触发 */
+                struct udphdr *tu = (struct udphdr *)(frame + 34);
+                tu->dest = htons(40002);
+                if (write(sock, frame, FRAME_LEN) < 0 && errno != ENOBUFS) perror("write-trigger");
+                tu->dest = htons(40001);
+            }
+            /* 不节流：threaded-NAPI 模式下突发入 rq，poll 批处理产生多帧 epoch（论文 v4 同款干预） */
         }
     }
 out:
@@ -179,7 +187,7 @@ static int do_run(const struct cfg *c)
     struct bpf_devmap_val dv = {0};
     struct ring_buffer *rb = NULL;
     int a_fd, b_fd, m_fd, err = -1;
-    __u32 k0 = 0, k1 = 1;
+    __u32 k0 = 0, k1 = 1, k2 = 2;
     int fds[3];
     const char *names[3] = {"BANK_A", "BANK_B", "MUX"};
 
@@ -215,6 +223,13 @@ static int do_run(const struct cfg *c)
     if (bpf_map_update_elem(bpf_object__find_map_fd_by_name(obj, "devmap"), &k1, &dv, BPF_ANY) < 0) {
         fprintf(stderr, "devmap[1]: %s\n", strerror(errno)); goto out;
     }
+    /* devmap[2]：flush 触发 entry（s1_tx，无 prog）。触发帧由 root redirect 到此，
+     * 使该次 poll 的 stats.xdp_redirect>0 → poll 尾 xdp_do_flush 全局触发。 */
+    dv.ifindex = (__u32)c->tx_idx;
+    dv.bpf_prog.fd = 0;
+    if (bpf_map_update_elem(bpf_object__find_map_fd_by_name(obj, "devmap"), &k2, &dv, BPF_ANY) < 0) {
+        fprintf(stderr, "devmap[2]: %s\n", strerror(errno)); goto out;
+    }
 
     prog = bpf_object__find_program_by_name(obj, "xdp_ingress_root");
     /* native 优先：devmap bq 的 flush 语义由驱动 poll 尾部 xdp_do_flush 保证；
@@ -228,6 +243,15 @@ static int do_run(const struct cfg *c)
         fprintf(stderr, "[attach] generic(SKB) XDP（native 失败回退）\n");
     }
     if (err) { fprintf(stderr, "xdp attach: %s\n", strerror(errno)); goto out; }
+    /* 论文 v4 同款干预：开启 ingress 的 threaded NAPI（帧聚合入 rq，poll 批处理才出现多帧 epoch） */
+    {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "echo 1 > /sys/class/net/%s/threaded 2>/dev/null", c->in_if);
+        if (system(cmd) != 0)
+            fprintf(stderr, "[napi] threaded 写入失败（继续）\n");
+        else
+            fprintf(stderr, "[napi] threaded=1\n");
+    }
 
     tobj = bpf_object__open_file("trace_export.bpf.o", NULL);
     if (!tobj) { fprintf(stderr, "open trace_export: %s\n", strerror(errno)); goto out_detach; }

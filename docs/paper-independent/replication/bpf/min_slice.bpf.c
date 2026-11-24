@@ -43,6 +43,7 @@
 #define ST_EGRESS_B  3
 #define ST_MUX       4
 #define ST_BADPARSE  5
+#define ST_TRIGGER   6
 
 /* 36B capsule（用户态预填 nonce/seq/tid/d，BPF 填 generation/ingress_bank） */
 struct capsule {
@@ -94,7 +95,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_DEVMAP);
-    __uint(max_entries, 2);
+    __uint(max_entries, 3);   /* 0=BANK_A 1=BANK_B 2=flush 触发 entry（s1_tx，无 prog） */
     __type(key, __u32);
     __type(value, struct bpf_devmap_val);   /* 8B：ifindex + prog union；int 会截断 prog */
 } devmap SEC(".maps");
@@ -119,8 +120,9 @@ static __always_inline __u32 cfg_get(__u32 key)
     return v ? *v : 0;
 }
 
-/* 解析到 UDP payload，要求恰好 PL_LEN 字节 */
-static __always_inline int parse_to_payload(struct xdp_md *ctx, __u8 **pl_out)
+/* 解析到 UDP payload，要求恰好 PL_LEN 字节；返回 udp 头（供触发帧识别） */
+static __always_inline int parse_to_payload(struct xdp_md *ctx, __u8 **pl_out,
+                                            struct udphdr **udp_out)
 {
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
@@ -145,22 +147,41 @@ static __always_inline int parse_to_payload(struct xdp_md *ctx, __u8 **pl_out)
     if (pl + PL_LEN > data_end)
         return -1;
     *pl_out = pl;
+    if (udp_out)
+        *udp_out = udp;
     return 0;
 }
+
+/* 触发帧识别端口：sender 每 16 帧注入一帧 UDP/40002，
+ * root 对其 redirect 到 devmap[2]（s1_tx，无 prog）——
+ * 本次 poll 的 stats.xdp_redirect>0 → poll 尾 xdp_do_flush() →
+ * 全局 flush 所有 CPU 的 devmap bq（含滞留的实验帧）。 */
+#define TRIGGER_PORT 40002
 
 /* ingress root：snapshot 代际 → 填 capsule → redirect_map */
 SEC("xdp")
 int xdp_ingress_root(struct xdp_md *ctx)
 {
     __u8 *pl = NULL;
+    struct udphdr *udp = NULL;
     struct capsule *c;
     __u32 g = 0, key = 0;
     __u32 *gp;
 
     stat_inc(ST_RX);
-    if (parse_to_payload(ctx, &pl) < 0) {
+    if (parse_to_payload(ctx, &pl, &udp) < 0) {
+        /* 非 UDP 帧（如 ping 的 ICMP）：无 capsule 仍走 redirect——
+         * 物理口 NAPI poll 尾部的 xdp_do_flush 会连带 flush 滞留 bq 的实验帧，
+         * 且 bq_xmit_all 之前 fentry 可观测到 flush 发生。 */
         stat_inc(ST_BADPARSE);
-        return XDP_PASS;
+        gp = bpf_map_lookup_elem(&gen_map, &key);
+        g = gp ? (*gp & 1u) : 0u;
+        return bpf_redirect_map(&devmap, g & 1, 0);
+    }
+
+    if (udp->dest == bpf_htons(TRIGGER_PORT)) {
+        stat_inc(ST_TRIGGER);
+        return bpf_redirect_map(&devmap, 2, 0);   /* 触发 entry：s1_tx，无 prog */
     }
 
     gp = bpf_map_lookup_elem(&gen_map, &key);
@@ -187,7 +208,7 @@ static __always_inline int bank_process(struct xdp_md *ctx, __u32 self_bank,
     struct wire_record *w;
     __u32 ig, E, I, sig;
 
-    if (parse_to_payload(ctx, &pl) < 0)
+    if (parse_to_payload(ctx, &pl, NULL) < 0)
         return XDP_ABORTED;
 
     c = (struct capsule *)pl;
@@ -242,7 +263,7 @@ int xdp_egress_common_mux(struct xdp_md *ctx)
     struct capsule *c;
     __u32 g, mid;
 
-    if (parse_to_payload(ctx, &pl) < 0)
+    if (parse_to_payload(ctx, &pl, NULL) < 0)
         return XDP_ABORTED;
     c = (struct capsule *)pl;
     g = c->generation & 1u;
