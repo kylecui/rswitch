@@ -90,3 +90,11 @@
 - 恢复方法（需主理人控制台）：`sudo ip addr del 10.174.254.247/24 dev ens37` 即可，无需重启；或重启机器。
 - **协议硬性修订**：实验网段今后一律使用独立私有网段（如 172.16.99.0/24 挂 ens37），**任何情况下不得与管理网段（10.174.254.0/24）重叠**。帧源替代方案：Windows 端以原生脚本向实验网段地址发送 UDP；或 IPv6 链路本地（fe80，Windows 端需带 zone id）。
 - 事故同时暴露：SIGTERM 打断的远端命令链（scp→make→addr add）不可控，**此后远端变更命令一律拆分为原子短命令或完整脚本**。
+
+## 2026-11-24（续三）：pkill 自伤 + sshd 挂起（需控制台 restart ssh）
+
+- 14:4x｜收结果命令含 `pkill -f "min_ctl run"`——**模式匹配到承载该命令的远端 bash 自身**（命令行含 "min_ctl run" 字样），杀掉自己的 ssh 会话；疑似连带 sshd 子进程/连接状态异常。
+- 14:5x｜此后 22 端口可达（TCP accept）但 **ssh 认证阶段挂起**（verbose 日志停在 Offering public key，3 次重试+MaxStartups 概率等待均失败），verbose 落盘归档 `.workbuddy/s.txt`。
+- 需控制台：`sudo systemctl restart ssh`（Ubuntu 24.04 服务名 ssh；备选 sshd）。重启后无需其他清理（.247 地址经确认从未加上）。
+- 进度快照（供恢复后立即续跑）：TSO 源码级修复已实现（s1_tx tso off → eligible 全帧 → native 路径）；trigger 帧机制已实现（UDP/40002 → root redirect devmap[2]=s1_tx → poll 尾 xdp_do_flush）；receiver.py 已修复可用。**恢复后一条命令即可出 go/no-go**：`cd ~/s1-replication/src && sudo ip link add s1_tx type veth peer name s1_in && sudo ip link add s1_rx type veth peer name s1_out && for i in s1_tx s1_in s1_rx s1_out; do sudo ip link set $i up; done; sudo ethtool -K s1_tx tso off; sudo python3 receiver.py s1_rx 30 receiver.jsonl 2>receiver_summary.txt & sleep 1; sudo ./min_ctl run --tx s1_tx --in s1_in --out s1_out --arm direct --frames 128 --epochs 2 --hold 12 >/tmp/o.txt 2>&1; grep -E 'stats|attach' /tmp/o.txt; cat receiver_summary.txt`。
+- **工具纪律（新增）**：远端 pkill -f 模式绝不可包含会匹配自身会话命令行的子串；收结果改用固定路径文件落盘 + 独立短 ssh 读取。
