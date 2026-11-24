@@ -140,25 +140,15 @@ out:
 static int dump_stats(struct bpf_object *obj)
 {
     int st_fd = bpf_object__find_map_fd_by_name(obj, "stats");
-    int ncpus = libbpf_num_possible_cpus();
-    __u64 *vals;
     __u32 keys[6] = {0, 1, 2, 3, 4, 5};
     const char *kn[6] = {"RX", "REDIRECT", "EGRESS_A", "EGRESS_B", "MUX", "BADPARSE"};
-    if (ncpus <= 0) ncpus = MAX_CPU;
-    vals = calloc(ncpus, sizeof(__u64));
     for (int i = 0; i < 6; i++) {
-        __u64 sum = 0;
-        int r;
-        memset(vals, 0, sizeof(__u64) * ncpus);
-        r = bpf_map_lookup_elem(st_fd, &keys[i], vals);
-        if (r == 0) {
-            for (int cpu = 0; cpu < ncpus; cpu++) sum += vals[cpu];
-            fprintf(stderr, "[stats] %s=%llu (cpus=%d)\n", kn[i], (unsigned long long)sum, ncpus);
-        } else {
-            fprintf(stderr, "[stats] %s lookup失败 r=%d errno=%d\n", kn[i], r, errno);
-        }
+        __u64 v = 0;
+        if (!bpf_map_lookup_elem(st_fd, &keys[i], &v))
+            fprintf(stderr, "[stats] %s=%llu\n", kn[i], (unsigned long long)v);
+        else
+            fprintf(stderr, "[stats] %s lookup失败 errno=%d\n", kn[i], errno);
     }
-    free(vals);
     return 0;
 }
 
@@ -242,6 +232,19 @@ static int do_run(const struct cfg *c)
     tobj = bpf_object__open_file("trace_export.bpf.o", NULL);
     if (!tobj) { fprintf(stderr, "open trace_export: %s\n", strerror(errno)); goto out_detach; }
     if (bpf_object__load(tobj)) { fprintf(stderr, "load trace_export: %s\n", strerror(errno)); goto out_detach; }
+    /* trace_cfg 过滤：目标输出设备 ifindex（必须在 attach 前写入，否则全系统事件涌入） */
+    {
+        int tcfg_fd = bpf_object__find_map_fd_by_name(tobj, "trace_cfg");
+        __u32 ifx = (__u32)c->out_idx;
+        __u32 zero = 0;
+        int r;
+        if (tcfg_fd < 0) {
+            fprintf(stderr, "[trace] trace_cfg fd 失败 errno=%d\n", errno);
+        } else {
+            r = bpf_map_update_elem(tcfg_fd, &zero, &ifx, BPF_ANY);
+            fprintf(stderr, "[trace] 过滤 ifindex=%u r=%d\n", ifx, r);
+        }
+    }
     bpf_object__for_each_program(prog, tobj) {
         struct bpf_link *lnk = bpf_program__attach_trace(prog);
         if (!lnk) {

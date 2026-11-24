@@ -17,7 +17,7 @@ char LICENSE[] SEC("license") = "GPL";
 
 struct trace_evt {
     __u64 ts;
-    __u32 kind;        /* 1=enqueue(sel_prog) 2=xmit_all(retained_prog) */
+    __u32 kind;        /* 1=enqueue 2=xmit_all 3=xdp_do_flush 4=__dev_flush */
     __u32 prog_id;
     __u32 cpu;
     __u32 ifindex;
@@ -90,6 +90,25 @@ int BPF_PROG(tr_xmit_all, struct xdp_dev_bulk_queue *bq, u32 flags)
     e->prog_id = p ? BPF_CORE_READ(p, aux, id) : 0;
     e->cpu = bpf_get_smp_processor_id();
     e->ifindex = BPF_CORE_READ(bq, dev, ifindex);
+    e->pad = 0;
+    bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+/* 旁证：flush 链定位。预期链路 veth_poll 尾部 → xdp_do_flush(内联) → __dev_flush → bq_xmit_all。
+ * kind3=__dev_flush：若 3 有而 2 无，bq 不在该 CPU 的 flush_list（enqueue/flush 跨 CPU）；
+ * 若 3 全程为 0，veth_poll 没有触发 flush（模式/驱动路径问题）。 */
+SEC("fentry/__dev_flush")
+int BPF_PROG(tr_dev_flush)
+{
+    struct trace_evt *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
+    if (!e)
+        return 0;
+    e->ts = bpf_ktime_get_ns();
+    e->kind = 4;
+    e->prog_id = 0;
+    e->cpu = bpf_get_smp_processor_id();
+    e->ifindex = 0;
     e->pad = 0;
     bpf_ringbuf_submit(e, 0);
     return 0;

@@ -55,3 +55,12 @@
 1. 在 Ubuntu 6.8 guest 上以 root 运行 `ENV_PROBE.sh`，归档 `env_probe_*.log` 并回传。
 2. `VERDICT: GO` 后交付源码 v0.1 并编译校准。
 3. 按操作序列执行 boot 间独立复现，全部原始日志按契约归档。
+
+## 2026-11-24：flush 链定位与过滤修复
+
+- 14:16｜trace_cfg 过滤写入块被发现在此前脚本替换中静默丢失（本地/远端均无）——即此前 130 条 trace 一直未过滤。已插入到 trace 对象 load 后、attach 前，本轮输出确认生效：`[trace] 过滤 ifindex=91 r=0`。
+- 14:16｜过滤生效后的关键数据：kind1（enqueue）=130 条，**全部 ifindex=91（我们的 s1_out）、prog_id=449/450（本轮 BANK_A/BANK_B）、65/65 交替、ts 跨 4.1 秒与 1ms 注入节奏吻合**——**128 个实验帧全部完成 redirect 并 enqueue 到 devmap，代际选择正确**。这判定此前「130 条是平台噪声」的怀疑不成立。
+- 14:16｜`bq_xmit_all`（kind2）恒为 0：devmap flush 从未发生——帧滞留 bulk queue，egress 程序（5.14+ 语义在 flush 时执行）因此从未运行，s1_rx 无帧。此为当前唯一硬断点。
+- 14:16｜stats 读数（RX=8~12）与 130 条 enqueue 矛盾；percpu 与普通 array 两种实现读数一致，**说明要么 XDP 真只处理了少量帧而 enqueue 来自他途（未找到该路径），要么用户态 stats 读取仍有缺陷**。pin 代码（hold 期间 pin stats/devmap/trace_cfg 供 bpftool 直读）同样未生效——**脚本替换静默失败已三次，此后凡代码插入必须 grep 验证后再编译**。下一轮以 pinned dump 终审 RX 真值。
+- 14:16｜旁证 hook 迭代：`xdp_do_flush` 是 static inline（无 BTF），fentry 挂它无效；改挂 `__dev_flush`（ftrace 探测确认可挂）。本轮 kind3（__dev_flush）=0，与「flush 未发生」一致。清洗了替换脚本造成的重复 hook 定义。
+- 遗留：① bq flush 不触发的根因（候选：veth_poll 的 VETH_XMIT_RED 位路径差异、rSwitch 栈干扰、内核 6.8.0-111 特定行为）；② RX 真值终审（pinned dump）；③ receiver.py/judge.py/run_go_no_go.sh。

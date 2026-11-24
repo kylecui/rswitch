@@ -100,7 +100,7 @@ struct {
 } devmap SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 8);
     __type(key, __u32);
     __type(value, __u64);
@@ -110,7 +110,7 @@ static __always_inline void stat_inc(__u32 key)
 {
     __u64 *v = bpf_map_lookup_elem(&stats, &key);
     if (v)
-        (*v)++;
+        __sync_fetch_and_add(v, 1);
 }
 
 static __always_inline __u32 cfg_get(__u32 key)
