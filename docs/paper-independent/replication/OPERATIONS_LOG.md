@@ -64,3 +64,14 @@
 - 14:16｜stats 读数（RX=8~12）与 130 条 enqueue 矛盾；percpu 与普通 array 两种实现读数一致，**说明要么 XDP 真只处理了少量帧而 enqueue 来自他途（未找到该路径），要么用户态 stats 读取仍有缺陷**。pin 代码（hold 期间 pin stats/devmap/trace_cfg 供 bpftool 直读）同样未生效——**脚本替换静默失败已三次，此后凡代码插入必须 grep 验证后再编译**。下一轮以 pinned dump 终审 RX 真值。
 - 14:16｜旁证 hook 迭代：`xdp_do_flush` 是 static inline（无 BTF），fentry 挂它无效；改挂 `__dev_flush`（ftrace 探测确认可挂）。本轮 kind3（__dev_flush）=0，与「flush 未发生」一致。清洗了替换脚本造成的重复 hook 定义。
 - 遗留：① bq flush 不触发的根因（候选：veth_poll 的 VETH_XMIT_RED 位路径差异、rSwitch 栈干扰、内核 6.8.0-111 特定行为）；② RX 真值终审（pinned dump）；③ receiver.py/judge.py/run_go_no_go.sh。
+
+## 2026-11-24（续）：内核权威计数定格断点
+
+- 14:29｜停 rSwitch 三服务（主理人授权，`rswitch.service`/mgmtd/killswitch watchdog → inactive），**bpftool net 确认 XDP 残留清空**，环境纯净。
+- 14:29｜开启 `kernel.bpf_stats_enabled=1`，以内核 run_cnt 终审：
+  - `xdp_ingress_root run_cnt=128`——**root 确实执行了全部 128 帧**（内核权威计数）；
+  - 上轮 `tr_enqueue run_cnt=129`——redirect→dev_map_enqueue 同样确认；
+  - **`tr_dev_flush` 无 run_cnt 字段（从未执行）**——**flush 链精确断在 veth_poll 尾部 `if (stats.xdp_redirect>0) xdp_do_flush()` 与 `__dev_flush` 之间**：redirect 发生了 129 次，但 flush 分支未走。
+- 14:29｜**stats map 用户态读取正式弃用**：内核 root=128 时用户态读 RX=0/1/8/11/12 全不可信（percpu 与普通 array 皆然），今后一律以 bpftool 外部读/pinned dump 为准。
+- 14:29｜复现价值备注：**「帧滞留 devmap bulk queue 直至 flush 时机」正是现稿研究的机制本体**；本环境的 flush 触发缺失与论文 v4 需要 threaded-NAPI 干预调出多帧 epoch 是同一类现象的镜像。复现协议候选解法（下一轮实现）：① root 程序对非实验帧返回 XDP_TX（veth_poll 尾部 xdp_tx 分支同样触发 xdp_do_flush），sender 每 16 帧注入一帧 flush 触发帧；② 发送后 `ip link set s1_out down` 强制 devmap flush（验证 flush 通路存在性）；③ 加 fexit/bq_xmit_all 与 fentry/dev_map_flush_old 旁证。
+- 遗留同前：receiver.py、judge.py、run_go_no_go.sh；rSwitch 服务保持停止状态（复现完成后恢复，待主理人确认）。
