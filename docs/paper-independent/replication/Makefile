@@ -5,7 +5,7 @@ ARCH   := $(shell uname -m)
 INC    := -I/usr/include/$(ARCH)-linux-gnu
 BPF_CFLAGS := -O2 -g -target bpf -D__TARGET_ARCH_x86 $(INC) -I.
 
-all: min_slice.bpf.o trace_export.bpf.o min_slice.skel.h trace_export.skel.h min_ctl
+all: min_slice.bpf.o trace_export.bpf.o xdp_flush_trigger.bpf.o min_ctl
 
 %.bpf.o: bpf/%.bpf.c
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
@@ -21,6 +21,9 @@ min_slice.skel.h: min_slice.bpf.o
 
 trace_export.skel.h: trace_export.bpf.o
 	bpftool gen skeleton trace_export.bpf.o > $@
+
+xdp_flush_trigger.bpf.o: bpf/xdp_flush_trigger.bpf.c
+	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
 min_ctl: user/min_ctl.c min_slice.skel.h trace_export.skel.h
 	$(GCC) -O2 -Wall -I. -o $@ $< -lbpf

@@ -75,3 +75,10 @@
 - 14:29｜**stats map 用户态读取正式弃用**：内核 root=128 时用户态读 RX=0/1/8/11/12 全不可信（percpu 与普通 array 皆然），今后一律以 bpftool 外部读/pinned dump 为准。
 - 14:29｜复现价值备注：**「帧滞留 devmap bulk queue 直至 flush 时机」正是现稿研究的机制本体**；本环境的 flush 触发缺失与论文 v4 需要 threaded-NAPI 干预调出多帧 epoch 是同一类现象的镜像。复现协议候选解法（下一轮实现）：① root 程序对非实验帧返回 XDP_TX（veth_poll 尾部 xdp_tx 分支同样触发 xdp_do_flush），sender 每 16 帧注入一帧 flush 触发帧；② 发送后 `ip link set s1_out down` 强制 devmap flush（验证 flush 通路存在性）；③ 加 fexit/bq_xmit_all 与 fentry/dev_map_flush_old 旁证。
 - 遗留同前：receiver.py、judge.py、run_go_no_go.sh；rSwitch 服务保持停止状态（复现完成后恢复，待主理人确认）。
+
+## 2026-11-24（续二）：事故记录——trigger 挂 ens33 + redirect-to-lo 导致测试机失联
+
+- 14:35｜决战实验：root（generic）+ receiver + trigger（native 挂 ens33、redirect 目标 lo）+ ping 网关。ping 网关 4.86ms rtt 说明 trigger 本身工作（ens33 入向帧被改道 lo、全局 flush 被触发）。
+- 14:36｜**实验后测试机整机失联**（ICMP 100% loss、ssh 超时，从 Windows 侧持续确认）。根因判定：**redirect-to-lo 的 trigger 把 ens33 的全部入向帧（含 ssh TCP、ARP）改道**，24 秒 detach 后未恢复——**ssh 会话的 TCP 状态/ARP 路径损坏，或内核在网络路径上软死锁**。
+- 14:36｜**教训（写入协议）**：flush 触发器的 redirect 目标**绝不可用 lo 或任何承载管理/ssh 流量的接口**；正确目标=实验专用隔离口（s1_tx，10.99.x 独立网段），且 trigger 挂载接口优先选非管理物理口或专用 veth。触发帧产生方式改为"实验网段内部自触发"。
+- 待主理人：从 VM 控制台重启 rswitch-dev-20 或恢复其网络（reboot 即可，服务本已停止，无数据风险）。恢复后下一步：① trigger 目标改 `s1_tx`（10.99.0.2，sender 网段内部自触发——sender 每 16 帧注入一帧 ARP/触发帧）；② receiver.py 已修复 bind，直接可用；③ 全套 go/no-go 重跑。

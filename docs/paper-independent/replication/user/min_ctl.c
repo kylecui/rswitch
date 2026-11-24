@@ -305,6 +305,43 @@ int main(int argc, char **argv)
     struct cfg c = {0};
     c.frames = 2048; c.epochs = 32; c.arm = 0;
 
+    if (!strcmp(argv[1], "trigger")) {
+        /* min_ctl trigger <target_if> <attach_if> <secs>
+         * native 挂 attach_if；入向帧 redirect 到 target（lo），
+         * 驱动 NAPI poll 尾的 xdp_do_flush 全局触发 devmap bq flush。 */
+        if (argc < 5) { fprintf(stderr, "usage: min_ctl trigger <target_if> <attach_if> <secs>\n"); return 2; }
+        {
+            const char *tgt = argv[2], *att = argv[3];
+            int secs = atoi(argv[4]);
+            int t_idx = if_nametoindex(tgt), a_idx = if_nametoindex(att);
+            struct bpf_object *fobj;
+            struct bpf_devmap_val dv = {0};
+            __u32 k = 0;
+            int fw_fd, pfd, e;
+            if (!t_idx || !a_idx) { fprintf(stderr, "if_nametoindex 失败\n"); return 2; }
+            libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
+            fobj = bpf_object__open_file("xdp_flush_trigger.bpf.o", NULL);
+            if (!fobj) { perror("open trigger"); return 1; }
+            if (bpf_object__load(fobj)) { fprintf(stderr, "load trigger: %s\n", strerror(errno)); return 1; }
+            fw_fd = bpf_object__find_map_fd_by_name(fobj, "fw_ports");
+            dv.ifindex = (__u32)t_idx;
+            if (bpf_map_update_elem(fw_fd, &k, &dv, BPF_ANY) < 0) { fprintf(stderr, "fw_ports: %s\n", strerror(errno)); return 1; }
+            pfd = bpf_program__fd(bpf_object__find_program_by_name(fobj, "xdp_flush_trigger"));
+            e = bpf_xdp_attach(a_idx, pfd, 0, NULL);
+            if (e == 0) fprintf(stderr, "[trigger] native on %s -> %s\n", att, tgt);
+            else {
+                e = bpf_xdp_attach(a_idx, pfd, XDP_FLAGS_SKB_MODE, NULL);
+                fprintf(stderr, "[trigger] generic(SKB) on %s\n", att);
+            }
+            if (e) { fprintf(stderr, "trigger attach: %s\n", strerror(errno)); return 1; }
+            fprintf(stderr, "[trigger] 持续 %ds\n", secs);
+            sleep(secs);
+            bpf_xdp_detach(a_idx, XDP_FLAGS_MASK, NULL);
+            fprintf(stderr, "[trigger] detach\n");
+            return 0;
+        }
+    }
+
     if (argc < 3 || strcmp(argv[1], "run")) {
         fprintf(stderr, "usage: min_ctl run --tx IF --in IF --out IF --arm direct|mux "
                         "[--wrong-bank] [--wrong-mux] [--wrong-capsule] [--frames N] [--epochs N]\n");
