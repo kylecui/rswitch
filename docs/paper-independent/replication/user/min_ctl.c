@@ -223,9 +223,11 @@ static int do_run(const struct cfg *c)
     if (bpf_map_update_elem(bpf_object__find_map_fd_by_name(obj, "devmap"), &k1, &dv, BPF_ANY) < 0) {
         fprintf(stderr, "devmap[1]: %s\n", strerror(errno)); goto out;
     }
-    /* devmap[2]：flush 触发 entry（s1_tx，无 prog）。触发帧由 root redirect 到此，
-     * 使该次 poll 的 stats.xdp_redirect>0 → poll 尾 xdp_do_flush 全局触发。 */
-    dv.ifindex = (__u32)c->tx_idx;
+    /* devmap[2]：flush 触发 entry（lo，无 prog）。触发帧由 root redirect 到此，
+     * 使该次 poll 的 stats.xdp_redirect>0 → poll 尾 xdp_do_flush 全局触发。
+     * 目标必须为 lo：lo 无 XDP xmit 能力，触发帧在 bq_xmit_all 处被安全丢弃——
+     * 若指向 s1_tx（s1_in 的 peer），触发帧会回环进 root 造成 soft lockup（2026-11-24 事故三）。 */
+    dv.ifindex = 1;   /* lo */
     dv.bpf_prog.fd = 0;
     if (bpf_map_update_elem(bpf_object__find_map_fd_by_name(obj, "devmap"), &k2, &dv, BPF_ANY) < 0) {
         fprintf(stderr, "devmap[2]: %s\n", strerror(errno)); goto out;

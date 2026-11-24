@@ -98,3 +98,12 @@
 - 需控制台：`sudo systemctl restart ssh`（Ubuntu 24.04 服务名 ssh；备选 sshd）。重启后无需其他清理（.247 地址经确认从未加上）。
 - 进度快照（供恢复后立即续跑）：TSO 源码级修复已实现（s1_tx tso off → eligible 全帧 → native 路径）；trigger 帧机制已实现（UDP/40002 → root redirect devmap[2]=s1_tx → poll 尾 xdp_do_flush）；receiver.py 已修复可用。**恢复后一条命令即可出 go/no-go**：`cd ~/s1-replication/src && sudo ip link add s1_tx type veth peer name s1_in && sudo ip link add s1_rx type veth peer name s1_out && for i in s1_tx s1_in s1_rx s1_out; do sudo ip link set $i up; done; sudo ethtool -K s1_tx tso off; sudo python3 receiver.py s1_rx 30 receiver.jsonl 2>receiver_summary.txt & sleep 1; sudo ./min_ctl run --tx s1_tx --in s1_in --out s1_out --arm direct --frames 128 --epochs 2 --hold 12 >/tmp/o.txt 2>&1; grep -E 'stats|attach' /tmp/o.txt; cat receiver_summary.txt`。
 - **工具纪律（新增）**：远端 pkill -f 模式绝不可包含会匹配自身会话命令行的子串；收结果改用固定路径文件落盘 + 独立短 ssh 读取。
+
+## 2026-11-24（事故三 + 机制链铁证）：触发帧回环致 soft lockup（根因确凿，已修复）
+
+- 14:4x｜v0.3 触发帧首跑即回环风暴：触发帧（UDP/40002）→ root redirect devmap[2]=s1_tx → **s1_tx 是 s1_in 的 peer，帧立即回环进 root** → 线速无限循环 → CPU#1 的 threaded NAPI 线程（napi/s1_in-8204）**soft lockup 30+ 分钟**（watchdog：1747→1825s 递增）→ sshd 等 CPU1 进程饿死、机器半失联。
+- **dmesg Call trace 反向证实机制链 100% 打通**：veth_poll → veth_xdp_rcv_one → bpf_prog(…xdp_ingress_root) → dev_map_redirect → xdp_do_redirect → __cpu_map_flush——root/redirect/enqueue/flush 全链在真实内核执行。
+- 根因归我方设计缺陷（触发帧 redirect 目标=入口 peer，回环）；非内核 bug。
+- 修复：**devmap[2] 目标改 lo（ifindex=1）**——lo 无 XDP xmit 能力，触发帧在 bq_xmit_all 被安全丢弃，回环物理掐断，全局 flush 效果不变。代码已改（min_ctl.c devmap[2] 块带断言修改）。
+- 恢复指令（控制台）：`sudo ip link del s1_tx`（删 peer 即断回环，无需重启）。
+- 协议修订：flush 触发 entry 的目标接口**禁用一切与实验拓扑相连的接口**（peer/物理管理口均不可），只允许 lo 类黑洞。
